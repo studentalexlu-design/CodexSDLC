@@ -1,0 +1,13 @@
+# Project-scoped Codex configuration for the migrated BDD workflow.
+# `.github` remains the GitHub Copilot source version; Codex uses `.codex/` and `.agents/`.
+
+personality = "friendly"
+
+[features]
+hooks = true
+
+[agents]
+# `bdd-orchestrator` can be spawned as a custom agent and then delegate to one
+# direct workflow subagent. Roster subagents must not fan out further.
+max_threads = 6
+max_depth = 2

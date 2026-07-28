@@ -1,0 +1,52 @@
+{
+    "gate-id": "gate-e",
+    "display-name": "整合與契約測試確認",
+    "current-boundary": "integration -> living-doc/verified",
+    "next-stage-if-approved": "living-doc",
+    "documents-to-review": [
+        {
+            "id": "contract-test-evidence",
+            "name": "contract test evidence",
+            "path": "bdd-docs/runs/{run-id}/artifacts/integration/contract-test-evidence.md",
+            "required": "unless-contract-not-applicable"
+        },
+        {
+            "id": "integration-test-evidence",
+            "name": "integration test evidence",
+            "path": "bdd-docs/runs/{run-id}/artifacts/integration/integration-test-evidence.md",
+            "required": "unless-integration-not-applicable"
+        },
+        {
+            "id": "smoke-test-evidence",
+            "name": "smoke test evidence",
+            "path": "bdd-docs/runs/{run-id}/artifacts/integration/smoke-test-evidence.md",
+            "required": "unless-smoke-not-applicable"
+        },
+        {
+            "id": "lean-sdlc-checklist-integration-verification",
+            "name": "lean SDLC checklist 整合驗證 rows",
+            "path": "bdd-docs/runs/{run-id}/artifacts/lean-sdlc-checklist.md",
+            "required": true
+        }
+    ],
+    "user-verification-checklist": [
+        "API 回應是否符合契約（狀態碼 / schema / 錯誤結構），或契約測試已標記 N/A",
+        "整合流程是否通過且無阻塞缺陷，或已標記 N/A",
+        "smoke test 是否已批准執行且通過，或已標記 N/A",
+        "測試環境是否可重建、無明顯 flaky 風險",
+        "是否同意進入 living-doc 收尾"
+    ],
+    "decision-options": [
+        "approve-gate",
+        "return-for-fix",
+        "pause-workflow",
+        "free-text"
+    ],
+    "decision-log-requirements": [
+        "gate-id",
+        "reviewed-document-refs",
+        "verification-checklist",
+        "user-decision",
+        "next-stage-if-approved"
+    ]
+}

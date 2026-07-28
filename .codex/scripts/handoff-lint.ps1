@@ -1,0 +1,121 @@
+# handoff-lint.ps1
+# 在 subagent spawn 前機械強制 handoff contract。把 prompt 裡的「規則」
+# 變成「保證」—— 這是 token 預算唯一不依賴模型自律的環節。
+#
+# 檢查項：
+#   1. handoff 長度 <= MaxChars（預設 1200）
+#   2. 單一 operation mode（不得同時出現多個 mode 宣告）
+#   3. 必填 meta 欄位：mode、tier
+#   4. 禁用 payload：完整 log、完整 source register、長測試輸出、secrets
+#   5. quality-loop 迭代上限（讀 workflow-state.json，超限即阻斷）
+#
+# Exit: 0 = 通過；2 = 違規（阻斷 spawn）。
+
+[CmdletBinding()]
+param(
+    [string]$Payload,
+    [int]$MaxChars = 1200,
+    [int]$MaxQualityLoopIterations = 3,
+    [switch]$Json
+)
+
+if (-not $Payload) { $Payload = [Console]::In.ReadToEnd() }
+if (-not $Payload) { exit 0 }
+
+$violations = @()
+
+# --- 抽出 handoff prompt 本體 ---
+# hook payload 是 JSON；prompt 通常在 "prompt" 欄位。抓不到就退回整包長度。
+$prompt = $Payload
+$m = [regex]::Match($Payload, '"prompt"\s*:\s*"((?:[^"\\]|\\.)*)"')
+if ($m.Success) { $prompt = $m.Groups[1].Value -replace '\\n', "`n" -replace '\\"', '"' }
+
+# --- 1. 長度 ---
+if ($prompt.Length -gt $MaxChars) {
+    $violations += [pscustomobject]@{
+        rule = 'handoff-too-long'
+        detail = "$($prompt.Length) chars > $MaxChars"
+        fix = '先委派 living-doc 編譯 context pack，或改以更小切片委派'
+    }
+}
+
+# --- 2. 單一 mode ---
+$modes = [regex]::Matches($prompt, '(?im)^\s*[-*]?\s*mode\s*:\s*([a-z0-9-]+)') |
+    ForEach-Object { $_.Groups[1].Value.ToLower() } |
+    Sort-Object -Unique
+if ($modes.Count -gt 1) {
+    $violations += [pscustomobject]@{
+        rule = 'multiple-modes'
+        detail = ($modes -join ', ')
+        fix = '一次 handoff 只描述一個 operation mode'
+    }
+}
+
+# --- 3. 必填 meta ---
+if ($modes.Count -eq 0) {
+    $violations += [pscustomobject]@{ rule='missing-mode'; detail='no mode: field'; fix='meta 區塊補 mode' }
+}
+if ($prompt -notmatch '(?im)^\s*[-*]?\s*tier\s*:\s*(lite|standard|full)\b') {
+    $violations += [pscustomobject]@{
+        rule = 'missing-tier'
+        detail = 'no tier: lite|standard|full'
+        fix = 'meta 區塊補 tier；缺 tier 時子代理會退回 full，成本最高'
+    }
+}
+
+# --- 4. 禁用 payload ---
+$forbidden = @(
+    @{ rule='full-operation-log';      pattern='(?s)##\s*log\.md.{2000,}' }
+    @{ rule='long-test-output';        pattern='(?m)^\s*(Passed|Failed|Skipped)!?\s+-\s+Failed:.*(\r?\n.*){40,}' }
+    @{ rule='connection-string';       pattern='(?i)(Server|Data Source)\s*=[^;]+;\s*(Initial Catalog|Database)\s*=' }
+    @{ rule='secret-literal';          pattern='(?i)\b(api[_-]?key|password|pwd|secret|bearer)\s*[:=]\s*["'']?[A-Za-z0-9_\-\.]{12,}' }
+    @{ rule='dlp-mapping-table';       pattern='(?s)\{\{[A-Z_]+_\d+\}\}\s*(=>|->|:)\s*\S+' }
+)
+foreach ($f in $forbidden) {
+    if ($prompt -match $f.pattern) {
+        $violations += [pscustomobject]@{ rule=$f.rule; detail='禁用 payload 命中'; fix='只傳 path/version/digest 與 <=500 字摘要' }
+    }
+}
+
+# --- 5. quality-loop 上限 ---
+$runId = if ($prompt -match '(?im)^\s*[-*]?\s*run-id\s*:\s*(\S+)') { $Matches[1] } else { $null }
+if ($runId) {
+    $statePath = "bdd-docs/runs/$runId/workflow-state.json"
+    if (Test-Path $statePath) {
+        try {
+            $state = Get-Content $statePath -Raw | ConvertFrom-Json
+            $iter = $state.'quality-loop'.iteration
+            $last = $state.'quality-loop'.'last-verdict'
+            if ($null -ne $iter -and $iter -ge $MaxQualityLoopIterations -and $last -eq 'FAIL') {
+                $violations += [pscustomobject]@{
+                    rule = 'quality-loop-exceeded'
+                    detail = "iteration=$iter last-verdict=FAIL"
+                    fix = '禁止再呼叫 doer+reviewer；必須以 Codex user confirmation 升級使用者裁定'
+                }
+            }
+        } catch { }
+    }
+}
+
+# --- 輸出 ---
+if ($Json) {
+    [pscustomobject]@{
+        passed = ($violations.Count -eq 0)
+        violation_count = $violations.Count
+        prompt_chars = $prompt.Length
+        modes = $modes
+        violations = $violations
+    } | ConvertTo-Json -Depth 4 -Compress
+}
+
+if ($violations.Count -gt 0) {
+    if (-not $Json) {
+        [Console]::Error.WriteLine("[Hook][handoff-lint] $($violations.Count) violation(s), spawn blocked:")
+        foreach ($v in $violations) {
+            [Console]::Error.WriteLine("  - $($v.rule): $($v.detail)")
+            [Console]::Error.WriteLine("    fix: $($v.fix)")
+        }
+    }
+    exit 2
+}
+exit 0

@@ -1,0 +1,6 @@
+{
+    "contract-version": "1.11.0",
+    "extension-version": "0.1.6",
+    "deployed-at": "2026-07-26T00:00:00.000Z",
+    "note": "contract-version 必須與 .codex/bdd-workflow/workflow-contract.json 的 contract-version 一致；不一致代表此檔已失修。extension-version 是 .github Copilot 來源版本，Codex 流程不使用。"
+}

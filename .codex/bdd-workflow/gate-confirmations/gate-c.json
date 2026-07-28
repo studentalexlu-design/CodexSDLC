@@ -1,0 +1,46 @@
+{
+    "gate-id": "gate-c",
+    "display-name": "行為需求確認",
+    "current-boundary": "discovery -> formulation/ATDD",
+    "next-stage-if-approved": "formulate",
+    "documents-to-review": [
+        {
+            "id": "flow-description",
+            "name": "flow description",
+            "path": "bdd-docs/runs/{run-id}/artifacts/flow-description.md",
+            "required": true
+        },
+        {
+            "id": "example-map",
+            "name": "example map",
+            "path": "bdd-docs/runs/{run-id}/artifacts/example-map.md",
+            "required": true
+        },
+        {
+            "id": "requirements-analysis-artifact-refs",
+            "name": "需求規格、User Story、Acceptance Criteria、priority、Gherkin draft checklist refs",
+            "path": "bdd-docs/runs/{run-id}/artifacts/lean-sdlc-checklist.md",
+            "required": true
+        }
+    ],
+    "user-verification-checklist": [
+        "主要流程是否符合業務",
+        "rules / examples / questions 是否完整",
+        "blocking questions 是否為 0",
+        "acceptance criteria 與 Gherkin draft 是否可測且無明顯誤解",
+        "是否同意進入 formulation / ATDD"
+    ],
+    "decision-options": [
+        "approve-gate",
+        "return-for-fix",
+        "pause-workflow",
+        "free-text"
+    ],
+    "decision-log-requirements": [
+        "gate-id",
+        "reviewed-document-refs",
+        "verification-checklist",
+        "user-decision",
+        "next-stage-if-approved"
+    ]
+}

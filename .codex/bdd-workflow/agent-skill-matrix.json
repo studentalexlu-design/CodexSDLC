@@ -1,0 +1,108 @@
+{
+  "agent-skill-matrix": {
+    "bdd-orchestrator": {
+      "agent-version": "1.8.0",
+      "skills": [
+        "quality-loop@1.1.0",
+        "interruption-recovery@1.0.1",
+        "impact-analysis@1.0.0",
+        "safe-change@1.0.0",
+        "test-reliability@1.0.0"
+      ]
+    },
+    "project-scanner": {
+      "agent-version": "1.6.1",
+      "skills": [
+        "impact-analysis@1.0.0"
+      ]
+    },
+    "db-introspection-scanner": {
+      "agent-version": "1.2.0",
+      "skills": [
+        "impact-analysis@1.0.0",
+        "safe-change@1.0.0"
+      ]
+    },
+    "domain-analyst": {
+      "agent-version": "1.0.0",
+      "skills": [
+        "example-mapping@1.0.0",
+        "impact-analysis@1.0.0",
+        "data-modeling@1.0.0"
+      ]
+    },
+    "discovery": {
+      "agent-version": "1.2.0",
+      "skills": [
+        "example-mapping@1.0.0"
+      ]
+    },
+    "formulator": {
+      "agent-version": "1.0.0",
+      "skills": [
+        "gherkin-authoring@1.0.0"
+      ]
+    },
+    "design-modeler": {
+      "agent-version": "1.0.0",
+      "skills": [
+        "api-contract-design@1.0.0",
+        "er-modeling@1.0.0",
+        "data-modeling@1.0.0"
+      ]
+    },
+    "atdd-automator": {
+      "agent-version": "1.1.0",
+      "skills": [
+        "outside-in-tdd@1.0.0",
+        "test-reliability@1.0.0"
+      ]
+    },
+    "tdd-implementer": {
+      "agent-version": "1.1.0",
+      "skills": [
+        "outside-in-tdd@1.0.0",
+        "unit-test-gen@1.0.0",
+        "safe-change@1.0.0",
+        "test-reliability@1.0.0"
+      ]
+    },
+    "integration-tester": {
+      "agent-version": "1.0.0",
+      "skills": [
+        "contract-testing@1.0.0",
+        "test-reliability@1.0.0"
+      ]
+    },
+    "living-doc": {
+      "agent-version": "1.5.0",
+      "skills": []
+    },
+    "spec-reviewer": {
+      "agent-version": "1.0.0",
+      "skills": [
+        "code-review@1.0.0",
+        "gherkin-authoring@1.0.0",
+        "api-contract-design@1.0.0",
+        "er-modeling@1.0.0"
+      ]
+    },
+    "code-reviewer": {
+      "agent-version": "1.0.0",
+      "skills": [
+        "code-review@1.0.0",
+        "test-reliability@1.0.0",
+        "safe-change@1.0.0"
+      ]
+    }
+  },
+  "unaffiliated-skills": {
+    "note": "存在於 .agents/skills/ 但刻意不綁定任何 workflow agent 的通用工具 skill。只有使用者明確要求時才載入；不計入 lazy-loading 決策，也不視為矩陣缺漏。",
+    "skills": [
+      {
+        "name": "pdf",
+        "reason": "通用 PDF 讀寫工具，使用 output/pdf/ 與 tmp/pdfs/ 慣例，不對齊本 workflow 的 bdd-docs/ 產物模型；無 version frontmatter。"
+      }
+    ]
+  }
+}
