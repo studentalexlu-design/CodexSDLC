@@ -62,9 +62,9 @@ orchestrator prompt 必須只傳：
 2. 落地後執行 `pwsh -NoProfile -File .codex/scripts/sql-scan.ps1 -Root bdd-docs/artifacts/legacy-schema`，由腳本產生 db-object 邏輯訊號。
 3. 只回傳腳本摘要（`signal_count`、`by_construct`、輸出檔 path）給 orchestrator。
 
-**先落地再掃是關鍵**：避免為了同一批定義反覆連線 MCP，也避免把 definition 全文重複讀進 context。定義一旦落檔，後續 `domain-analyst` 與任何重跑都靠檔案，不再需要 DB。
+**先落地再掃是關鍵**：避免為了同一批定義反覆連線 MCP，也避免把 definition 全文重複讀進 context。定義一旦落檔，後續 `analyst` 與任何重跑都靠檔案，不再需要 DB。
 
-- **不回傳完整 definition 全文、不貼原始 SQL**；不判定 data-access vs business-rule（交由 `domain-analyst`）。
+- **不回傳完整 definition 全文、不貼原始 SQL**；不判定 data-access vs business-rule（交由 `analyst`）。
 - 落地檔本身也不得含 credentials、連線字串或 row-level 敏感資料；PostToolUse 的 `dlp-gate.ps1` 會再掃一次。
 - 腳本不可用時，退回原做法：於回傳中直接列出構件型別 + 物件名/行號 ref（DLP 遮蔽），並標記 `environment: index-unavailable`。
 - 受控 `SELECT` 必須限定資料表/檢視、明確欄位、筆數與目的；不得自由探索資料或使用 `SELECT *`。
@@ -73,7 +73,7 @@ orchestrator prompt 必須只傳：
 ## 交付
 
 - 更新 DB introspection report，包含 MCP server/profile alias、metadata 摘要、FK 清冊、依賴順序、definition 摘要、default authorization ref、受控 SELECT row count / redaction notes、evidence refs、限制與未完成項。
-- 重構情境下，額外回傳 db-object 邏輯訊號清單（構件型別 + 行號 ref，DLP 遮蔽），供 `domain-analyst` 建立 `legacy-sql-analysis/{feature-id}.md`。
+- 重構情境下，額外回傳 db-object 邏輯訊號清單（構件型別 + 行號 ref，DLP 遮蔽），供 `analyst` 建立 `legacy-sql-analysis/{feature-id}.md`。
 - 若連線失敗或逾時，回傳 `partial-completed`，保留已完成項與 pending items。
 
 ## 禁止事項

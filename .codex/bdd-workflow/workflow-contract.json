@@ -13,7 +13,6 @@
     "domain-done",
     "domain-confirmed",
     "discovery-phase0",
-    "domain-backflow",
     "discovery-phase1",
     "discovery-done",
     "data-model-p1",
@@ -239,13 +238,11 @@
         ],
         "agents": [
           "project-scanner",
-          "domain-analyst",
-          "discovery",
+          "analyst",
           "formulator",
           "atdd-automator",
           "tdd-implementer",
-          "integration-tester",
-          "living-doc"
+          "integration-tester"
         ],
         "reviewers": [
           "spec-reviewer"
@@ -254,16 +251,24 @@
         "keeps-gherkin": true,
         "merged-mode-calls": {
           "integration-tester": "single-call-all-modes",
-          "discovery": "whole-example-map"
+          "analyst": "whole-example-map"
         },
-        "max-subagent-calls": 12,
+        "max-subagent-calls": 10,
         "design-bridge": "disabled",
         "context-pack": "disabled",
         "checklist-columns": "standard",
         "not-applicable-reason": "profile-standard: 中難度標準路徑不產出此項",
         "scan-policy": "index-plus-scoped",
         "impact-top-n": 12,
-        "sql-scan": "disabled"
+        "sql-scan": "disabled",
+        "orchestrator-handles": [
+          "run-skeleton",
+          "checkpoint",
+          "decision-log",
+          "checklist",
+          "log",
+          "index-read"
+        ]
       },
       "full": {
         "display-name": "高難度完整路徑",
@@ -614,8 +619,6 @@
       "partial-completed",
       "db-introspection-needed",
       "phase0-iteration-completed",
-      "phase0-paused-for-domain-check",
-      "phase1-paused-for-domain-check",
       "blocked",
       "error"
     ]

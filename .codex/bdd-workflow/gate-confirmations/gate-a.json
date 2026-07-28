@@ -1,7 +1,7 @@
 {
     "gate-id": "gate-a",
     "display-name": "系統分析確認",
-    "current-boundary": "scan -> domain/discovery",
+    "current-boundary": "scan -> domain/analyst",
     "next-stage-if-approved": "domain",
     "documents-to-review": [
         {
@@ -41,7 +41,7 @@
         "impact report 的 editable / forbidden / risky areas 是否可接受",
         "DB schema 來源策略是否符合已批准狀態",
         "legacy SQL 內嵌業務邏輯是否已萃取並區分 data-access / business-rule（重構情境）",
-        "是否同意進入 domain / discovery"
+        "是否同意進入 domain / analyst"
     ],
     "decision-options": [
         "approve-gate",

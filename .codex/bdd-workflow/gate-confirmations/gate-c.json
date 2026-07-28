@@ -1,7 +1,7 @@
 {
     "gate-id": "gate-c",
     "display-name": "行為需求確認",
-    "current-boundary": "discovery -> formulation/ATDD",
+    "current-boundary": "analyst -> formulation/ATDD",
     "next-stage-if-approved": "formulate",
     "documents-to-review": [
         {

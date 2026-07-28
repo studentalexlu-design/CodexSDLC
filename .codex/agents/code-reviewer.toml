@@ -32,10 +32,12 @@ developer_instructions = '''
 
 ## 自動化驗證（兩個 mode 皆強制）
 
-審核前先執行：
+**先讀 `bdd-docs/artifacts/repo-index/index.json` 的 `commands` 取得建置／測試命令**，
+再以 `shell` 執行。**不得硬編 `dotnet`、`mvn` 或 `gradle`** —— 目標專案可能是 C# 或 Java。
 
-- `shell`（`dotnet build 2>&1`）取得 compile/lint errors；有 error 自動標 `BLOCKER`。
-- `shell`（`dotnet test --no-build 2>&1`）執行對應測試；失敗自動標 `BLOCKER`。
+- `commands.build` → 取得 compile/lint errors；有 error 自動標 `BLOCKER`。
+- `commands.test`（或 `commands.acceptance`） → 執行對應測試；失敗自動標 `BLOCKER`。
+- 索引不存在時依專案檔推斷（`.sln`→dotnet、`pom.xml`→maven、`build.gradle`→gradle），並於回傳標記 `environment: index-unavailable`。
 - Phase A deterministic scan 先取客觀指標，Phase B 只讀 Phase A 標出的異常檔案與必要區段（單檔前 300 行）。
 
 ## ⚠️ 一次性完整審核（強制）
@@ -61,8 +63,8 @@ Phase A 必含：build/test summary、feature step count、binding count、orpha
 
 ### Step Definition 綁定覆蓋檢查（強制）
 
-1. 掃描所有 `.feature` 的 step（Given／When／Then／And／But），統計總數。
-2. 掃描所有 step definition 檔（`*Steps.cs`），統計已綁定 method 數。
+1. 掃描所有 `.feature` 的 step（Given／When／Then／And／But），統計總數（glob 取自 `commands.feature-glob`）。
+2. 掃描所有 step definition 檔（glob 取自 `commands.step-def-glob` —— C#: `*Steps.cs` 的 `[Binding]`；Java: `*Steps.java` 的 `@Given`／`@When`／`@Then`），統計已綁定 method 數。
 3. 交叉比對：
    - `.feature` step 找不到對應 binding → `MAJOR`（`Defect_Type: missing-step-binding`）
    - step definition 未被任何 `.feature` step 引用 → `MINOR`（`Defect_Type: orphan-step-definition`）
@@ -114,7 +116,7 @@ active run 存在 `legacy-sql-analysis/{feature-id}.md` 時額外檢查：
 
 ### 全量 Acceptance 驗收（強制）
 
-1. 執行完整 acceptance suite（指定 acceptance test project 或 `--filter Category=Acceptance`），而非僅 unit test project。
+1. 執行完整 acceptance suite —— 用 `commands.acceptance`（C#: `dotnet test --filter Category=Acceptance`；Java: `mvn test -Dtest=*CucumberTest` 或 gradle 對應），而非僅 unit test。
 2. 確認 `0 failed, 0 pending`：
    - failed → `BLOCKER`（`Defect_Type: acceptance-test-failure`）
    - pending step definitions → `BLOCKER`（`Defect_Type: pending-step-definition`，代表功能未完整實作）
@@ -148,7 +150,7 @@ ACCEPTANCE_SCENARIOS: {total} total, {passed} passed, {failed} failed, {pending}
 ### Terminal 執行逾時
 
 1. 依 `policies/cli-execution-policy.md` 取得 command／exit code／前 3 個錯誤／log path 摘要。
-2. `dotnet build` 可單獨成功但測試逾時 → `BLOCKER`（`Defect_Type: test-timeout`），不得直接停止審核。
+2. `commands.build` 可單獨成功但測試逾時 → `BLOCKER`（`Defect_Type: test-timeout`），不得直接停止審核。
 3. 對已可判斷的項目仍須完成審核並回傳 VERDICT。
 4. 標記因逾時無法完成的檢查（`Defect_Type: review-incomplete`, `Severity: MAJOR`）。
 

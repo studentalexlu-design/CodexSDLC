@@ -208,7 +208,8 @@ description: 資料流、實體與儲存設計方法論
 
 ## 輸出產物
 
-- `bdd-docs/artifacts/data-models/{feature-name}.md`（使用 [template](../../../bdd-docs/artifacts/data-models/template.md)）
+- `bdd-docs/runs/{run-id}/artifacts/design/er-model.mmd` + `design/data-dictionary.md`
+  （owner 為 `design-modeler` 的 `mode: data`，**僅 `full` profile**；`standard`／`lite` 依定義不動 schema，不產出資料模型）
 - 更新 `domain-glossary`（補充 entity / value object 定義）
 - 更新 active run 的 `implementation-backlog`（加入 data layer slice）
 

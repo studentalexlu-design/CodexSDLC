@@ -54,8 +54,11 @@ orchestrator 呼叫時必須提供 `mode`。沒有 `mode` 時，回傳 `blocked`
 
 ## 自動化驗證（強制）
 
-- `dotnet build 2>&1`：compile/lint 錯誤自動標 BLOCKER。
-- `dotnet test --no-build 2>&1`（契約/整合 test project 或 `--filter Category=Integration|Contract`）。
+**命令一律取自 `bdd-docs/artifacts/repo-index/index.json` 的 `commands`；不得硬編 `dotnet`／`mvn`／`gradle`。**
+
+- `commands.build`：compile/lint 錯誤自動標 BLOCKER。
+- `commands.test`：跑契約／整合測試（C#: `--filter Category=Integration|Contract`；Java: `-Dtest=*IT` 或 gradle `--tests *IntegrationTest`），必要時用 `commands.test-filter` 套 pattern。
+- 索引不可用時依專案檔推斷並於 evidence 標記 `environment: index-unavailable`。
 - 契約驗證：實作回應對 `design/api-contract.yaml` 的 schema/狀態碼/錯誤結構比對。
 
 ## 契約來源與漂移

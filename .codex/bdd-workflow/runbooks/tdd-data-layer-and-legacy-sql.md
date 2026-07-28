@@ -6,7 +6,9 @@
 
 當 backlog 中包含 data layer 切片時：
 
-1. 先讀取 `bdd-docs/artifacts/data-models/{feature-name}.md` 確認 entity / aggregate / repository 設計。
+1. 先確認資料設計來源：
+   - **full**：`bdd-docs/runs/{run-id}/artifacts/design/er-model.mmd` + `design/data-dictionary.md`（`design-modeler` 是**唯一**的資料模型 owner）。
+   - **standard／lite**：不產出資料模型（該 profile 定義為不動 schema）。以 `repo-index` 的既有 entity／repository 符號與現有慣例為準；**若確實需要新增或變更 schema，停止並回報 orchestrator 升級 `full`**。
 2. 實作順序：
    - Entity / Value Object（domain layer）
    - Repository 介面（domain layer）
@@ -14,7 +16,7 @@
    - DI registration
    - Migration（若適用）
 3. Entity 的 business invariant 必須有對應的 unit test。
-4. Repository 介面符合 `data-models` 範本中的設計。
+4. Repository 介面符合上述資料設計來源。
 5. Migration 必須符合 `project-profile` 中的 migration policy。
 6. 若 migration 涉及 breaking change，暫停並回報 orchestrator 走批准流程。
 

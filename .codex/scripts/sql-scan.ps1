@@ -78,12 +78,29 @@ function Get-Signals($files, $patterns, [string]$sourceType) {
     return $out
 }
 
+# ---- Java inline SQL 樣式（最具體優先，同上）----
+$javaPatterns = @(
+    @{ type='stored-proc-call'; re='(?i)\b(CallableStatement|prepareCall)\b' }
+    @{ type='orm-raw-query';    re='(?i)@(Query|NamedQuery|NativeQuery)\b|\b(createNativeQuery|createQuery)\s*\(' }
+    @{ type='mybatis-mapper';   re='(?i)@(Select|Insert|Update|Delete)\s*\(|<(select|insert|update|delete)\s+id=' }
+    @{ type='jdbc-template';    re='(?i)\b(jdbcTemplate|namedParameterJdbcTemplate)\s*\.\s*(query|update|execute|batchUpdate)' }
+    @{ type='prepared-stmt';    re='(?i)\b(prepareStatement|createStatement|executeQuery|executeUpdate)\s*\(' }
+    @{ type='dynamic-sql';      re='(?i)\b(StringBuilder|StringBuffer)\b[^\r\n]*\b(SELECT|WHERE|FROM)\b|\.append\s*\(\s*"[^"]*\b(WHERE|AND|OR|JOIN)\b' }
+    @{ type='string-concat-sql';re='(?i)"[^"]*\b(SELECT|INSERT|UPDATE|DELETE|WHERE|CASE\s+WHEN)\b' }
+)
+
 $csFiles = @(Get-ChildItem -Path $Root -Recurse -File -Filter '*.cs' -ErrorAction SilentlyContinue |
              Where-Object { $_.FullName -notmatch $excludeRe })
+$javaSrc = @(Get-ChildItem -Path $Root -Recurse -File -Filter '*.java' -ErrorAction SilentlyContinue |
+             Where-Object { $_.FullName -notmatch $excludeRe })
+$xmlMappers = @(Get-ChildItem -Path $Root -Recurse -File -Filter '*.xml' -ErrorAction SilentlyContinue |
+             Where-Object { $_.FullName -notmatch $excludeRe -and $_.Name -ne 'pom.xml' })
 $sqlFiles = @(Get-ChildItem -Path $Root -Recurse -File -Filter '*.sql' -ErrorAction SilentlyContinue |
               Where-Object { $_.FullName -notmatch $excludeRe })
 
-$inlineSignals   = Get-Signals $csFiles  $inlinePatterns   'inline-code-sql'
+$inlineSignals   = @(Get-Signals $csFiles    $inlinePatterns   'inline-code-sql') +
+                   @(Get-Signals $javaSrc    $javaPatterns     'inline-code-sql') +
+                   @(Get-Signals $xmlMappers $javaPatterns     'inline-code-sql')
 $dbObjectSignals = Get-Signals $sqlFiles $dbObjectPatterns 'db-object'
 
 # DB 來源判定（使用者尚未確定來源，執行時偵測）

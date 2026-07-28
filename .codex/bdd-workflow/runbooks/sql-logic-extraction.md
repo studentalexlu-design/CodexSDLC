@@ -1,6 +1,6 @@
 # Runbook: Legacy SQL Logic Extraction
 
-> 供 `db-introspection-scanner`、`project-scanner`、`domain-analyst` 於舊系統重構時萃取 SQL 內嵌業務邏輯使用。
+> 供 `db-introspection-scanner`、`project-scanner`、`analyst` 於舊系統重構時萃取 SQL 內嵌業務邏輯使用。
 > Agent mode 檔只留摘要，操作細節放此。
 > Skills：`impact-analysis`、`data-modeling`、`safe-change`。
 
@@ -48,7 +48,7 @@
 
 輸出「inline-sql 邏輯訊號清單」：構件型別 + 檔案路徑/行號 ref（DLP 遮蔽），不貼完整 SQL。
 
-## 萃取判定（`domain-analyst`，`sql-logic-extraction` mode）
+## 萃取判定（`analyst`，`sql-logic-extraction` mode）
 
 對每個邏輯訊號逐一判定：
 
@@ -71,7 +71,7 @@
 
 ## 切片與 partial-completed
 
-- 邏輯訊號 > 20 條：`domain-analyst` 回 `partial-completed`，附 `completed-items` / `pending-items` / `next-step`。
+- 邏輯訊號 > 20 條：`analyst` 回 `partial-completed`，附 `completed-items` / `pending-items` / `next-step`。
 - `db-introspection-scanner` / `project-scanner` 依各自 scan budget 切片；超量回 `partial-completed`。
 - orchestrator 收到 partial 後先委派 `living-doc` checkpoint，再依 next-step 續跑。
 

@@ -23,20 +23,6 @@
         "safe-change@1.0.0"
       ]
     },
-    "domain-analyst": {
-      "agent-version": "1.0.0",
-      "skills": [
-        "example-mapping@1.0.0",
-        "impact-analysis@1.0.0",
-        "data-modeling@1.0.0"
-      ]
-    },
-    "discovery": {
-      "agent-version": "1.2.0",
-      "skills": [
-        "example-mapping@1.0.0"
-      ]
-    },
     "formulator": {
       "agent-version": "1.0.0",
       "skills": [
@@ -93,6 +79,13 @@
         "code-review@1.0.0",
         "test-reliability@1.0.0",
         "safe-change@1.0.0"
+      ]
+    },
+    "analyst": {
+      "agent-version": "1.0.0",
+      "skills": [
+        "example-mapping@1.0.0",
+        "impact-analysis@1.0.0"
       ]
     }
   },

@@ -1,5 +1,5 @@
 ---
-applyTo: "**/*Steps.cs"
+applyTo: "**/*Steps.cs, **/*Steps.java"
 description: "Reqnroll Step Definitions 撰寫規範"
 ---
 

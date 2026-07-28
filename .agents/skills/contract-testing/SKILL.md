@@ -28,7 +28,7 @@ description: 以 OpenAPI draft 為契約來源，設計 API 契約測試與整�
    - 一個成功回應：狀態碼 + response schema（必填欄位、型別）。
    - 一個錯誤回應：狀態碼 + error schema 結構。
 2. 驗證 `operationId` / path / method 與契約一致。
-3. 以既有測試框架撰寫（Reqnroll / xUnit + schema 驗證）；不新增重量框架，除非批准（minimal-implementation-policy）。
+3. 以既有測試框架撰寫（C#: Reqnroll / xUnit；Java: Cucumber-JVM / JUnit 5，皆加 schema 驗證）；框架依 `index.json` 的 `test-toolchain`，不新增重量框架，除非批准（minimal-implementation-policy）。
 
 ## 違反分級
 

@@ -52,8 +52,8 @@ orchestrator 呼叫時必須提供 `mode`。沒有 `mode` 時，回傳 `blocked`
 
 `pwsh -NoProfile -File .codex/scripts/sql-scan.ps1` → 回傳其摘要（`signal_count`、`by_construct`、`db-object-source`、`next_step`）給 orchestrator。
 
-- 訊號全文在 `sql-signals.json`，供 `domain-analyst` 按需讀取；**不要把訊號清單貼進回傳或 handoff**。
-- 不判定 data-access vs business-rule —— 那是 `domain-analyst` 的工作。
+- 訊號全文在 `sql-signals.json`，供 `analyst` 按需讀取；**不要把訊號清單貼進回傳或 handoff**。
+- 不判定 data-access vs business-rule —— 那是 `analyst` 的工作。
 - `db-object-source: none-found` 時回報給 orchestrator，由其走 schema 來源策略確認。
 
 ## Scan Budget
@@ -71,7 +71,7 @@ orchestrator 呼叫時必須提供 `mode`。沒有 `mode` 時，回傳 `blocked`
 `shell` 不可用或腳本執行失敗時，退回 bounded LLM 掃描（單次 ≤12 檔、≤8 次搜尋、先用檔名/符號縮小範圍再讀檔），
 並在 evidence 標記 `environment: index-unavailable`。**不得因此回傳 `blocked` 中斷流程。**
 
-## Minimal Implementation Discovery
+## Minimal Implementation analyst
 
 在 `inventory` 或 `impact` mode 中，若能用有限搜尋取得資訊，補充 reuse candidates，協助 TDD 階段避免過度實作：
 

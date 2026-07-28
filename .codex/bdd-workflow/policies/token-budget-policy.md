@@ -62,13 +62,13 @@ LLM 只做**判斷**：SQL 是 data-access 還是 business-rule、風險等級�
 
 ## Test Output Contract
 
-- 不貼完整 `dotnet test` output。
+- 不貼完整測試 output（`dotnet test`／`mvn test`／`gradle test` 皆同）。
 - 只允許：command、exit code、total/passed/failed/skipped、前 3 個錯誤、trx/log artifact path。
 
 ## Slice Rules（依 tier）
 
 - **H**：每次 invocation 只處理一個 mode 與最小 behavior slice。
-- **M**：允許合併呼叫 —— `design-modeler` 與 `integration-tester` 使用 `mode: all`，`discovery` 一次處理整張 example map，`tdd-implementer` 一次處理同一 backlog group。
+- **M**：允許合併呼叫 —— `design-modeler` 與 `integration-tester` 使用 `mode: all`，`analyst` 一次處理整張 example map，`tdd-implementer` 一次處理同一 backlog group。
 - **L**：單次 invocation 完成整個需求。
 - 任何 tier：若該 tier 定義的範圍仍有剩餘，先回 `partial-completed`，由 orchestrator 決定是否續跑。
 

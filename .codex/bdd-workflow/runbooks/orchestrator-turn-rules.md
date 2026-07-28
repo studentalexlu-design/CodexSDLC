@@ -15,16 +15,16 @@
 - 要求子代理在單一切片完成後回傳 `completed` 或 `partial-completed`，不得自行展開下一階段。
 - 同一輪不連續呼叫超過 1 個 doer（**full 限制**；L/standard 見 `complexity-routing.md` 的合併呼叫規則）。
 
-## Discovery 切片守門（full）
+## analyst 切片守門（full）
 
-- `phase0` 一次只允許 1 輪 flow alignment；不得在同一 handoff 要求 discovery 等待使用者回應或直接進入 `phase1`。
+- `phase0` 一次只允許 1 輪 flow alignment；不得在同一 handoff 要求 analyst 等待使用者回應或直接進入 `phase1`。
 - `phase1` 一次只允許 1 個 story；handoff 不得出現「涵蓋所有 stories」「完成整份 example map」或等價要求。
 - 同 turn 最多自動續跑 2 個 story；仍有 pending 時先委派 `living-doc` checkpoint，回傳 `partial-completed` 與 resume 指引。
 - handoff 優先傳 artifact path/version 與 pending-items，不貼 requirements / schema / context pack 全文。
-- 若 discovery work 已跨越 6 分鐘，或前一輪曾發生 transport failure，下一次 handoff 必須縮到最小可恢復切片。
-- 若目標產物目錄不存在，先委派 `living-doc` 補目錄或 checkpoint；不要要求 discovery 同輪自行處理目錄修復與內容探索。
+- 若 analyst work 已跨越 6 分鐘，或前一輪曾發生 transport failure，下一次 handoff 必須縮到最小可恢復切片。
+- 若目標產物目錄不存在，先委派 `living-doc` 補目錄或 checkpoint；不要要求 analyst 同輪自行處理目錄修復與內容探索。
 
-> L / standard：`discovery` 一次處理整張 example map，不套用上述切片守門。
+> L / standard：`analyst` 一次處理整張 example map，不套用上述切片守門。
 
 ## 同 turn 續跑規則
 

@@ -69,8 +69,7 @@ developer_instructions = '''
 | run 文件、checkpoint、index、log、context pack、DoD | `living-doc` | `new-run`／`checkpoint`／`context-pack`／`lint` |
 | 專案掃描、project-profile、impact、safe-change envelope | `project-scanner` | `index`／`inventory`／`impact`／`runtime-and-db-policy` |
 | 已批准的 live DB metadata／definition／受控 SELECT | `db-introspection-scanner` | `metadata`／`definition`／`approved-select` |
-| glossary、bounded context、data model、legacy SQL 萃取 | `domain-analyst` | `glossary`／`data-model`／`incremental-domain-check`／`sql-logic-extraction` |
-| Flow description、Example Mapping | `discovery` | `phase0`／`phase1`／`resume` |
+| glossary、bounded context、flow description、Example Mapping、legacy SQL 萃取 | `analyst` | `glossary`／`flow`／`example-map`／`sql-logic-extraction`／`resume` |
 | Gherkin feature | `formulator` | `feature`／`resume` |
 | API／ER／sequence／module 設計 draft（**僅 full**） | `design-modeler` | `api`／`data`／`sequence`／`module`／`traceability`／`resume`／`fix` |
 | Acceptance tests、step definitions、walking skeleton | `atdd-automator` | `skeleton`／`resume` |
@@ -82,9 +81,11 @@ developer_instructions = '''
 
 各 profile 的 agent 名單、gate 與呼叫上限一律以 contract `route-profiles` 為準：
 
-- **lite**：**只有 2 次 spawn** —— `formulator` → `tdd-implementer`。run 骨架與專案輪廓由 orchestrator 自行處理（見「工具邊界」）。**無 reviewer、無 design-modeler、不委派 `project-scanner` 與 `living-doc`**。
-- **standard**：`design-modeler` 不啟用；`integration-tester` 用 `mode: all` 單次呼叫；`discovery` 一次處理整張 example map；reviewer 只跑 `spec-reviewer`（`mode: gherkin`）一次。
-- **full**：全部啟用，逐一 mode 分開呼叫。
+- **lite**（≤2 spawn）：`formulator` → `tdd-implementer`。run 骨架與專案輪廓由 orchestrator 自理（見「工具邊界」）。**無 reviewer、無 design-modeler、不委派 `project-scanner` 與 `living-doc`**。
+- **standard**（≤10 spawn）：`design-modeler` 與 `living-doc` **皆不啟用** —— checkpoint、decision-log、checklist 由 orchestrator 自理，比照 lite。`integration-tester` 用 `mode: all` 單次呼叫；`analyst` 一次處理整張 example map；reviewer 只跑 `spec-reviewer`（`mode: gherkin`）一次。
+- **full**（≤20 spawn）：全部啟用，逐一 mode 分開呼叫。
+
+**資料建模單一 owner 是 `design-modeler`（`mode: data`，僅 full）。** `analyst` 不做資料建模；`standard`／`lite` 依定義不動 schema，若實際需要新增或變更 schema → 升級 `full`。
 
 ## Gate 與品質迴圈
 
@@ -148,5 +149,5 @@ Resume 判斷優先序：session memory → checkpoint → `runtime-metadata` �
 
 ## 失敗處理
 
-需求模糊 → 回 Intake／Discovery。影響範圍不明 → 回 Project Scan／Domain。flow-description 版本影響下游 → 委派 `living-doc` 標 stale，再問 rollback 或重跑。測試環境不穩 → skill `test-reliability`。高風險未批准 → 不得進入 `tdd-implementer`。transport failure／續跑判斷 → `runbooks/orchestrator-turn-rules.md`。
+需求模糊 → 回 Intake／analyst。影響範圍不明 → 回 Project Scan／Domain。flow-description 版本影響下游 → 委派 `living-doc` 標 stale，再問 rollback 或重跑。測試環境不穩 → skill `test-reliability`。高風險未批准 → 不得進入 `tdd-implementer`。transport failure／續跑判斷 → `runbooks/orchestrator-turn-rules.md`。
 '''

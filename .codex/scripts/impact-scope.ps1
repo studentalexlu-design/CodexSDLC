@@ -64,14 +64,14 @@ if ($indexUsed -and $index.symbols) {
 }
 
 # ---------- 2. 檔名命中（權重 2） ----------
-$allFiles = @(Get-ChildItem -Path $Root -Recurse -File -Include '*.cs','*.csproj','*.json','*.sql' -ErrorAction SilentlyContinue |
+$allFiles = @(Get-ChildItem -Path $Root -Recurse -File -Include '*.cs','*.java','*.csproj','*.json','*.sql','*.xml' -ErrorAction SilentlyContinue |
               Where-Object { $_.FullName -notmatch $excludeRe })
 foreach ($f in $allFiles) {
     if ($f.BaseName -match $termRe) { Add-Score (ConvertTo-RelPath $f.FullName) 2 "filename:$($f.BaseName)" }
 }
 
 # ---------- 3. 內容命中（權重 1） ----------
-foreach ($f in ($allFiles | Where-Object { $_.Extension -in '.cs', '.sql' })) {
+foreach ($f in ($allFiles | Where-Object { $_.Extension -in '.cs', '.java', '.sql' })) {
     $txt = Get-Content $f.FullName -Raw -ErrorAction SilentlyContinue
     if ($txt -and $txt -match $termRe) {
         $n = ([regex]::Matches($txt, $termRe)).Count

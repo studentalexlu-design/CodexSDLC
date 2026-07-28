@@ -9,7 +9,7 @@ user-invocable: false
 
 ## 使用時機
 
-- Domain Analysis、Discovery、Formulate、ATDD、TDD 需要「做事 → 審核 → 修正」。
+- Domain Analysis、analyst、Formulate、ATDD、TDD 需要「做事 → 審核 → 修正」。
 - reviewer 回傳 `VERDICT: FAIL`，需要將缺陷摘要交回 doer。
 - reviewer prompt 需要縮短，避免 token 預算耗盡。
 - Gate 通過前需要判定產物是否達到可交付狀態。
@@ -30,8 +30,8 @@ Doer 與 reviewer 永遠分開呼叫。Doer 不得自行宣告審核通過；PAS
 
 | 階段 | Doer | Reviewer |
 |---|---|---|
-| Domain Analysis | `domain-analyst` | `spec-reviewer`（`mode: domain`） |
-| Discovery | `discovery` | `spec-reviewer`（`mode: example-map`） |
+| Domain Analysis | `analyst` | `spec-reviewer`（`mode: domain`） |
+| analyst | `analyst` | `spec-reviewer`（`mode: example-map`） |
 | Formulate | `formulator` | `spec-reviewer`（`mode: gherkin`） |
 | ATDD | `atdd-automator` | `code-reviewer`（`mode: atdd`） |
 | TDD | `tdd-implementer` | `code-reviewer`（`mode: tdd`） |
@@ -55,12 +55,12 @@ MINOR_COUNT: {n}
 
 Doer 必須回傳：
 
-- 狀態：`completed`、`partial-completed`、`blocked`、`error`，或 discovery 專屬 pause 狀態。
+- 狀態：`completed`、`partial-completed`、`blocked`、`error`，或 analyst 專屬 pause 狀態。
 - 產出摘要：≤ 500 字。
 - 產物路徑與版本。
 - `partial-completed` 時附 `completion-summary`。
 
-Discovery 額外附：`glossary_delta` 與 `domain-check-completed`。
+analyst 額外附：`glossary_delta` 與 `domain-check-completed`。
 
 ## Reviewer Prompt 預算規範
 

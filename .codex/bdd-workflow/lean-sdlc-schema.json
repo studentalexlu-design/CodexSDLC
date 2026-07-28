@@ -1,318 +1,317 @@
 {
-    "lean-sdlc": {
-        "mode": "artifact-evidence",
-        "checklist-path": "bdd-docs/runs/{run-id}/artifacts/lean-sdlc-checklist.md",
-        "included-stages": [
-            {
-                "id": "requirements-collection",
-                "name": "需求收集",
-                "bdd-stages": [
-                    "intake",
-                    "intake-done"
-                ],
-                "required-artifacts": [
-                    {
-                        "id": "requirement-list",
-                        "name": "需求清單",
-                        "owner": "living-doc"
-                    },
-                    {
-                        "id": "source-materials-register",
-                        "name": "來源素材登錄",
-                        "path": "bdd-docs/runs/{run-id}/artifacts/source-materials-register.md",
-                        "owner": "living-doc"
-                    },
-                    {
-                        "id": "background-summary",
-                        "name": "訪談/背景摘要",
-                        "owner": "living-doc"
-                    },
-                    {
-                        "id": "pain-points",
-                        "name": "痛點",
-                        "owner": "living-doc"
-                    },
-                    {
-                        "id": "business-goals",
-                        "name": "業務目標",
-                        "owner": "living-doc"
-                    },
-                    {
-                        "id": "open-questions",
-                        "name": "open questions",
-                        "owner": "living-doc"
-                    }
-                ]
-            },
-            {
-                "id": "requirements-analysis",
-                "name": "需求分析",
-                "bdd-stages": [
-                    "domain",
-                    "domain-done",
-                    "domain-confirmed",
-                    "discovery-phase0",
-                    "domain-backflow",
-                    "discovery-phase1",
-                    "discovery-done",
-                    "formulate",
-                    "formulate-done"
-                ],
-                "required-artifacts": [
-                    {
-                        "id": "requirement-spec",
-                        "name": "需求規格",
-                        "owner": "discovery"
-                    },
-                    {
-                        "id": "user-stories",
-                        "name": "User Story",
-                        "owner": "discovery"
-                    },
-                    {
-                        "id": "acceptance-criteria",
-                        "name": "Acceptance Criteria",
-                        "owner": "discovery"
-                    },
-                    {
-                        "id": "example-map",
-                        "name": "Example Map",
-                        "owner": "discovery"
-                    },
-                    {
-                        "id": "gherkin-draft",
-                        "name": "Gherkin 草稿",
-                        "owner": "formulator"
-                    },
-                    {
-                        "id": "requirement-priority",
-                        "name": "需求優先級",
-                        "owner": "discovery"
-                    },
-                    {
-                        "id": "domain-glossary",
-                        "name": "domain glossary",
-                        "path": "bdd-docs/runs/{run-id}/artifacts/domain-glossary.md",
-                        "owner": "domain-analyst"
-                    }
-                ]
-            },
-            {
-                "id": "system-analysis",
-                "name": "系統分析",
-                "bdd-stages": [
-                    "scan",
-                    "scan-done",
-                    "data-model-p1",
-                    "data-model-p2-5"
-                ],
-                "required-artifacts": [
-                    {
-                        "id": "flow-description",
-                        "name": "flow-description",
-                        "path": "bdd-docs/runs/{run-id}/artifacts/flow-description.md",
-                        "owner": "discovery"
-                    },
-                    {
-                        "id": "system-boundary-summary",
-                        "name": "系統邊界摘要",
-                        "owner": "project-scanner"
-                    },
-                    {
-                        "id": "integration-list",
-                        "name": "介接清單",
-                        "owner": "project-scanner"
-                    },
-                    {
-                        "id": "data-requirements-analysis",
-                        "name": "資料需求分析",
-                        "owner": "domain-analyst"
-                    },
-                    {
-                        "id": "project-profile",
-                        "name": "project profile",
-                        "path": "bdd-docs/artifacts/project-profile.md",
-                        "owner": "project-scanner"
-                    },
-                    {
-                        "id": "impact-report",
-                        "name": "impact report",
-                        "owner": "project-scanner"
-                    },
-                    {
-                        "id": "source-conflicts",
-                        "name": "source conflicts",
-                        "path": "bdd-docs/runs/{run-id}/artifacts/source-conflicts.md",
-                        "owner": "living-doc"
-                    }
-                ]
-            },
-            {
-                "id": "design-bridge",
-                "name": "設計橋接（draft）",
-                "artifact-kind": "draft",
-                "bdd-stages": [
-                    "design",
-                    "design-done"
-                ],
-                "required-artifacts": [
-                    {
-                        "id": "api-contract-draft",
-                        "name": "API contract draft",
-                        "path": "bdd-docs/runs/{run-id}/artifacts/design/api-contract.yaml",
-                        "owner": "design-modeler"
-                    },
-                    {
-                        "id": "er-model-draft",
-                        "name": "ER model + data dictionary",
-                        "path": "bdd-docs/runs/{run-id}/artifacts/design/",
-                        "owner": "design-modeler"
-                    },
-                    {
-                        "id": "sequence-diagrams",
-                        "name": "sequence diagrams",
-                        "path": "bdd-docs/runs/{run-id}/artifacts/design/sequence/",
-                        "owner": "design-modeler"
-                    },
-                    {
-                        "id": "module-design",
-                        "name": "模組/交易邊界/錯誤碼草案",
-                        "path": "bdd-docs/runs/{run-id}/artifacts/design/module-design.md",
-                        "owner": "design-modeler"
-                    },
-                    {
-                        "id": "design-traceability",
-                        "name": "design traceability",
-                        "path": "bdd-docs/runs/{run-id}/artifacts/design/design-traceability.md",
-                        "owner": "design-modeler"
-                    },
-                    {
-                        "id": "design-review-findings",
-                        "name": "design review findings",
-                        "owner": "spec-reviewer (mode: design)"
-                    }
-                ]
-            },
-            {
-                "id": "program-development",
-                "name": "程式開發",
-                "bdd-stages": [
-                    "atdd",
-                    "atdd-done",
-                    "tdd",
-                    "tdd-done",
-                    "verified",
-                    "completed"
-                ],
-                "required-artifacts": [
-                    {
-                        "id": "gherkin-final",
-                        "name": "Gherkin 定稿",
-                        "owner": "formulator"
-                    },
-                    {
-                        "id": "atdd-skeleton",
-                        "name": "ATDD skeleton",
-                        "owner": "atdd-automator"
-                    },
-                    {
-                        "id": "step-definitions",
-                        "name": "step definitions",
-                        "owner": "atdd-automator"
-                    },
-                    {
-                        "id": "production-code",
-                        "name": "production code",
-                        "owner": "tdd-implementer"
-                    },
-                    {
-                        "id": "unit-tests",
-                        "name": "unit tests",
-                        "owner": "tdd-implementer"
-                    },
-                    {
-                        "id": "focused-test-evidence",
-                        "name": "focused test evidence",
-                        "owner": "tdd-implementer"
-                    },
-                    {
-                        "id": "build-test-summary",
-                        "name": "build/test summary",
-                        "owner": "tdd-implementer"
-                    },
-                    {
-                        "id": "code-review-findings",
-                        "name": "code review findings",
-                        "owner": "code-reviewer (mode: tdd)"
-                    }
-                ]
-            },
-            {
-                "id": "integration-verification",
-                "name": "整合驗證（evidence）",
-                "artifact-kind": "evidence",
-                "bdd-stages": [
-                    "integration",
-                    "integration-done"
-                ],
-                "required-artifacts": [
-                    {
-                        "id": "contract-test-evidence",
-                        "name": "contract test evidence",
-                        "path": "bdd-docs/runs/{run-id}/artifacts/integration/contract-test-evidence.md",
-                        "owner": "integration-tester"
-                    },
-                    {
-                        "id": "integration-test-evidence",
-                        "name": "integration test evidence",
-                        "path": "bdd-docs/runs/{run-id}/artifacts/integration/integration-test-evidence.md",
-                        "owner": "integration-tester"
-                    },
-                    {
-                        "id": "smoke-test-evidence",
-                        "name": "smoke test evidence",
-                        "path": "bdd-docs/runs/{run-id}/artifacts/integration/smoke-test-evidence.md",
-                        "owner": "integration-tester"
-                    },
-                    {
-                        "id": "gate-e-review-findings",
-                        "name": "gate-e review findings",
-                        "owner": "code-reviewer (mode: tdd)"
-                    }
-                ]
-            }
+  "lean-sdlc": {
+    "mode": "artifact-evidence",
+    "checklist-path": "bdd-docs/runs/{run-id}/artifacts/lean-sdlc-checklist.md",
+    "included-stages": [
+      {
+        "id": "requirements-collection",
+        "name": "需求收集",
+        "bdd-stages": [
+          "intake",
+          "intake-done"
         ],
-        "excluded-stages": [
-            "架構設計",
-            "程式設計審查",
-            "功能/整合驗測",
-            "上線檢核"
+        "required-artifacts": [
+          {
+            "id": "requirement-list",
+            "name": "需求清單",
+            "owner": "living-doc"
+          },
+          {
+            "id": "source-materials-register",
+            "name": "來源素材登錄",
+            "path": "bdd-docs/runs/{run-id}/artifacts/source-materials-register.md",
+            "owner": "living-doc"
+          },
+          {
+            "id": "background-summary",
+            "name": "訪談/背景摘要",
+            "owner": "living-doc"
+          },
+          {
+            "id": "pain-points",
+            "name": "痛點",
+            "owner": "living-doc"
+          },
+          {
+            "id": "business-goals",
+            "name": "業務目標",
+            "owner": "living-doc"
+          },
+          {
+            "id": "open-questions",
+            "name": "open questions",
+            "owner": "living-doc"
+          }
+        ]
+      },
+      {
+        "id": "requirements-analysis",
+        "name": "需求分析",
+        "bdd-stages": [
+          "domain",
+          "domain-done",
+          "domain-confirmed",
+          "discovery-phase0",
+          "discovery-phase1",
+          "discovery-done",
+          "formulate",
+          "formulate-done"
         ],
-        "excluded-artifacts": [
-            "系統架構圖",
-            "部署架構圖",
-            "資安設計",
-            "監控設計",
-            "ADR",
-            "正式 API 規格審查",
-            "ER Model 審查",
-            "Sequence Diagram",
-            "模組設計審查",
-            "正式整合測試報告",
-            "E2E 測試報告",
-            "上線計畫",
-            "部署手冊",
-            "Rollback Plan",
-            "Release Note"
+        "required-artifacts": [
+          {
+            "id": "requirement-spec",
+            "name": "需求規格",
+            "owner": "analyst"
+          },
+          {
+            "id": "user-stories",
+            "name": "User Story",
+            "owner": "analyst"
+          },
+          {
+            "id": "acceptance-criteria",
+            "name": "Acceptance Criteria",
+            "owner": "analyst"
+          },
+          {
+            "id": "example-map",
+            "name": "Example Map",
+            "owner": "analyst"
+          },
+          {
+            "id": "gherkin-draft",
+            "name": "Gherkin 草稿",
+            "owner": "formulator"
+          },
+          {
+            "id": "requirement-priority",
+            "name": "需求優先級",
+            "owner": "analyst"
+          },
+          {
+            "id": "domain-glossary",
+            "name": "domain glossary",
+            "path": "bdd-docs/runs/{run-id}/artifacts/domain-glossary.md",
+            "owner": "analyst"
+          }
+        ]
+      },
+      {
+        "id": "system-analysis",
+        "name": "系統分析",
+        "bdd-stages": [
+          "scan",
+          "scan-done",
+          "data-model-p1",
+          "data-model-p2-5"
         ],
-        "excluded-artifacts-note": "排除項為正式治理產物。設計橋接的 API/ER/sequence/module 為 draft，整合驗證的 contract/integration/smoke 為 evidence，皆屬 lean 範圍，不等同正式 API 規格審查、ER Model 審查、正式整合測試報告或 E2E 測試報告。",
-        "artifact-status-enum": [
-            "pending",
-            "in-progress",
-            "completed",
-            "blocked",
-            "not-applicable"
+        "required-artifacts": [
+          {
+            "id": "flow-description",
+            "name": "flow-description",
+            "path": "bdd-docs/runs/{run-id}/artifacts/flow-description.md",
+            "owner": "analyst"
+          },
+          {
+            "id": "system-boundary-summary",
+            "name": "系統邊界摘要",
+            "owner": "project-scanner"
+          },
+          {
+            "id": "integration-list",
+            "name": "介接清單",
+            "owner": "project-scanner"
+          },
+          {
+            "id": "data-requirements-analysis",
+            "name": "資料需求分析",
+            "owner": "analyst"
+          },
+          {
+            "id": "project-profile",
+            "name": "project profile",
+            "path": "bdd-docs/artifacts/project-profile.md",
+            "owner": "project-scanner"
+          },
+          {
+            "id": "impact-report",
+            "name": "impact report",
+            "owner": "project-scanner"
+          },
+          {
+            "id": "source-conflicts",
+            "name": "source conflicts",
+            "path": "bdd-docs/runs/{run-id}/artifacts/source-conflicts.md",
+            "owner": "living-doc"
+          }
+        ]
+      },
+      {
+        "id": "design-bridge",
+        "name": "設計橋接（draft）",
+        "artifact-kind": "draft",
+        "bdd-stages": [
+          "design",
+          "design-done"
         ],
-        "not-applicable-requires-reason": true
-    }
+        "required-artifacts": [
+          {
+            "id": "api-contract-draft",
+            "name": "API contract draft",
+            "path": "bdd-docs/runs/{run-id}/artifacts/design/api-contract.yaml",
+            "owner": "design-modeler"
+          },
+          {
+            "id": "er-model-draft",
+            "name": "ER model + data dictionary",
+            "path": "bdd-docs/runs/{run-id}/artifacts/design/",
+            "owner": "design-modeler"
+          },
+          {
+            "id": "sequence-diagrams",
+            "name": "sequence diagrams",
+            "path": "bdd-docs/runs/{run-id}/artifacts/design/sequence/",
+            "owner": "design-modeler"
+          },
+          {
+            "id": "module-design",
+            "name": "模組/交易邊界/錯誤碼草案",
+            "path": "bdd-docs/runs/{run-id}/artifacts/design/module-design.md",
+            "owner": "design-modeler"
+          },
+          {
+            "id": "design-traceability",
+            "name": "design traceability",
+            "path": "bdd-docs/runs/{run-id}/artifacts/design/design-traceability.md",
+            "owner": "design-modeler"
+          },
+          {
+            "id": "design-review-findings",
+            "name": "design review findings",
+            "owner": "spec-reviewer (mode: design)"
+          }
+        ]
+      },
+      {
+        "id": "program-development",
+        "name": "程式開發",
+        "bdd-stages": [
+          "atdd",
+          "atdd-done",
+          "tdd",
+          "tdd-done",
+          "verified",
+          "completed"
+        ],
+        "required-artifacts": [
+          {
+            "id": "gherkin-final",
+            "name": "Gherkin 定稿",
+            "owner": "formulator"
+          },
+          {
+            "id": "atdd-skeleton",
+            "name": "ATDD skeleton",
+            "owner": "atdd-automator"
+          },
+          {
+            "id": "step-definitions",
+            "name": "step definitions",
+            "owner": "atdd-automator"
+          },
+          {
+            "id": "production-code",
+            "name": "production code",
+            "owner": "tdd-implementer"
+          },
+          {
+            "id": "unit-tests",
+            "name": "unit tests",
+            "owner": "tdd-implementer"
+          },
+          {
+            "id": "focused-test-evidence",
+            "name": "focused test evidence",
+            "owner": "tdd-implementer"
+          },
+          {
+            "id": "build-test-summary",
+            "name": "build/test summary",
+            "owner": "tdd-implementer"
+          },
+          {
+            "id": "code-review-findings",
+            "name": "code review findings",
+            "owner": "code-reviewer (mode: tdd)"
+          }
+        ]
+      },
+      {
+        "id": "integration-verification",
+        "name": "整合驗證（evidence）",
+        "artifact-kind": "evidence",
+        "bdd-stages": [
+          "integration",
+          "integration-done"
+        ],
+        "required-artifacts": [
+          {
+            "id": "contract-test-evidence",
+            "name": "contract test evidence",
+            "path": "bdd-docs/runs/{run-id}/artifacts/integration/contract-test-evidence.md",
+            "owner": "integration-tester"
+          },
+          {
+            "id": "integration-test-evidence",
+            "name": "integration test evidence",
+            "path": "bdd-docs/runs/{run-id}/artifacts/integration/integration-test-evidence.md",
+            "owner": "integration-tester"
+          },
+          {
+            "id": "smoke-test-evidence",
+            "name": "smoke test evidence",
+            "path": "bdd-docs/runs/{run-id}/artifacts/integration/smoke-test-evidence.md",
+            "owner": "integration-tester"
+          },
+          {
+            "id": "gate-e-review-findings",
+            "name": "gate-e review findings",
+            "owner": "code-reviewer (mode: tdd)"
+          }
+        ]
+      }
+    ],
+    "excluded-stages": [
+      "架構設計",
+      "程式設計審查",
+      "功能/整合驗測",
+      "上線檢核"
+    ],
+    "excluded-artifacts": [
+      "系統架構圖",
+      "部署架構圖",
+      "資安設計",
+      "監控設計",
+      "ADR",
+      "正式 API 規格審查",
+      "ER Model 審查",
+      "Sequence Diagram",
+      "模組設計審查",
+      "正式整合測試報告",
+      "E2E 測試報告",
+      "上線計畫",
+      "部署手冊",
+      "Rollback Plan",
+      "Release Note"
+    ],
+    "excluded-artifacts-note": "排除項為正式治理產物。設計橋接的 API/ER/sequence/module 為 draft，整合驗證的 contract/integration/smoke 為 evidence，皆屬 lean 範圍，不等同正式 API 規格審查、ER Model 審查、正式整合測試報告或 E2E 測試報告。",
+    "artifact-status-enum": [
+      "pending",
+      "in-progress",
+      "completed",
+      "blocked",
+      "not-applicable"
+    ],
+    "not-applicable-requires-reason": true
+  }
 }

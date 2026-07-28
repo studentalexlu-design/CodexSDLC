@@ -93,16 +93,16 @@ orchestrator 依下列訊號產生**建議 profile**，再以一次 `Codex user 
 - `gate-std-1`（需求與領域就緒）= intake + Gate-A + Gate-B + Gate-C 合併。
 - `gate-std-2`（實作就緒與交付）= Gate-D + Gate-E 合併。
 
-**agent**：`project-scanner`、`domain-analyst`、`discovery`、`formulator`、`atdd-automator`、`tdd-implementer`、`integration-tester`、`living-doc`。
+**agent**：`project-scanner`、`analyst`、`analyst`、`formulator`、`atdd-automator`、`tdd-implementer`、`integration-tester`、`living-doc`。
 
 **reviewer**：**只有 1 次** —— `spec-reviewer`（`mode: gherkin`）於 Gherkin 定稿後。TDD 完成後不另跑 reviewer，改由 `gate-std-2` 的使用者確認把關。
 
 **合併呼叫**：
-- `discovery`：`phase0` 1 輪 + `phase1` 一次處理整張 example map（不切 story）。
+- `analyst`：`phase0` 1 輪 + `phase1` 一次處理整張 example map（不切 story）。
 - `integration-tester`：`contract` / `integration` / `smoke` 合併為單次 `mode: all`。
 - `tdd-implementer`：一次處理同一 backlog group（8 production + 8 test 檔上限）。
 
-**跳過**：design bridge（`design-modeler` / `spec-reviewer`（`mode: design`） 不啟用）、`db-introspection`、`data-model-p1` / `data-model-p2-5`、`domain-backflow`、legacy SQL 萃取、context-pack。
+**跳過**：design bridge（`design-modeler` 與 `spec-reviewer`（`mode: design`）不啟用）、`living-doc`（checkpoint／decision-log／checklist 由 orchestrator 自理）、`db-introspection`、資料建模、legacy SQL 萃取、context-pack。
 
 ---
 
@@ -112,7 +112,7 @@ orchestrator 依下列訊號產生**建議 profile**，再以一次 `Codex user 
 
 **維持完整流程**：28 stages、6 個 gate（intake + A~E）、全部 agent、全部 reviewer、完整 DLP 脫敏與殘留掃描、safe-change approval、legacy SQL 邏輯萃取、design bridge。
 
-切片預算維持嚴格（`tdd-implementer` 3 production + 2 test、`discovery` 1 story、`design-modeler` 5 modes 分開、`integration-tester` 3 modes 分開）。
+切片預算維持嚴格（`tdd-implementer` 3 production + 2 test、`analyst` 1 story、`design-modeler` 5 modes 分開、`integration-tester` 3 modes 分開）。
 
 **但 full 仍有上限：≤20 次委派。** 超過代表切片過細或範圍過大 —— 先 checkpoint，以 `Codex user confirmation` 讓使用者選擇拆成多個 run 或放寬切片，**不得無限展開**。這是與改造前最大的差別：full 不再是無底洞。
 

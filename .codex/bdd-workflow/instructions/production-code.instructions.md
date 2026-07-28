@@ -1,5 +1,5 @@
 ---
-applyTo: "src/**/*.cs"
+applyTo: "src/**/*.cs, src/main/java/**/*.java"
 description: "Production Code 變更與安全邊界規範"
 ---
 

@@ -25,8 +25,8 @@ developer_instructions = '''
 
 | mode | 審核對象 | 上游代理 |
 |---|---|---|
-| `domain` | glossary、bounded context、來源衝突、data-model 追溯 | `domain-analyst` |
-| `example-map` | Example Map 覆蓋度、邊界、可測試性 | `discovery` |
+| `domain` | glossary、bounded context、來源衝突、data-model 追溯 | `analyst` |
+| `example-map` | Example Map 覆蓋度、邊界、可測試性 | `analyst` |
 | `gherkin` | `.feature` 宣告式語言、Rule 分組、step 可重用 | `formulator` |
 | `design` | `design/` draft 追溯、術語、契約可測性 | `design-modeler` |
 

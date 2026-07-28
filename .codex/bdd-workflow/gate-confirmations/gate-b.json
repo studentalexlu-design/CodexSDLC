@@ -1,7 +1,7 @@
 {
     "gate-id": "gate-b",
     "display-name": "Domain 確認",
-    "current-boundary": "domain -> discovery/formulation",
+    "current-boundary": "domain -> analyst/formulation",
     "next-stage-if-approved": "discovery-phase0",
     "documents-to-review": [
         {
@@ -40,8 +40,8 @@
         "source conflicts 是否已解決或有明確決策",
         "domain context pack 是否忠實反映已核准 domain",
         "每條 legacy SQL 內嵌業務規則的處置（keep-in-sql / move-to-domain / move-to-application / redesign / drop / defer）是否確認（重構情境）",
-        "下游 discovery / formulation 是否可採信此 domain context",
-        "是否同意進入 discovery"
+        "下游 analyst / formulation 是否可採信此 domain context",
+        "是否同意進入 analyst"
     ],
     "decision-options": [
         "approve-gate",

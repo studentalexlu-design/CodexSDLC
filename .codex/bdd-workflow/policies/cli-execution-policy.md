@@ -4,9 +4,12 @@
 
 ## Environment Rules
 
-- `shell` 可能完全不可用；`dotnet build` / `dotnet test` 可能可用，也可能受 sandbox 限制。
+- **建置／測試命令一律取自 `bdd-docs/artifacts/repo-index/index.json` 的 `commands`**（`build`／`test`／`test-filter`／`acceptance`）。
+  **不得硬編 `dotnet`、`mvn` 或 `gradle`** —— 目標專案可能是 .NET（C#）或 Java（Maven／Gradle）。
+  索引不可用時依專案檔推斷（`.sln`／`.csproj`→dotnet、`pom.xml`→maven、`build.gradle`→gradle）。
+- `shell` 可能完全不可用；建置／測試命令可能可用，也可能受 sandbox 限制。
 - 不得使用 PowerShell cmdlets 或 shell built-in 探路，例如 `Get-ChildItem`、`New-Item`、`Write-Host`、`mkdir`、`echo`、`cd`、`dir`。
-- 若 `dotnet` 命令失敗，改用 `read` + `search` 做靜態驗證，並在 evidence 中標明 `environment` 或 `review-incomplete`。
+- 若建置／測試命令失敗，改用 `read` + `search` 做靜態驗證，並在 evidence 中標明 `environment` 或 `review-incomplete`。
 
 ## File Creation Strategy
 

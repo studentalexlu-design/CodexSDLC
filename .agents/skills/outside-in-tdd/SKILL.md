@@ -8,7 +8,7 @@ description: 以 BDD/ATDD 外層驅動 TDD 內層的實作流程
 
 ## 建議順序
 
-1. Discovery / Example Mapping：先釐清 story、rules、examples、open questions。
+1. analyst / Example Mapping：先釐清 story、rules、examples、open questions。
 2. BDD / Gherkin：先寫並審核可驗收的 `.feature` 規格，讓術語與行為先定案。
 3. ATDD：依 Gherkin 建立 acceptance tests、薄型 step definitions 與測試基礎設施。
 4. Walking Skeleton：先打通一條最小 happy-path 端到端流程，驗證系統接線、邊界與測試夾具。
@@ -27,7 +27,9 @@ description: 以 BDD/ATDD 外層驅動 TDD 內層的實作流程
 
 1. **優先讀取** `bdd-docs/artifacts/coding-standards.md`「測試慣例」區塊。
 2. **次要偵測**現有專案 `.csproj` 的 NuGet 參考。
-3. **fallback 預設**：xUnit + AwesomeAssertions + NSubstitute + Reqnroll.xUnit。
+3. **fallback 預設**（依 `index.json` 的 `meta.language`）：
+   - `csharp`：xUnit + AwesomeAssertions + NSubstitute + Reqnroll.xUnit
+   - `java`：JUnit 5 + AssertJ + Mockito + Cucumber-JVM（`cucumber-java` + `cucumber-junit-platform-engine`）
 
 產生的程式碼必須使用確認後的工具鏈，不得混用其他框架。
 

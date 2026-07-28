@@ -1,6 +1,6 @@
 # Domain Analyst — Consolidation（多舊系統合併）
 
-供 `domain-analyst` 在合併多個舊系統的情境下讀取；單一系統/greenfield 情境不需要讀此檔。
+供 `analyst` 在合併多個舊系統的情境下讀取；單一系統/greenfield 情境不需要讀此檔。
 
 ## Schema 分析與合併（Consolidation 專用）
 

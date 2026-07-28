@@ -101,7 +101,7 @@ handoff 以 `tier` 帶入 profile。未帶入時套用 `full`（完整模式）�
 - 允許 status：`pending`、`in-progress`、`completed`、`blocked`、`not-applicable`。
 - `not-applicable` 必須有 reason；不得用 `completed` 掩蓋不適用項目。
 - 舊系統重構情境下，`legacy SQL 邏輯萃取`（系統分析）與 `SQL 規則處置決策`（需求分析）兩列的產物路徑為 `bdd-docs/runs/{run-id}/artifacts/legacy-sql-analysis/{feature-id}.md`；非重構或無 SQL 邏輯時標 `not-applicable` + reason。
-- 當 orchestrator 委派建立 SQL 邏輯萃取產物時，若 `bdd-docs/runs/{run-id}/artifacts/legacy-sql-analysis/` 目錄不存在，先建立目錄（可複製 `bdd-docs/artifacts/legacy-sql-analysis/template.md` 為初始骨架），再交由 `domain-analyst` 填內容。
+- 當 orchestrator 委派建立 SQL 邏輯萃取產物時，若 `bdd-docs/runs/{run-id}/artifacts/legacy-sql-analysis/` 目錄不存在，先建立目錄（可複製 `bdd-docs/artifacts/legacy-sql-analysis/template.md` 為初始骨架），再交由 `analyst` 填內容。
 - 若使用者要求架構設計、程式設計審查、正式功能/整合驗測或上線檢核，記錄為 out of scope，不建立 release、rollback、deployment、ADR、formal E2E governance 類產物。
 
 ## File Creation Strategy

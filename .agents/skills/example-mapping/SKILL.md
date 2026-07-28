@@ -131,7 +131,7 @@ description: 以 story、rules、examples、questions 進行需求探索
 - 若 blocking questions 影響驗收，不得進入 Formulate 階段。
 - 必須涵蓋 `source-materials-register` 中所有相關來源的 scenario，不得遺漏。
 - 每個 rule / example 須可追溯到來源（source-material ID）。
-- 若 Discovery 過程中發現術語不在 `domain-glossary` 中，通報 orchestrator 考慮升級流程複雜度。
+- 若 analyst 過程中發現術語不在 `domain-glossary` 中，通報 orchestrator 考慮升級流程複雜度。
 
 ## 邊界
 

@@ -49,7 +49,7 @@
 
 ## 量測方法
 
-1. 選 2 到 3 條代表性流程（lite 全程、standard 全程、full 的 discovery+tdd 段）。
+1. 選 2 到 3 條代表性流程（lite 全程、standard 全程、full 的 analyst+tdd 段）。
 2. 在優化前後各跑一次，記錄上述指標。
 3. 只記錄摘要數字與證據 path，不貼完整 log。
 4. `fixed-cost-per-spawn` 可離線估算：

@@ -15,10 +15,14 @@ This repository contains a Codex-native migration of the BDD workflow that was o
 ## Codex Entry Points
 
 - For full workflow coordination, explicitly use the `bdd-orchestrator` custom agent.
-- The orchestrator delegates to 12 project-scoped custom agents:
-  - **doers**: `project-scanner`, `db-introspection-scanner`, `domain-analyst`, `discovery`, `formulator`, `design-modeler`, `atdd-automator`, `tdd-implementer`, `integration-tester`, `living-doc`
+- The orchestrator delegates to 11 project-scoped custom agents:
+  - **doers**: `project-scanner`, `db-introspection-scanner`, `analyst`, `formulator`, `design-modeler`, `atdd-automator`, `tdd-implementer`, `integration-tester`, `living-doc`
   - **reviewers**: `spec-reviewer` (modes: `domain` / `example-map` / `gherkin` / `design`), `code-reviewer` (modes: `atdd` / `tdd`)
-- Two consolidations happened for the same reason: `spec-reviewer` replaced four near-identical spec reviewers, and `code-reviewer` replaced `atdd-reviewer` + `tdd-reviewer` (~60% duplicated ceremony). Merging pays off only when it deletes real duplication **or** converts cross-agent switches into repeat invocations of one agent — the only case where prompt cache can hit. See "Why multi-agent" below.
+- Three consolidations happened, each for a specific reason — **not** because "fewer agents is cheaper" (it isn't; see "Why multi-agent"):
+  - `spec-reviewer` replaced four near-identical spec reviewers (~80% shared ceremony).
+  - `code-reviewer` replaced `atdd-reviewer` + `tdd-reviewer` (~60% shared ceremony).
+  - `analyst` replaced `domain-analyst` + `discovery`. These two read the same sources **and had a round-trip protocol between them** (`domain-backflow` stage, two `paused-for-domain-check` states, an incremental-validation runbook). Merging deleted that entire mechanism: glossary terms and behaviour examples now evolve in one context.
+- Merging pays off only when it **deletes real duplication**, **removes a cross-agent coordination mechanism**, or **converts cross-agent switches into repeat invocations of one agent** (the only case where prompt cache can hit). Repackaging instructions without deleting anything makes things worse.
 - Each delegation must cover one mode, one target artifact group, and one next step. Do not ask a subagent to cross multiple gates in one handoff.
 - `bdd-router` was intentionally not migrated; its routing responsibility now lives in the `complexity-assessment` stage inside `bdd-orchestrator` (see Complexity Routing below).
 

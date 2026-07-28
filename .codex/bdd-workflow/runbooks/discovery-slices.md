@@ -1,4 +1,4 @@
-# Discovery Runbook: bounded discovery slices
+# analyst Runbook: bounded analyst slices
 
 Use only after `discovery.agent.md` selected a mode.
 
@@ -19,7 +19,8 @@ Execution limits:
 - perform exactly one Phase 0 round per invocation
 - read source materials in bounded chunks; prefer notes over repeated rereads
 - write or update only `artifacts/flow-description.md`
-- after emitting the alignment summary/questions, stop and return `phase0-iteration-completed`, `phase0-paused-for-domain-check`, or `completed`
+- after emitting the alignment summary/questions, stop and return `phase0-iteration-completed` or `completed`
+- new or conflicting terms are resolved **in the same invocation** by updating `domain-glossary.md` and reporting `glossary-delta` — there is no domain round-trip to pause for
 - if source coverage is still incomplete within budget, return `phase0-iteration-completed` with `source-coverage: partial`
 
 ## mode: phase1

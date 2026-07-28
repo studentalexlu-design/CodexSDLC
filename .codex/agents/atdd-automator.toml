@@ -30,16 +30,41 @@ ATDD 階段必須交付：
 
 不得為了讓 acceptance tests 全綠而在 ATDD 階段實作 production business behavior。
 
-## 強制規則
+## BDD 框架選用（依語言）
 
-* ATDD 必須使用 Reqnroll，或使用 `bdd-docs/artifacts/coding-standards.md` 指定的 BDD 框架。
+**先讀 `bdd-docs/artifacts/repo-index/index.json`**，依 `meta.language` 與 `test-toolchain.bdd` 決定框架。
+**不得自行假設 .NET。** 索引不存在時才退回讀 `coding-standards.md`；兩者皆無才用 fallback 預設。
+
+| `meta.language` | BDD 框架 | 測試框架 | step definition | 建置／測試命令 |
+|---|---|---|---|---|
+| `csharp` | Reqnroll（或既有 SpecFlow） | xUnit／NUnit／MSTest | `*Steps.cs`，`[Binding]` | `commands.build` / `commands.test` |
+| `java` | **Cucumber-JVM**（`cucumber-java` + `cucumber-junit-platform-engine`） | JUnit 5 | `*Steps.java`，`@Given`／`@When`／`@Then` | `commands.build` / `commands.test` |
+| `mixed` | 依 handoff 目標路徑所屬語言決定；`test-toolchain.java-bdd` 為 Java 側的框架 | | | |
+
+`test-toolchain.bdd` 為 null 時使用 `test-toolchain.bdd-fallback`（C#: `Reqnroll.xUnit`；Java: `cucumber-java + cucumber-junit-platform-engine`）。
+
+**所有 build／test 命令一律取自 `index.json` 的 `commands`；不得硬編 `dotnet`、`mvn` 或 `gradle`。**
+
+### 各語言的具體要求
+
+**C#（Reqnroll）**
+* 禁止用純 `[Fact]` / `[Theory]` 作為 acceptance test。
+* Web/API 的 system boundary 預設為 API driver → `WebApplicationFactory` → in-memory/test host。
+
+**Java（Cucumber-JVM）**
+* 禁止用純 `@Test` 作為 acceptance test。
+* 需要 runner：JUnit Platform 的 `@Suite` + `@IncludeEngines("cucumber")`，或 `cucumber-junit` 的 `@RunWith(Cucumber.class)`。
+* `.feature` 放 `src/test/resources/features/`；step definitions 放 `src/test/java/**/steps/`，並以 `@CucumberOptions`／`cucumber.glue` property 指向該 package。
+* Spring Boot 專案的 system boundary 預設為 `@SpringBootTest(webEnvironment = RANDOM_PORT)` + `TestRestTemplate`／`WebTestClient`；`cucumber-spring` 負責 context 注入。
+* DI／context 共享用 `cucumber-spring` 或 PicoContainer，**不得**用 static 欄位跨 step 傳狀態。
+
+## 強制規則（不分語言）
+
 * Acceptance tests 必須走 `.feature` → step definition → driver/helper 的完整路徑。
-* 禁止使用純 `[Fact]` / `[Theory]` xUnit 測試作為 acceptance tests。
 * Step definitions 必須保持薄型，只負責 Gherkin binding、context 管理、driver/helper 呼叫與 boundary assertion。
 * Step definitions 不得包含 business logic、domain decision、repository query 或 production behavior。
 * Walking skeleton 必須驗證 `.feature` → thin step definition → driver/helper → system boundary 的端到端接線。
-* 對 Web/API 專案，system boundary 預設為 API driver → `WebApplicationFactory` → in-memory/test host。
-* 缺少必要測試套件時可 auto-healing 安裝，但不得升級無關套件。
+* 缺少必要測試套件時可 auto-healing 安裝（C#: `PackageReference`；Java: `pom.xml`／`build.gradle` 的 test scope），但不得升級無關套件。
 * 若牽涉 migration、public contract、真實外部環境、DB mutation 或 scope 擴張，停止並回報 orchestrator。
 
 ## Mode Router
@@ -56,8 +81,8 @@ orchestrator 呼叫時必須提供 `mode`。沒有 `mode` 時，回傳 `blocked`
 
 ## Skeleton 流程摘要
 
-1. 讀取 project profile、impact report、feature 檔與 coding standards。
-2. 確認測試專案、BDD framework、必要套件與 `.feature` execution path。
+1. 讀取 `index.json`（`meta.language`、`test-toolchain`、`commands`）、project profile、impact report、feature 檔與 coding standards。
+2. 依上表確認 BDD framework、測試專案位置、必要套件與 `.feature` execution path。
 3. 建立或補齊 thin step definitions、context、hooks、driver/helper。
 4. 掃描 `.feature` steps，建立 binding coverage baseline。
 5. 選擇 1 條最小且代表性的 scenario 作為 walking skeleton candidate。

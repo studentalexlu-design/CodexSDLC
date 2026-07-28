@@ -21,7 +21,7 @@ developer_instructions = '''
 
 ## 任務
 
-1. 從 active run 的 `workflow-state.json` 的 `artifact-refs.example-maps` 取得路徑，讀取 `bdd-docs/runs/{run-id}/artifacts/example-maps/{feature-id}.md` 與 domain glossary。若 example-map 檔案不存在，停止並回報 orchestrator 補做 discovery。
+1. 從 active run 的 `workflow-state.json` 的 `artifact-refs.example-maps` 取得路徑，讀取 `bdd-docs/runs/{run-id}/artifacts/example-maps/{feature-id}.md` 與 domain glossary。若 example-map 檔案不存在，停止並回報 orchestrator 補做 analyst。
 2. 搜尋現有 feature 檔，避免重複命名與重複 step 語意。
 3. 產出 `.feature` 檔。直接用 `edit` 建立檔案。若目標目錄不存在導致失敗，回報 orchestrator 確認目標路徑，由 orchestrator 判斷是否需要委派 `living-doc` 先建立目錄。
 4. 完成後回傳產出摘要（feature 檔路徑、scenario 數量、使用的 step 語意清單），交由 orchestrator 安排審核。

@@ -77,7 +77,7 @@ handoff 會帶入 `tier`（lite / standard / full）。未帶入時**一律套�
 ## 交付要求
 
 - 每次切片都必須留下對應測試與最小 production code 變更。
-- 交付結果需與 acceptance tests、data-models 與 coding standards 對齊。
+- 交付結果需與 acceptance tests、資料設計（full 為 `design/er-model.mmd`）與 coding standards 對齊。
 - 若涉及對外 API，完成前必須具備可追溯的 smoke test 證據。
 
 ## 審核回饋修正
@@ -150,12 +150,17 @@ completion-summary:
 
 ## Data Layer 實作指引
 
-當 backlog 中包含 data layer 切片時，先讀取 `bdd-docs/artifacts/data-models/{feature-name}.md` 確認設計，並依 `.codex/bdd-workflow/runbooks/tdd-data-layer-and-legacy-sql.md` 的「Data Layer 實作指引」與「FK 與關聯實作」段落完成實作順序（Entity → Repository 介面 → Repository 實作 → DI → Migration）、migration policy 檢查與 N+1 查詢防禦驗證。
+當 backlog 中包含 data layer 切片時，先確認資料設計來源，再依 `.codex/bdd-workflow/runbooks/tdd-data-layer-and-legacy-sql.md` 的「Data Layer 實作指引」與「FK 與關聯實作」段落完成實作順序（Entity → Repository 介面 → Repository 實作 → DI → Migration）、migration policy 檢查與 N+1 查詢防禦驗證。
+
+資料設計來源依 profile：
+
+- **full**：讀 `bdd-docs/runs/{run-id}/artifacts/design/er-model.mmd` 與 `design/data-dictionary.md`（`design-modeler` 產出，**唯一的資料模型來源**）。
+- **standard／lite**：不產出資料模型 —— 該 profile 的定義就是不動 schema。改以 `repo-index` 的既有 entity／repository 符號與現有程式碼慣例為準。若切片實際需要新增或變更 schema，**停止並回報 orchestrator 升級為 `full`**，不得自行設計資料表。
 
 ## 使用技能
 
 - `outside-in-tdd`：雙循環 TDD 方法
-- `unit-test-gen`：產生 C# 單元測試
+- `unit-test-gen`：產生單元測試（依 `index.json` 的 `meta.language` 決定 C# 或 Java）
 - `safe-change`：確認變更邊界
 - `test-reliability`：處理不穩定測試
 

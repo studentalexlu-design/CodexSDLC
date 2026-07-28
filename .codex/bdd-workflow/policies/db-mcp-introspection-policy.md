@@ -35,7 +35,7 @@ The orchestrator handoff to `db-introspection-scanner` must include:
 - MCP server or connection profile alias, never credentials
 - target database or schema, when known
 - allowed scope: `metadata`, `definition`, or `approved-select`
-- approved object list or bounded discovery target
+- approved object list or bounded analyst target
 - target report path under `bdd-docs/`
 
 For `approved-select`, the handoff must include either an explicit per-query approval or a run-scoped authorization reference at `bdd-docs/runs/{run-id}/artifacts/db-select-authorization.md`.

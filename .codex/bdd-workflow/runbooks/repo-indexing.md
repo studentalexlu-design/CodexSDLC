@@ -1,6 +1,6 @@
 # Runbook: Repo Indexing（確定性索引）
 
-> 供 `project-scanner`、`domain-analyst`、`db-introspection-scanner` 於掃描既有／遺留專案時使用。
+> 供 `project-scanner`、`analyst`、`db-introspection-scanner` 於掃描既有／遺留專案時使用。
 > 只在需要建立或刷新索引、或判定 staleness 時讀本檔。
 
 ## 核心原則
@@ -89,7 +89,7 @@ pwsh -NoProfile -File .codex/scripts/sql-scan.ps1
 ```
 
 stdout 只回摘要（`signal_count`、`by_construct`、`db-object-source`、`next_step`）；
-訊號全文落在 `sql-signals.json`，供 `domain-analyst` 按需讀取。**不要把訊號清單貼進 handoff。**
+訊號全文落在 `sql-signals.json`，供 `analyst` 按需讀取。**不要把訊號清單貼進 handoff。**
 
 樣式優先序為**最具體優先** —— `embedded-sp-call` → `orm-raw-query` → `dynamic-sql` → `dapper-ado` →
 `string-concat-sql`。一行只記一個訊號；順序若被打亂，通用樣式會吃掉更有資訊量的型別。

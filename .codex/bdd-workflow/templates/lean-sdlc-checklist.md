@@ -33,26 +33,26 @@ When status is `not-applicable`, `not-applicable reason` is required. Do not mar
 
 | Artifact | Path | Status | Owner Agent | Last Updated | Evidence Refs | Not-Applicable Reason |
 | --- | --- | --- | --- | --- | --- | --- |
-| 需求規格 | TBD | pending | discovery | TBD | TBD |  |
-| User Story | TBD | pending | discovery | TBD | TBD |  |
-| Acceptance Criteria | TBD | pending | discovery | TBD | TBD |  |
-| Example Map | TBD | pending | discovery | TBD | TBD |  |
+| 需求規格 | TBD | pending | analyst | TBD | TBD |  |
+| User Story | TBD | pending | analyst | TBD | TBD |  |
+| Acceptance Criteria | TBD | pending | analyst | TBD | TBD |  |
+| Example Map | TBD | pending | analyst | TBD | TBD |  |
 | Gherkin 草稿 | TBD | pending | formulator | TBD | TBD |  |
-| 需求優先級 | TBD | pending | discovery | TBD | TBD |  |
-| domain glossary | TBD | pending | domain-analyst | TBD | TBD |  |
-| SQL 規則處置決策 | `bdd-docs/runs/{run-id}/artifacts/legacy-sql-analysis/{feature-id}.md` | pending | domain-analyst | TBD | TBD | 非舊系統重構 / 無 business-rule 時標 not-applicable |
+| 需求優先級 | TBD | pending | analyst | TBD | TBD |  |
+| domain glossary | TBD | pending | analyst | TBD | TBD |  |
+| SQL 規則處置決策 | `bdd-docs/runs/{run-id}/artifacts/legacy-sql-analysis/{feature-id}.md` | pending | analyst | TBD | TBD | 非舊系統重構 / 無 business-rule 時標 not-applicable |
 
 ## 系統分析
 
 | Artifact | Path | Status | Owner Agent | Last Updated | Evidence Refs | Not-Applicable Reason |
 | --- | --- | --- | --- | --- | --- | --- |
-| flow-description | `bdd-docs/runs/{run-id}/artifacts/flow-description.md` | pending | discovery | TBD | TBD |  |
+| flow-description | `bdd-docs/runs/{run-id}/artifacts/flow-description.md` | pending | analyst | TBD | TBD |  |
 | 系統邊界摘要 | TBD | pending | project-scanner | TBD | TBD |  |
 | 介接清單 | TBD | pending | project-scanner | TBD | TBD |  |
-| 資料需求分析 | TBD | pending | domain-analyst | TBD | TBD |  |
+| 資料需求分析 | TBD | pending | analyst | TBD | TBD |  |
 | project profile | `bdd-docs/artifacts/project-profile.md` | pending | project-scanner | TBD | TBD |  |
 | impact report | TBD | pending | project-scanner | TBD | TBD |  |
-| legacy SQL 邏輯萃取 | `bdd-docs/runs/{run-id}/artifacts/legacy-sql-analysis/{feature-id}.md` | pending | domain-analyst | TBD | TBD | 非舊系統重構 / 無 SQL 邏輯時標 not-applicable |
+| legacy SQL 邏輯萃取 | `bdd-docs/runs/{run-id}/artifacts/legacy-sql-analysis/{feature-id}.md` | pending | analyst | TBD | TBD | 非舊系統重構 / 無 SQL 邏輯時標 not-applicable |
 | source conflicts | `bdd-docs/runs/{run-id}/artifacts/source-conflicts.md` | pending | living-doc | TBD | TBD |  |
 
 ## 設計橋接（draft）

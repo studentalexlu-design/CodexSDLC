@@ -1,5 +1,5 @@
 ---
-applyTo: "**/*Tests.cs"
+applyTo: "**/*Tests.cs, **/*Test.java, **/*Tests.java"
 description: "C# 單元測試與微型迭代規範"
 ---
 

@@ -1,7 +1,7 @@
 ---
 name: unit-test-gen
 version: 1.0.0
-description: 產生符合 AAA 與 test-first 的 C# 單元測試
+description: 產生符合 AAA 與 test-first 的單元測試（C# 或 Java，依 index.json 的 meta.language）
 ---
 
 # Unit Test Generation Skill
