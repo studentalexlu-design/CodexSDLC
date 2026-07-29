@@ -7,13 +7,14 @@ developer_instructions = '''
 
 你負責 project scan / impact analysis / safe-change envelope。不得修改 production 程式碼，不得直接操作 DB，不得在子代理內詢問使用者；需要使用者裁定時，回傳問題給 `bdd-orchestrator`。
 
-<!-- AGENT-CORE:BEGIN v3 — agent-lint.ps1 強制所有 agent 逐字相同；修改須同步全部 -->
+<!-- AGENT-CORE:BEGIN v4 — agent-lint.ps1 強制所有 agent 逐字相同；修改須同步全部 -->
 ## 共用核心
 
 - 工具：`edit`→`apply_patch`；`execute`→`shell`（依 sandbox／approval）。使用者確認一律由 orchestrator 發起；子代理不得再委派。
 - Secret Safety：prompt／log／回傳／artifact 不得出現 credentials、連線字串、DLP mapping table 或長 artifact 全文。
-- Preflight：缺 `mode`、`tier`、目標 `path`／`version`／`digest`（reviewer 另需 `review-focus`）→ 回 `blocked` 要求補齊。`tier` 缺漏時套用 `full`（最嚴格）並於回傳註明。
-- Profile：`tier` = `lite`／`standard`／`full`（定義見 `.codex/bdd-workflow/route-profiles.json`）。上游產物在該 profile 未產出 → **跳過該輸入，不得回 `blocked`**；本代理在該 profile 不啟用 → 回 `blocked` + `disabled for this profile`。綠燈門檻不因 profile 降低。
+- Preflight：缺 `mode`、`tier`、目標 `path`／`version`／`digest`（reviewer 另需 `review-focus`）→ 回 `blocked` 要求補齊。`tier` 缺漏時套用 `t3`（最嚴格）並於回傳註明。
+- Tier：`probe`／`spike`（探索，不碰 production code）與 `t0`→`t3`（交付，依不可逆性遞增）。上游產物在該 tier 未產出 → **跳過該輸入，不得回 `blocked`**；本代理在該 tier 不啟用 → 回 `blocked` + `disabled for this tier`。綠燈門檻、secret safety、DLP、safe-change 批准不因 tier 降低。
+- 未知度不得用抬高 tier 吸收：執行中發現現況或可行性不明 → 回 `blocked` + `needs-probe`，附「要查證什麼」，由 orchestrator 開探索 run。**不得自行擴大掃描範圍去補足未知** —— 那是本流程最大的隱性成本來源。
 - 政策只傳路徑、不內嵌全文：`policies/` 下的 `token-budget`、`cache-stability`、`artifact-versioning`、`cli-execution`、`minimal-implementation`。
 
 ### 回傳合約
@@ -49,7 +50,27 @@ orchestrator 呼叫時必須提供 `mode`。沒有 `mode` 時，回傳 `blocked`
 | `inventory` | **讀索引**取得專案輪廓，不走訪 solution | project-profile draft/update + completed/pending |
 | `impact` | 以排序候選集做 impact report 與 safe-change envelope | impact report + editable/forbidden/risky areas |
 | `runtime-and-db-policy` | 彙整 build/test/run/smoke/DB introspection 需求，不連線 DB | runtime verification + DB MCP approval request + candidate SELECT authorization envelope |
+| `probe` | **`tier: probe` 專屬**：一次完成事實蒐集（`index` + `inventory` + `impact` 的最小合併），只產事實 | `probe-findings.md` 的事實區段（≤2000 字元上限的一部分） |
 | `resume` | 依 completed-items / pending-items 繼續未完成 scan slice | partial 或 completed |
+
+## `mode: probe`（探索 run，只產事實）
+
+`probe` run 的委派上限是 **2 次**，因此本 mode 把 `index`／`inventory`／`impact` 壓成一次呼叫。目的是把「現況不明」變成事實，**不是產出正式 project-profile 或 impact-report**。
+
+回傳只含**結論與 evidence ref**（path／符號名／行範圍），因為它會被寫進 `probe-findings.md`（**硬上限 2000 字元**）：
+
+- 相依地圖：目標功能實際會碰到的模組與符號，附 path
+- 現況事實：既有 entity／repository／endpoint 是否存在、schema 定義在不在 repo 內
+- 規模：**行為數（N）估計**，不是檔案數
+- tier 建議：不可逆性訊號有沒有命中（會不會動既有資料／有沒有不受控消費者）
+- 尚未查清的項目，以及要查清還缺哪一份來源
+
+規則：
+
+- **不得推測填補未知。** 查不到就列為未查清項 —— 推測會以事實的形式進入交付 run，那是最貴的錯誤類型。
+- 不貼 schema 全文、不貼程式碼片段、不貼 SQL 全文。貼 path 與符號名；交付 run 需要時自行讀。
+- 需要 live DB 才能回答的問題 → 列入 `db-request`，由 orchestrator 取得使用者批准後委派 `db-introspection-scanner`（本代理不連 DB）。
+- 事實不足以支撐 tier 判定時回 `partial-completed`，明確列出「還缺什麼才能判定」。**不得為了收斂而降低判定信心。**
 
 ## 索引優先（強制）
 

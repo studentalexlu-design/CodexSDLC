@@ -15,6 +15,9 @@
 #   7. route-profiles 用到的每個 gate 都有對應的 gate-confirmations 檔且帶 requires
 #      （缺檔會讓該 profile 的 Gate 變成即席拼裝 —— 使用者核准的驗證清單將不確定）
 #   8. AGENT-CORE 內嵌的回傳 shape 與 return-contract-policy.md 一致
+#   9. bdd-orchestrator 內嵌的 tier 表與 route-profiles.json 的 tier／預算一致
+#      （orchestrator 依內嵌表決策、handoff-lint 依 JSON 阻斷 —— 漂移會讓 hook
+#       在模型認為合法時擋下 spawn，那是最難診斷的失敗模式）
 #
 # Exit: 0 = 全部通過；2 = 有違規。
 
@@ -111,7 +114,16 @@ foreach ($a in $agents) {
 
 # ---- 5. 已知過時引用 ----
 $stale = @('agent-common\.md', 'bdd-orchestrator\.agent\.md', 'route-hints', 'gate-m1', 'gate-m2',
-           '(?<![`a-z-])(domain|discovery|formulator|design)-reviewer(?![`a-z-])')
+           '(?<![`a-z-])(domain|discovery|formulator|design)-reviewer(?![`a-z-])',
+           # v2.0.0：tier 詞彙由 lite/standard/full 改為 probe/spike/t0..t3。
+           # 只比對 tier 值位置與已移除的 gate id，避免誤傷 "full-index"、"標準" 等合法用字。
+           'tier\s*[:：]\s*(lite|standard|full)\b',
+           '`(lite|standard|full)`',
+           'profile-(lite|standard|full)\b',
+           'gate-(lite|std-1|std-2)\b',
+           '(?<![a-z-])gate-[a-e](?![a-z0-9-])',
+           'complexity-assessment', 'complexity-routing',
+           'runtime-metadata\.profile')
 foreach ($a in $agents) {
     $t = Get-Content $a.FullName -Raw
     foreach ($s in $stale) {
@@ -191,6 +203,44 @@ if ($cores.Count -gt 0 -and (Test-Path $ReturnPolicy)) {
         if ($a -ne $b) {
             Add-V 'return-shape-drift' 'AGENT-CORE vs return-contract-policy.md' `
                   '兩處的回傳 shape 已不一致；以 policy 檔為準同步 AGENT-CORE 並重跑本腳本'
+        }
+    }
+}
+
+# ---- 9. bdd-orchestrator 內嵌的 tier 表與 route-profiles.json 一致 ----
+# tier 表已從「執行期讀 route-profiles.json」改為「內嵌於 orchestrator 系統提示」。
+# 理由：一次執行期讀取的真正成本是它多花的那一輪（在長對話裡等於重送整份歷史），
+# 不是檔案大小。內嵌就有漂移風險 —— 這裡把 JSON 與內嵌表綁在一起。
+# route-profiles.json 仍是 handoff-lint 的機械來源，兩者必須說同一件事。
+$orch = Join-Path $AgentDir 'bdd-orchestrator.toml'
+if ($profiles -and (Test-Path $orch)) {
+    $ot = Get-Content $orch -Raw
+    # 表列格式： | `tier` | ≤N 或 **N** | `gate-x` | ... |
+    $embedded = @{}
+    foreach ($row in [regex]::Matches($ot, '(?m)^\|\s*`([a-z][a-z0-9]*)`\s*\|[^|]*?(\d+)[^|]*\|')) {
+        $embedded[$row.Groups[1].Value] = [int]$row.Groups[2].Value
+    }
+    $declared = @($profiles.PSObject.Properties.Name)
+
+    if ($embedded.Count -eq 0) {
+        Add-V 'tier-table-missing' 'bdd-orchestrator.toml' `
+              '內嵌 tier 表遺失；沒有它 orchestrator 會退回執行期讀 route-profiles.json（每 run 多付一輪）'
+    } else {
+        foreach ($t in $declared) {
+            if (-not $embedded.ContainsKey($t)) {
+                Add-V 'tier-table-missing-row' "$t（route-profiles 有，內嵌表沒有）" `
+                      'bdd-orchestrator 的 tier 表補上該列 —— 缺列的 tier 在執行期無法路由'
+            } elseif ($embedded[$t] -ne $profiles.$t.'max-subagent-calls') {
+                Add-V 'tier-budget-drift' `
+                      "${t}: 內嵌=$($embedded[$t]) route-profiles=$($profiles.$t.'max-subagent-calls')" `
+                      'orchestrator 依內嵌表決策、handoff-lint 依 JSON 阻斷；不一致會讓 hook 在模型認為合法時擋下 spawn'
+            }
+        }
+        foreach ($e in $embedded.Keys) {
+            if ($e -notin $declared) {
+                Add-V 'tier-table-orphan-row' "$e（內嵌表有，route-profiles 沒有）" `
+                      '移除該列或在 route-profiles.json 補上定義'
+            }
         }
     }
 }

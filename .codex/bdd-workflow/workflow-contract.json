@@ -1,12 +1,16 @@
 {
-  "contract-version": "1.13.0",
-  "min-compatible-version": "1.0.0",
-  "released": "2026-07-29",
+  "contract-version": "2.0.0",
+  "min-compatible-version": "2.0.0",
+  "released": "2026-07-30",
+  "breaking-change-note": "v2.0.0 改用兩軸 tier 模型。`tier` 值由 lite/standard/full 改為 probe/spike/t0/t1/t2/t3；不可逆性決定交付深度，未知度改由獨立的探索 run 吸收而非抬高交付 tier。舊 run 的 runtime-metadata.profile 無法對應，因此 min-compatible-version 同步升至 2.0.0。",
   "stages": [
     "init",
     "intake",
     "intake-done",
-    "complexity-assessment",
+    "route-assessment",
+    "probe",
+    "spike",
+    "probe-done",
     "scan",
     "scan-done",
     "domain",
@@ -19,33 +23,41 @@
     "formulate",
     "formulate-done",
     "design",
+    "contract",
+    "contract-review",
     "design-done",
     "data-model-p2-5",
     "atdd",
     "atdd-done",
     "tdd",
     "tdd-done",
+    "migration-execution",
     "integration",
     "integration-done",
     "living-doc",
+    "verify",
     "verified",
+    "close",
     "completed"
   ],
   "gates-ref": {
-    "note": "Extracted for lean loading (v1.12.0). Each gate's `requires`, `merges`, documents-to-review and verification checklist now live in that gate's own confirmation file. Read ONLY the single gate file for the gate being confirmed — never the whole set. Which gates are active is decided by `route-profiles.profiles.{profile}.gates`.",
+    "note": "Each gate's `requires`, documents-to-review and verification checklist live in that gate's own confirmation file. Read ONLY the single gate file for the gate being confirmed — never the whole set. Which gates are active is decided by `route-profiles.profiles.{tier}.gates`. v2.0.0 收斂為 5 個 gate（原 9 個）：探索出口 1、交付收尾 1、契約定案 1、不可逆性 2。",
     "dir": ".codex/bdd-workflow/gate-confirmations/",
     "requires-key": "requires",
     "gate-ids": [
-      "intake",
-      "gate-a",
-      "gate-b",
-      "gate-c",
-      "gate-d",
-      "gate-e",
-      "gate-lite",
-      "gate-std-1",
-      "gate-std-2"
-    ]
+      "gate-probe",
+      "gate-close",
+      "gate-contract",
+      "gate-migration",
+      "gate-release"
+    ],
+    "gate-nature": {
+      "gate-probe": "探索出口 —— 核准的是『事實已足以判定交付深度』，不是實作。核准後強制結束 run。",
+      "gate-close": "交付收尾（t0/t1/t2）",
+      "gate-contract": "契約定案，**必須在任何 production 實作之前**（t2/t3）",
+      "gate-migration": "不可逆性閘門 —— 批准的是『我接受可能回不去』（t3）",
+      "gate-release": "不可逆性閘門 —— 分階段上線與中止標準（t3）"
+    }
   },
   "repo-index": {
     "note": "確定性索引。機械性探索（定位檔案、列相依、比對 SQL 樣式、抓簽章）一律由腳本完成，LLM 只讀索引與訊號清單。程序見 runbook-ref。",
@@ -75,15 +87,22 @@
     "unavailable-behavior": "fall-back-to-bounded-llm-scan-and-mark environment:index-unavailable"
   },
   "route-profiles-ref": {
-    "note": "Extracted for lean loading (v1.12.0). This is the startup routing slice — bdd-orchestrator reads the referenced file at complexity-assessment instead of this whole contract. On resume it reads neither: runtime-metadata.profile already holds the answer. handoff-lint.ps1 reads max-subagent-calls from the same file.",
+    "note": "v2.0.0：**bdd-orchestrator 不再於執行期讀此檔。** tier 表已內嵌於它的系統提示（有 cache），因為一次執行期讀取的真正成本是它多花的那一輪 —— 在長對話裡等於重送整份歷史，而非檔案大小。本檔現在只服務兩個機械消費者：handoff-lint.ps1（讀 max-subagent-calls 阻斷超額 spawn）與 agent-lint.ps1 檢查 9（把內嵌表與本檔綁在一起，防漂移）。",
     "path": ".codex/bdd-workflow/route-profiles.json",
+    "llm-read": false,
     "handoff-field": "tier",
-    "profile-stored-in": "bdd-docs/runs/{run-id}/workflow-state.json runtime-metadata.profile",
+    "tier-stored-in": "bdd-docs/runs/{run-id}/workflow-state.json runtime-metadata.tier",
     "call-count-tracked-in": "bdd-docs/runs/{run-id}/workflow-state.json subagent-calls.count",
     "context-reset-tracked-in": "bdd-docs/runs/{run-id}/workflow-state.json subagent-calls.count-at-last-reset",
-    "context-reset-note": "Gate 核准時可選擇在新對話續跑（gate 檔的 decision-options 含 approve-and-resume-in-new-conversation 時提供）。count − count-at-last-reset >= 4 時該選項排第一並標為建議。orchestrator 讀進的檔案會在之後每一輪重送，Gate 是唯一零資訊損失的歸零點。",
+    "context-reset-note": "orchestrator 讀進的檔案會在之後每一輪重送，Gate 是零資訊損失的歸零點。gate-probe 的歸零是**強制**的（探索 transcript 的全部價值已在 probe-findings.md 裡）；gate-contract／gate-migration 在 count − count-at-last-reset >= 3 時把該選項排第一並標為建議；收尾 gate（gate-close／gate-release）不提供。",
     "enforced-by": ".codex/scripts/handoff-lint.ps1",
-    "profile-names": [ "lite", "standard", "full" ]
+    "embedded-copy-in": ".codex/agents/bdd-orchestrator.toml（「Tier 表」區塊）",
+    "embedded-copy-checked-by": ".codex/scripts/agent-lint.ps1 檢查 9",
+    "tier-names": [ "probe", "spike", "t0", "t1", "t2", "t3" ],
+    "axes": {
+      "irreversibility": "決定交付 tier（t0..t3）",
+      "uncertainty": "決定要不要先開探索 run（probe/spike）—— **不得以抬高交付 tier 吸收**"
+    }
   },
   "lean-sdlc-ref": {
     "note": "Extracted for lean loading (v1.10.0). Read only when checking lean-SDLC checklist requirements for a specific stage boundary.",
@@ -111,7 +130,7 @@
     ]
   },
   "db-introspection-ref": {
-    "note": "Extracted for lean loading (v1.12.0). Only `full` runs that chose the DB-MCP schema-source strategy ever need this. Approval envelope fields, run-scoped SELECT authorization bounds, query-safety and forbidden lists live in the policy file — read it at that point, not at startup.",
+    "note": "Extracted for lean loading (v1.12.0). Only `probe` runs that chose the DB-MCP schema-source strategy, and `t3` delivery runs, ever need this. Approval envelope fields, run-scoped SELECT authorization bounds, query-safety and forbidden lists live in the policy file — read it at that point, not at startup.",
     "mode": "approved-read-only-mcp",
     "policy-path": ".codex/bdd-workflow/policies/db-mcp-introspection-policy.md",
     "live-db-access": "mcp-only",

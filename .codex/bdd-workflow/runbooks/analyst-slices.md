@@ -5,7 +5,7 @@ declared in `.codex/agents/analyst.toml`; read only the section for the active m
 
 ## mode: flow
 
-> `full` only. `lite` / `standard` do not run this mode.
+> `t3` only. `t0` / `t1` / `t2` do not run this mode.
 
 Goal: complete one flow-alignment round only.
 
@@ -36,12 +36,12 @@ Goal depends on `tier` — this is the one place the two profiles genuinely diff
 
 | tier | scope per invocation |
 |---|---|
-| `standard` | the **whole** example map (all stories); no story-level slicing |
-| `full` | exactly **one** story |
+| `t2` | the **whole** example map (all stories); no story-level slicing |
+| `t3` | exactly **one** story |
 
 Read/search:
 
-- approved `artifacts/flow-description.md` (`full` only — `standard` has none)
+- approved `artifacts/flow-description.md` (`t3` only — `t2` has none)
 - `artifacts/context-packs/domain.md` when it exists
 - existing example map if present
 - only the specific source slices needed for the stories in scope
@@ -52,8 +52,8 @@ Execution limits:
 - when `artifacts/example-maps/{feature-id}.md` already contains multiple stories, preserve every
   untouched story section and top-level metadata; merge or append the targeted story instead of
   replacing the whole artifact
-- `full`: process at most 1 story, and do not continue to the next story in the same invocation
-- `standard`: complete every story before returning; if the wall-clock budget runs out first,
+- `t3`: process at most 1 story, and do not continue to the next story in the same invocation
+- `t2`: complete every story before returning; if the wall-clock budget runs out first,
   return `partial-completed` listing the remaining stories
 - if more stories remain, return `partial-completed` with the newly completed items and the
   remaining pending items
@@ -82,7 +82,7 @@ Execution limits:
 - target wall-clock: <= 6 minutes per invocation
 - if approaching the budget, stop and return `partial-completed`
 - do not expand from `flow` into `example-map` in the same invocation
-- `full`: do not combine story exploration, NFR exploration, and stale-story revalidation across
+- `t3`: do not combine story exploration, NFR exploration, and stale-story revalidation across
   multiple stories in one invocation
 
 ## Return

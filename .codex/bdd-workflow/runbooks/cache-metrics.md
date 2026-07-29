@@ -39,7 +39,9 @@
 
 | 指標 | 目標 |
 |---|---|
-| `spawns-per-run` | ≤ profile 的 `max-subagent-calls`（lite 2／standard 10／full 20）|
+| `spawns-per-run` | ≤ 該 tier 的 `max-subagent-calls` —— **數值只以 `route-profiles.json` 為準，本檔不複製**（本檔曾把上限寫成過期值，是本 repo 出過的漂移事故）|
+| `probe-findings-chars` | ≤ 2000（探索 run 的唯一交接產物；超標代表探索範圍過寬）|
+| `context-reset-taken-at-gate-probe` | 100%（強制）|
 | `fixed-cost-per-spawn` | ≤ 6,000 tokens |
 | `agent-toml-modified-during-run` | 0 |
 | `handoff-template-adoption-rate` | ≥ 90% |
@@ -49,7 +51,7 @@
 
 ## 量測方法
 
-1. 選 2 到 3 條代表性流程（lite 全程、standard 全程、full 的 analyst+tdd 段）。
+1. 選 2 到 3 條代表性流程（`t1` 全程、`t2` 全程、`probe` → `t3` 的交接段）。
 2. 在優化前後各跑一次，記錄上述指標。
 3. 只記錄摘要數字與證據 path，不貼完整 log。
 4. `fixed-cost-per-spawn` 可離線估算：
@@ -65,8 +67,7 @@ Get-ChildItem .codex\agents\*.toml | ForEach-Object {
 
 ## 偵錯優先序
 
-1. **`spawns-per-run` 超標** —— 檢查是否該升／降 profile、是否有純狀態更新被誤委派給 `living-doc`
-   （那些應由 orchestrator 直寫）、合併模式（`mode: all`）是否被正確使用。
+1. **`spawns-per-run` 超標** —— 依序檢查：(a) 是否其實是**未知度**問題而被誤當成深度問題（該開 `probe` 卻升了 tier，這是最常見也最貴的一種）；(b) 是否有純狀態更新被誤委派給 `living-doc`（`t0`–`t2` 根本不啟用它，`t3` 也只該用於大產物）；(c) 合併模式（`mode: all`、`design-modeler` 的 `contract`）是否被正確使用。
 2. **`fixed-cost-per-spawn` 超標** —— 檢查 agent 是否讀了非 active mode 的 runbook、
    是否內嵌了應該只傳路徑的 policy 全文。
 3. `handoff` 是否使用 `templates/` 模板且段落順序為靜態在前。
@@ -79,7 +80,7 @@ Get-ChildItem .codex\agents\*.toml | ForEach-Object {
 ```yaml
 cache-metrics:
   flow: {flow-name}
-  profile: lite | standard | full
+  tier: probe | spike | t0 | t1 | t2 | t3
   before:
     spawns-per-run: {N}
     fixed-cost-per-spawn: {N}

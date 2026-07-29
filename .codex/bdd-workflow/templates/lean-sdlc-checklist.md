@@ -57,7 +57,7 @@ When status is `not-applicable`, `not-applicable reason` is required. Do not mar
 
 ## 設計橋接（draft）
 
-> P0-1：draft 設計契約，位於 formulate 後、atdd 前；並入 Gate-D 一次確認。不適用項目標 `not-applicable` + reason。
+> P0-1：draft 設計契約，位於 formulate 後、atdd 前；並入 `gate-contract` 一次確認（**實作前**）。不適用項目標 `not-applicable` + reason。
 
 | Artifact | Path | Status | Owner Agent | Last Updated | Evidence Refs | Not-Applicable Reason |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -83,14 +83,14 @@ When status is `not-applicable`, `not-applicable reason` is required. Do not mar
 
 ## 整合驗證（evidence）
 
-> P0-3：契約/整合/smoke 測試證據，位於 tdd 後、living-doc 前；由 Gate-E 確認。不適用項目標 `not-applicable` + reason。
+> P0-3：契約/整合/smoke 測試證據，位於 tdd 後、收尾前；由交付 Gate 確認（`t2` → `gate-close`；`t3` → `gate-release`）。不適用項目標 `not-applicable` + reason。
 
 | Artifact | Path | Status | Owner Agent | Last Updated | Evidence Refs | Not-Applicable Reason |
 | --- | --- | --- | --- | --- | --- | --- |
 | contract test evidence | `bdd-docs/runs/{run-id}/artifacts/integration/contract-test-evidence.md` | pending | integration-tester | TBD | TBD |  |
 | integration test evidence | `bdd-docs/runs/{run-id}/artifacts/integration/integration-test-evidence.md` | pending | integration-tester | TBD | TBD |  |
 | smoke test evidence | `bdd-docs/runs/{run-id}/artifacts/integration/smoke-test-evidence.md` | pending | integration-tester | TBD | TBD |  |
-| gate-e review findings | TBD | pending | code-reviewer (mode: tdd) | TBD | TBD |  |
+| delivery-gate review findings | TBD | pending | code-reviewer (mode: tdd) | TBD | TBD |  |
 
 ## Out Of Scope Requests
 

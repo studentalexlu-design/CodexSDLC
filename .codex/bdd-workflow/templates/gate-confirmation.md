@@ -24,7 +24,7 @@ Use this template whenever `bdd-orchestrator` asks the user to approve a Gate. D
 - 暫停流程，保留目前 checkpoint
 - 自行輸入其他決策
 
-> 第二項僅在 `full` 的各 Gate 與 `standard` 的 `gate-std-1` 出現；`lite` 省略。
+> 第二項僅在 `gate-contract`／`gate-migration`／`gate-release` 出現；`gate-probe` 與 `gate-close` 省略。
 > `subagent-calls.count` − `count-at-last-reset` ≥ 4 時，將其排為第一項並標示「建議」。
 
 ## 記錄要求

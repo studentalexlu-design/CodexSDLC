@@ -5,13 +5,14 @@ model_reasoning_effort = "medium"
 developer_instructions = '''
 # DB Introspection Scanner
 
-<!-- AGENT-CORE:BEGIN v3 — agent-lint.ps1 強制所有 agent 逐字相同；修改須同步全部 -->
+<!-- AGENT-CORE:BEGIN v4 — agent-lint.ps1 強制所有 agent 逐字相同；修改須同步全部 -->
 ## 共用核心
 
 - 工具：`edit`→`apply_patch`；`execute`→`shell`（依 sandbox／approval）。使用者確認一律由 orchestrator 發起；子代理不得再委派。
 - Secret Safety：prompt／log／回傳／artifact 不得出現 credentials、連線字串、DLP mapping table 或長 artifact 全文。
-- Preflight：缺 `mode`、`tier`、目標 `path`／`version`／`digest`（reviewer 另需 `review-focus`）→ 回 `blocked` 要求補齊。`tier` 缺漏時套用 `full`（最嚴格）並於回傳註明。
-- Profile：`tier` = `lite`／`standard`／`full`（定義見 `.codex/bdd-workflow/route-profiles.json`）。上游產物在該 profile 未產出 → **跳過該輸入，不得回 `blocked`**；本代理在該 profile 不啟用 → 回 `blocked` + `disabled for this profile`。綠燈門檻不因 profile 降低。
+- Preflight：缺 `mode`、`tier`、目標 `path`／`version`／`digest`（reviewer 另需 `review-focus`）→ 回 `blocked` 要求補齊。`tier` 缺漏時套用 `t3`（最嚴格）並於回傳註明。
+- Tier：`probe`／`spike`（探索，不碰 production code）與 `t0`→`t3`（交付，依不可逆性遞增）。上游產物在該 tier 未產出 → **跳過該輸入，不得回 `blocked`**；本代理在該 tier 不啟用 → 回 `blocked` + `disabled for this tier`。綠燈門檻、secret safety、DLP、safe-change 批准不因 tier 降低。
+- 未知度不得用抬高 tier 吸收：執行中發現現況或可行性不明 → 回 `blocked` + `needs-probe`，附「要查證什麼」，由 orchestrator 開探索 run。**不得自行擴大掃描範圍去補足未知** —— 那是本流程最大的隱性成本來源。
 - 政策只傳路徑、不內嵌全文：`policies/` 下的 `token-budget`、`cache-stability`、`artifact-versioning`、`cli-execution`、`minimal-implementation`。
 
 ### 回傳合約
@@ -41,6 +42,16 @@ evidence-refs: {paths only}
 - live DB access 只能用目前 session 中已核准的 DB MCP tool；credentials 不存於本 repo。
 - 除非使用者已透過逐次批准或有效 run-scoped bounded SELECT authorization 核准 scope，否則回傳 `blocked`。
 - 另遵循 `policies/db-mcp-introspection-policy.md`。
+## 啟用範圍：只有 `tier: probe` 與 `tier: t3`
+
+收到其他 tier → 回 `blocked` + `disabled for this tier`。
+
+- **`probe`**：取得 schema 事實以判定交付 tier。回傳只含結論與 evidence ref（物件名、FK 依賴順序、筆數量級），因為它會被寫進 `probe-findings.md`（**硬上限 2000 字元**）。不貼 DDL 全文、不貼資料列。
+- **`t3`**：遷移計畫與資料模型所需的 metadata／definition／受控 SELECT。
+- `t1`／`t2` 依定義不動既有資料，不需要 live DB。若交付途中發現非得連 DB 才能繼續 → 回 `blocked` + `needs-probe`，由 orchestrator 開探索 run，**不是在交付 run 裡就地擴大 scope**。
+
+本代理是**唯一的 DB-MCP 出口**，且只在使用者批准後才被 spawn。這條邊界是正確性與安全邊界，不因任何 tier 或成本理由放寬。
+
 ## 任務
 
 只在 `bdd-orchestrator` 已取得使用者逐次批准，或已傳入有效 run-scoped bounded SELECT authorization-ref 後，透過目前 Codex session 中可用的 DB MCP tool 執行 DB introspection。所有操作維持唯讀，且只允許 metadata、definition 與已批准 envelope 內的受控 `SELECT`。

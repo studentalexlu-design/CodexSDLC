@@ -1,8 +1,8 @@
 # Contract Test Policy（P0-3）
 
-> Scope: `integration-tester` 及 Gate-E 的契約/整合/smoke 測試證據要求。
+> Scope: `integration-tester` 及交付 Gate（`t2` → `gate-close`；`t3` → `gate-release`）的契約/整合/smoke 測試證據要求。
 > Skill: `.agents/skills/contract-testing/SKILL.md`
-> Contract: `workflow-contract.json` `1.9.0+`（stage `integration`/`integration-done`, gate `gate-e`）。
+> Contract: `workflow-contract.json` `2.0.0+`（stage `integration`/`integration-done`, gate `gate-close`/`gate-release`）。
 
 ## 1. 契約來源唯一性
 
@@ -49,7 +49,7 @@
 - 純函式庫無法 smoke → smoke `not-applicable`。
 - 皆需 reason，由 `living-doc` 記入 lean-sdlc-checklist「整合驗證（evidence）」區段。
 
-## 7. Gate-E 通過條件
+## 7. 交付 Gate 通過條件
 
 ```text
 contract-tests.passed OR contract.not-applicable

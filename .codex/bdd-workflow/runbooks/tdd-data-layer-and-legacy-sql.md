@@ -8,7 +8,7 @@
 
 1. 先確認資料設計來源：
    - **full**：`bdd-docs/runs/{run-id}/artifacts/design/er-model.mmd` + `design/data-dictionary.md`（`design-modeler` 是**唯一**的資料模型 owner）。
-   - **standard／lite**：不產出資料模型（該 profile 定義為不動 schema）。以 `repo-index` 的既有 entity／repository 符號與現有慣例為準；**若確實需要新增或變更 schema，停止並回報 orchestrator 升級 `full`**。
+   - **`t1`／`t2`**：不產出完整資料模型。`t2` 可新增尚無寫入者的 table 或 nullable 欄位（設計來源為 `design/contract/` 的 data contract）。以 `repo-index` 的既有 entity／repository 符號與現有慣例為準；**一旦需要動到已存在的資料（NOT NULL + backfill、改型別、刪欄位、線上加索引），停止並回報 orchestrator 升級 `t3`**。
 2. 實作順序：
    - Entity / Value Object（domain layer）
    - Repository 介面（domain layer）
@@ -41,5 +41,5 @@
 - **不得把 `business-rule` 型別的 legacy SQL（含舊 app code 的 inline SQL 字串）整段複製到新 repository/DAL。**
 - 每條 `move-to-domain` / `move-to-application` 規則必須實作於對應分層，並有 domain/application 層單元測試驅動（先 Red 再 Green）。
 - `keep-in-sql` 規則的 repository 只能做 thin data-access（取值/塑形），且需留整合層對等驗證證據。
-- `redesign` 規則依 Gate-B 裁定後的新行為實作，不沿用舊行為。
-- 實作後回填 `legacy-sql-analysis` 「行為對等驗證」表的驗證狀態，供 Gate-E 對等比對。
+- `redesign` 規則依 `gate-contract` 裁定後的新行為實作，不沿用舊行為。
+- 實作後回填 `legacy-sql-analysis` 「行為對等驗證」表的驗證狀態，供 `gate-release` 對等比對。

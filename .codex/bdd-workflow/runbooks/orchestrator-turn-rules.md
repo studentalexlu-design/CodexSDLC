@@ -13,7 +13,7 @@
 - 使用 `templates/handoff-{mode}.md` 固定模板；同 mode 不得改段落順序與欄位名稱。
 - 有 artifact digest 或 project-profile cache 時，優先傳 digest/cache path 與 hash；不得要求子代理重掃 solution / test toolchain。
 - 要求子代理在單一切片完成後回傳 `completed` 或 `partial-completed`，不得自行展開下一階段。
-- 同一輪不連續呼叫超過 1 個 doer（**full 限制**；lite／standard 見 `complexity-routing.md` 的合併呼叫規則）。
+- 同一輪不連續呼叫超過 1 個 doer（**`t3` 限制**；`t1`／`t2` 見 `tier-routing.md` 的合併呼叫規則）。
 
 ## analyst 切片守門（full）
 
@@ -60,7 +60,7 @@
 本節只處理**兩個 Gate 之間**就已經膨脹的情況：
 
 - 判斷訊號：同一 stage 內累積多輪大型 tool output、上次子代理輸入接近上限、或 `subagent-calls.count` − `count-at-last-reset` 已 ≥ 6 而下一個 Gate 還很遠。
-- 處理：先委派 `living-doc` 寫 checkpoint（`lite`／`standard` 由 orchestrator 自行寫），再以 `Codex user confirmation` 請使用者開新對話 resume。**不在膨脹的 context 中繼續大型委派。**
+- 處理：先寫 checkpoint（`t3` 委派 `living-doc`；其餘由 orchestrator 自行寫），再以 `Codex user confirmation` 請使用者開新對話 resume。**不在膨脹的 context 中繼續大型委派。**
 - resume 後更新 `count-at-last-reset = count`。
 
 兩者的差別只在時機：Gate reset 是計畫內的、隨核准一起發生；本節是計畫外的、需要額外一次確認。能等到下一個 Gate 就等。

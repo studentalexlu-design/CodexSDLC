@@ -274,8 +274,8 @@
             "owner": "integration-tester"
           },
           {
-            "id": "gate-e-review-findings",
-            "name": "gate-e review findings",
+            "id": "delivery-gate-review-findings",
+            "name": "delivery-gate review findings",
             "owner": "code-reviewer (mode: tdd)"
           }
         ]

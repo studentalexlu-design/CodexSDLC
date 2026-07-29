@@ -5,11 +5,13 @@
 # 檢查項：
 #   1. handoff 長度 <= MaxChars（預設 1200）
 #   2. 單一 operation mode（不得同時出現多個 mode 宣告）
-#   3. 必填 meta 欄位：mode、tier
+#   3. 必填 meta 欄位：mode、tier（tier ∈ probe|spike|t0|t1|t2|t3）
+#   3a. t0 不得 spawn（上限 0）—— 需要 spawn 即代表判定過低，應升 t1
+#   3b. 探索 tier（probe/spike）不得掛交付型 mode —— 探索只產事實，不碰 production code
 #   4. 禁用 payload：完整 log、完整 source register、長測試輸出、secrets
 #   5. quality-loop 迭代上限（讀 workflow-state.json，超限即阻斷）
-#   6. profile 的 max-subagent-calls 上限（spawn 次數是成本主導變數，
-#      上限值一律從 contract 的 route-profiles 讀取，不在本檔重複宣告）
+#   6. tier 的 max-subagent-calls 上限（spawn 次數是成本主導變數，
+#      上限值一律從 route-profiles.json 讀取，不在本檔重複宣告）
 #
 # Exit: 0 = 通過；2 = 違規（阻斷 spawn）。
 
@@ -58,11 +60,35 @@ if ($modes.Count -gt 1) {
 if ($modes.Count -eq 0) {
     $violations += [pscustomobject]@{ rule='missing-mode'; detail='no mode: field'; fix='meta 區塊補 mode' }
 }
-if ($prompt -notmatch '(?im)^\s*[-*]?\s*tier\s*:\s*(lite|standard|full)\b') {
+$tier = if ($prompt -match '(?im)^\s*[-*]?\s*tier\s*:\s*(probe|spike|t0|t1|t2|t3)\b') { $Matches[1].ToLower() } else { $null }
+if (-not $tier) {
     $violations += [pscustomobject]@{
         rule = 'missing-tier'
-        detail = 'no tier: lite|standard|full'
-        fix = 'meta 區塊補 tier；缺 tier 時子代理會退回 full，成本最高'
+        detail = 'no tier: probe|spike|t0|t1|t2|t3'
+        fix = 'meta 區塊補 tier；缺 tier 時子代理會退回 t3（最嚴格），成本最高'
+    }
+}
+
+# t0 的 max-subagent-calls 是 0 —— 任何 spawn 都是判定過低的證據。
+# 這裡明確擋下並給出正確處置，而不是讓它落到下方的通用預算檢查（那時 run 狀態檔可能還不存在）。
+if ($tier -eq 't0') {
+    $violations += [pscustomobject]@{
+        rule = 't0-must-not-spawn'
+        detail = 'tier: t0 的委派上限為 0'
+        fix = 't0 由 orchestrator 自行實作。需要 spawn 代表判定過低 —— 升 t1，不要加 spawn'
+    }
+}
+
+# 探索 run 不得碰 production code：交付型 mode 不得掛在探索 tier 下。
+if ($tier -in @('probe', 'spike')) {
+    $deliveryModes = @('slice', 'skeleton', 'feature', 'contract', 'foundation', 'elaboration', 'migration', 'all', 'review')
+    $hit = @($modes | Where-Object { $_ -in $deliveryModes })
+    if ($hit.Count -gt 0) {
+        $violations += [pscustomobject]@{
+            rule = 'discovery-tier-delivery-mode'
+            detail = "tier=$tier mode=$($hit -join ',')"
+            fix = '探索 run 只產事實，不產 production code。改用 probe/metadata/definition/glossary/sql-logic-extraction/spike，或先結束探索 run 再開交付 run'
+        }
     }
 }
 
@@ -104,19 +130,21 @@ if ($runId) {
             # 上限值從 contract 讀取，避免本檔成為第二份會走鐘的預算宣告。
             $used = $state.'subagent-calls'.count
             if ($null -ne $used) {
-                $profile = $state.'runtime-metadata'.profile
+                # tier 以 handoff 宣告優先，退回 run 狀態檔（resume 時 handoff 仍應帶 tier）。
+                $stateTier = $state.'runtime-metadata'.tier
+                $effTier = if ($tier) { $tier } else { $stateTier }
                 $cap = $null
                 try {
                     $rp = (Get-Content $RouteProfilesPath -Raw | ConvertFrom-Json).profiles
-                    if ($profile) { $cap = $rp.$profile.'max-subagent-calls' }
-                    # profile 不明時退回 full 的上限當天花板，不 hard-block 合法流程。
-                    if ($null -eq $cap) { $cap = $rp.full.'max-subagent-calls' }
+                    if ($effTier) { $cap = $rp.$effTier.'max-subagent-calls' }
+                    # tier 不明時退回 t3 的上限當天花板，不 hard-block 合法流程。
+                    if ($null -eq $cap) { $cap = $rp.t3.'max-subagent-calls' }
                 } catch { }
                 if ($null -ne $cap -and $used -ge $cap) {
                     $violations += [pscustomobject]@{
                         rule = 'subagent-budget-exceeded'
-                        detail = "used=$used cap=$cap profile=$(if ($profile) { $profile } else { 'unknown(套用 full 上限)' })"
-                        fix = '停止委派；以 Codex user confirmation 讓使用者選擇升級 profile、拆成多個 run 或放寬切片'
+                        detail = "used=$used cap=$cap tier=$(if ($effTier) { $effTier } else { 'unknown(套用 t3 上限)' })"
+                        fix = '停止委派；以 Codex user confirmation 讓使用者選擇升級 tier、拆成多個 run 或放寬切片。若原因是現況不明 → 開 probe run，不要升 tier'
                     }
                 }
             }

@@ -9,13 +9,14 @@ developer_instructions = '''
 
 取代原先的 `domain-reviewer` / `discovery-reviewer` / `formulator-reviewer` / `design-reviewer`，以 `mode` 區分審核對象。
 
-<!-- AGENT-CORE:BEGIN v3 — agent-lint.ps1 強制所有 agent 逐字相同；修改須同步全部 -->
+<!-- AGENT-CORE:BEGIN v4 — agent-lint.ps1 強制所有 agent 逐字相同；修改須同步全部 -->
 ## 共用核心
 
 - 工具：`edit`→`apply_patch`；`execute`→`shell`（依 sandbox／approval）。使用者確認一律由 orchestrator 發起；子代理不得再委派。
 - Secret Safety：prompt／log／回傳／artifact 不得出現 credentials、連線字串、DLP mapping table 或長 artifact 全文。
-- Preflight：缺 `mode`、`tier`、目標 `path`／`version`／`digest`（reviewer 另需 `review-focus`）→ 回 `blocked` 要求補齊。`tier` 缺漏時套用 `full`（最嚴格）並於回傳註明。
-- Profile：`tier` = `lite`／`standard`／`full`（定義見 `.codex/bdd-workflow/route-profiles.json`）。上游產物在該 profile 未產出 → **跳過該輸入，不得回 `blocked`**；本代理在該 profile 不啟用 → 回 `blocked` + `disabled for this profile`。綠燈門檻不因 profile 降低。
+- Preflight：缺 `mode`、`tier`、目標 `path`／`version`／`digest`（reviewer 另需 `review-focus`）→ 回 `blocked` 要求補齊。`tier` 缺漏時套用 `t3`（最嚴格）並於回傳註明。
+- Tier：`probe`／`spike`（探索，不碰 production code）與 `t0`→`t3`（交付，依不可逆性遞增）。上游產物在該 tier 未產出 → **跳過該輸入，不得回 `blocked`**；本代理在該 tier 不啟用 → 回 `blocked` + `disabled for this tier`。綠燈門檻、secret safety、DLP、safe-change 批准不因 tier 降低。
+- 未知度不得用抬高 tier 吸收：執行中發現現況或可行性不明 → 回 `blocked` + `needs-probe`，附「要查證什麼」，由 orchestrator 開探索 run。**不得自行擴大掃描範圍去補足未知** —— 那是本流程最大的隱性成本來源。
 - 政策只傳路徑、不內嵌全文：`policies/` 下的 `token-budget`、`cache-stability`、`artifact-versioning`、`cli-execution`、`minimal-implementation`。
 
 ### 回傳合約
@@ -116,11 +117,12 @@ ITERATION: {orchestrator 傳入的迭代輪次}
 - **版本一致性**：所依賴 example-map 的 `flow-description-version` 與當前一致（不一致 = BLOCKER）。
 - 規格不足以支援後續 ATDD 時，明確標示阻塞原因為 BLOCKER。
 
-> `standard` profile 只跑這一次審核（Gherkin 定稿後）。因此本 mode 需一併確認 example-map 對齊，不預設上游已被審過。
+> `t1` 只跑這一次審核（Gherkin 定稿後），且**不跑 code-reviewer** —— production code 品質由 `gate-close` 的使用者確認把關。因此本 mode 需一併確認 example-map 對齊，不預設上游已被審過。
 
 ### `mode: design`
 
-> 僅 `full` profile 啟用。handoff 帶 `tier: lite` 或 `tier: standard` 時回傳 `blocked` + `design review disabled for this profile`。
+> `t2`／`t3` 啟用。handoff 帶 `tier: t0` 或 `tier: t1` 時回傳 `blocked` + `design review disabled for this tier`。
+> **`t2` 的本 mode 是 `gate-contract` 的受審對象，位於任何 production 實作之前** —— 審的是契約規格、消費者清單與相容性判定，不是完整設計文件（`t2` 不產出 sequence／module／traceability）。相容性判定為 `breaking` 時必須在 VERDICT 標示「需升 `t3`」。
 
 - **端點追溯**：每個 endpoint 對映至少 1 條 business rule + 1 個 example（= MAJOR）。
 - **術語一致**：ER entity／欄位與 glossary 一致（漂移 = MAJOR）。

@@ -8,7 +8,7 @@ Prompt cache 依**前綴精確匹配**運作。因此：
 
 - **跨 agent 永遠不會共用 cache。** 每個 agent 有各自不同的系統提示，前綴在第 0 個 token 就分岔。
   `model_reasoning_effort` 不同與否**不影響這個結論** —— 系統提示本來就不同。
-- **唯一的 cache 機會是同一個 agent 的重複呼叫**（例：`full` profile 下 `tdd-implementer` 每個 slice 一次）。
+- **唯一的 cache 機會是同一個 agent 的重複呼叫**（例：`t3` 下 `tdd-implementer` 每個 slice 一次）。
   該 agent 的系統提示每次相同，可被快取。
 - 因此**共用核心必須內嵌在各 agent 的系統提示內**（`AGENT-CORE` 區塊），不可改成執行期讀共用檔 ——
   讀檔結果排在易變的 handoff 之後，永遠進不了共用前綴。內嵌的一致性由 `.codex/scripts/agent-lint.ps1` 強制。
@@ -22,7 +22,7 @@ Prompt cache 依**前綴精確匹配**運作。因此：
 
 1. **刪除確實重複的內容** —— 例：4 個 spec reviewer 共用約 80% 儀式，合併刪掉 3 份。
 2. **把跨 agent 切換轉成同 agent 重複呼叫** —— 這是唯一存在的 cache 機會。
-   例：`full` 下 4 次規格審核原本是 4 個不同 agent（零 cache），合併後是同一 agent 4 次（3 次命中）。
+   例：`t3` 下 4 次規格審核原本是 4 個不同 agent（零 cache），合併後是同一 agent 4 次（3 次命中）。
 
 反例（**不要這樣做**）：把共用樣板抽到外部檔讓各 agent 執行期讀取。
 那把內容從**可快取的系統提示**搬到**不可快取的執行期讀取**，總量沒減少反而增加。
@@ -59,9 +59,11 @@ Prompt cache 依**前綴精確匹配**運作。因此：
 
 ## 同 turn 節流
 
-- **full**：單一 turn 不連續呼叫超過 1 個 doer；同 stage 僅續跑最小切片。
-- **standard**：允許同 turn 連續呼叫至 2 個 doer，且合併模式（`mode: all`）算 1 次呼叫。
-- **lite**：不受此限（全程僅 1 個 doer）。
+- **`t3`**：單一 turn 不連續呼叫超過 1 個 doer；同 stage 僅續跑最小切片。
+- **`t2`**：允許同 turn 連續呼叫至 2 個 doer，且合併模式（`mode: all`、`design-modeler` 的 `contract`）算 1 次呼叫。
+- **`t1`**：不受此限（doer 數量本就少）。
+- **`t0`**：無 doer（0 次委派，orchestrator 自行實作），本節不適用。
+- **`probe`／`spike`**：不受此限，但**探索 run 結束時 context 一律歸零** —— 那比同 turn 節流有效得多。
 - 任何 tier：若超過該 tier 的切片上限，先 checkpoint 再回傳 partial-completed。
 - atdd 發生 partial-completed 時，優先 checkpoint；同 turn 不重複要求同一子代理處理同一切片。
 
@@ -76,7 +78,7 @@ Prompt cache 依**前綴精確匹配**運作。因此：
 
 判準只有一條 —— **該 agent ≥80% 的 invocation 都會讀到 → 內嵌進系統提示；真正條件性 → 留在 policy／runbook／skill。**
 
-理由直接來自上方的 cache 機制：系統提示可跨同 agent 的重複呼叫命中 cache（約 1/10 成本），執行期讀取排在易變的 handoff 之後，**每次 spawn 都付全額**。因此對會被重複 spawn 的 agent（`full` 下 `tdd-implementer` 每切片一次、`analyst` 每 story 一次、`living-doc` 每 stage boundary 一次），把必讀內容外掛是**淨損失**：
+理由直接來自上方的 cache 機制：系統提示可跨同 agent 的重複呼叫命中 cache（約 1/10 成本），執行期讀取排在易變的 handoff 之後，**每次 spawn 都付全額**。因此對會被重複 spawn 的 agent（`t3` 下 `tdd-implementer` 每切片一次、`analyst` 每 story 一次、`living-doc` 每 stage boundary 一次），把必讀內容外掛是**淨損失**：
 
 > N 次 spawn × 全額讀取　vs　1 次 cache write + (N−1) 次 cache read
 

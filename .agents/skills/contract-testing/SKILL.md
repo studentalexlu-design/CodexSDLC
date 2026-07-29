@@ -1,13 +1,14 @@
 ---
 name: contract-testing
 version: 1.0.0
-description: 以 OpenAPI draft 為契約來源，設計 API 契約測試與整合/smoke 測試證據（P0-3 Gate-E）
+description: 以 OpenAPI draft 為契約來源，設計 API 契約測試與整合/smoke 測試證據（P0-3 交付 Gate）
 ---
 
 # Contract Testing Skill
 
 > 用途：整合驗證階段（integration）以 `design/api-contract.yaml`（P0-1 產出）為**唯一契約來源**，
-> 驗證實作回應符合契約，並產出契約/整合/smoke 測試證據供 Gate-E 確認。
+> 驗證實作回應符合契約，並產出契約/整合/smoke 測試證據供交付 Gate 確認（`t2` → `gate-close`；`t3` → `gate-release`）。
+> 契約測試本身應在 `gate-contract`（**實作前**）就已寫好且為紅燈 —— 紅燈是契約可測的證據。本 skill 處理的是實作後的轉綠與證據產出。
 > 維持 lean：產出為測試證據，不是正式整合測試報告或 E2E 報告治理產物。
 
 ## 使用時機
@@ -63,7 +64,7 @@ CONTRACT_RESULT: {total} endpoints, {passed} passed, {failed} failed
 - ...
 
 ## Next Step
-Gate-E 使用者確認 → living-doc 收尾
+交付 Gate 使用者確認 → 收尾（`t3` 經 living-doc）
 ````
 
 ## Secret Safety

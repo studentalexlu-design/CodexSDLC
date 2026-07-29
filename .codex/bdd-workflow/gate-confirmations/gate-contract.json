@@ -1,0 +1,94 @@
+{
+    "gate-id": "gate-contract",
+    "applies-to-tiers": ["t2", "t3"],
+    "display-name": "契約定案（實作前）",
+    "subsumes": "舊模型的 Gate-B + Gate-C 在契約層的角色",
+    "current-boundary": "contract-review -> atdd",
+    "next-stage-if-approved": "atdd",
+    "pre-implementation-invariant": {
+        "note": "**本 Gate 必須在任何 production 實作之前。** 這是整個流程唯一能省下重工的位置 —— 契約定案後才寫的實作，錯了只要改實作；實作後才定案的契約，錯了要同時改實作、測試與已經看過它的下游。放到實作之後就只是驗屍。",
+        "enforced-by": "orchestrator 不得在本 Gate 核准前委派 atdd-automator 或 tdd-implementer",
+        "violation-handling": "視為流程違規：停止推進、記錄 decision-log、回報使用者"
+    },
+    "requires": [
+        "contract-spec.exists",
+        "contract-spec.version pinned",
+        "consumer-inventory.enumerated",
+        "backward-compatibility.verdict present",
+        "spec-reviewer.verdict == PASS (mode: design)",
+        "contract-tests.written AND contract-tests.failing",
+        "no-production-implementation-yet",
+        "lean-sdlc.stage.design.required-artifacts satisfied-or-not-applicable"
+    ],
+    "contract-tests-note": "契約測試必須在本 Gate **已寫好且為紅燈**。紅燈是契約可測的證據；若尚未寫，Gate 核准的只是一份文件，不是一份可驗證的契約。",
+    "documents-to-review": [
+        {
+            "id": "contract-spec",
+            "name": "契約規格（API schema／event schema／data contract；design-modeler 於 t2 只產契約產物）",
+            "path": "bdd-docs/runs/{run-id}/artifacts/design/contract/",
+            "required": true
+        },
+        {
+            "id": "consumer-inventory",
+            "name": "消費者清單（誰會看到這個差異、能否協調同步升級）",
+            "path": "bdd-docs/runs/{run-id}/artifacts/design/consumer-inventory.md",
+            "required": true
+        },
+        {
+            "id": "backward-compatibility-verdict",
+            "name": "相容性判定（additive / breaking；breaking 必須升 t3）",
+            "path": "bdd-docs/runs/{run-id}/artifacts/design/compatibility.md",
+            "required": true
+        },
+        {
+            "id": "contract-review-evidence",
+            "name": "spec-reviewer（mode: design）審核證據",
+            "path": "bdd-docs/runs/{run-id}/artifacts/reviews/",
+            "required": true
+        },
+        {
+            "id": "contract-tests-red",
+            "name": "契約測試（已寫、紅燈）與其 evidence ref",
+            "path": "bdd-docs/runs/{run-id}/artifacts/evidence/",
+            "required": true
+        }
+    ],
+    "user-verification-checklist": [
+        "契約是否表達了正確的意圖 —— **這是測試抓不到的缺陷類別，只能由人審**",
+        "消費者清單是否完整。漏掉的消費者就是上線後才會發現的破壞",
+        "相容性判定是否正確：additive 可留 t2；**任何 breaking（移除欄位／改型別／改簽章）必須升 t3**",
+        "版本策略是否明確（新版並存 vs 就地變更；舊版何時退場）",
+        "契約測試是否已寫好且為紅燈 —— 綠燈代表契約已被實作，違反本 Gate 的實作前不變條件",
+        "錯誤結構、狀態碼、必填/選填語意是否已定案",
+        "是否確認在此之前**尚未有任何 production 實作**",
+        "是否同意以此契約進入 ATDD 與實作"
+    ],
+    "escalate-instead-of-approve-when": [
+        "相容性判定為 breaking → 升 t3（走 gate-migration + gate-release）",
+        "發現會動到既有資料、在跑的流量或認證授權 → 升 t3",
+        "消費者無法協調同步升級（外部廠商、已發佈 client）→ 升 t3",
+        "契約細節仍需探索才能定案 → **開 probe run**，不在本 Gate 硬定"
+    ],
+    "decision-options": [
+        "approve-gate",
+        "approve-and-resume-in-new-conversation",
+        "return-for-fix",
+        "escalate-tier",
+        "open-probe-run",
+        "pause-workflow",
+        "free-text"
+    ],
+    "context-reset": "recommended-when subagent-calls.count - count-at-last-reset >= 3",
+    "context-reset-note": "契約定案是天然的零資訊損失歸零點 —— 契約規格已完整落地，後續實作只需讀它。設計討論的 transcript 在實作階段沒有殘餘價值。",
+    "decision-log-requirements": [
+        "gate-id",
+        "tier",
+        "reviewed-document-refs",
+        "verification-checklist",
+        "contract-version-pinned",
+        "compatibility-verdict",
+        "consumer-inventory-ref",
+        "user-decision",
+        "next-stage-if-approved"
+    ]
+}

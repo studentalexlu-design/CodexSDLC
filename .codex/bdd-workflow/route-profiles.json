@@ -1,156 +1,249 @@
 {
-  "schema-note": "Extracted from workflow-contract.json (v1.12.0). This is the startup routing slice: bdd-orchestrator reads THIS file at complexity-assessment, not the whole contract. On resume it reads neither — runtime-metadata.profile already holds the answer.",
-  "note": "啟動時讀取。決定本 run 走哪一個 profile。判定準則與各 profile 詳細程序見 runbook-ref；本區塊只提供路由所需的最小事實。",
-  "runbook-ref": ".codex/bdd-workflow/runbooks/complexity-routing.md",
-  "assessed-at-stage": "complexity-assessment",
+  "schema-note": "v2.0.0 tier model. 兩軸分流：不可逆性決定交付 tier（t0..t3），未知度由獨立的探索 run（probe/spike）吸收，不再以抬高交付 tier 代替探索。",
+  "llm-read": false,
+  "llm-read-note": "**本檔不由任何 agent 於執行期讀取。** tier 表已內嵌於 bdd-orchestrator 的系統提示（cached，每 run 省一次 ~2.5k 的未快取讀取）。本檔存在的唯一目的是給 .codex/scripts/handoff-lint.ps1 與 agent-lint.ps1 當機械來源。修改本檔必須同步 bdd-orchestrator 內嵌的 tier 表，一致性由 agent-lint 檢查 9 強制。",
+  "axes": {
+    "irreversibility": "決定交付 tier。問『錯了要付多少代價才能回頭』，不問規模。",
+    "uncertainty": "決定要不要先跑探索 run。問『開工前我不知道什麼』。**不得以抬高交付 tier 吸收未知度** —— 那會讓一次小探測付出完整交付流程的成本。"
+  },
+  "not-a-tier-factor": {
+    "scale": "規模用『拆 run』解決，不用『加深度』解決。以行為數（可寫成獨立 Given-When-Then 的行為）計，不以檔案數計。",
+    "sensitivity": "含個資／金流／憑證是橫切約束（全程脫敏 + 殘留掃描），不抬高 tier。",
+    "verifiability": "驗證受限不抬高 tier，只改變證據形式與交付閘門是否分階段。"
+  },
+  "assessed-at-stage": "route-assessment",
   "assessed-once-per-run": true,
-  "profile-stored-in": "bdd-docs/runs/{run-id}/workflow-state.json runtime-metadata.profile",
+  "profile-stored-in": "bdd-docs/runs/{run-id}/workflow-state.json runtime-metadata.tier",
   "handoff-field": "tier",
-  "default-when-unconfirmed": "standard",
+  "handoff-enum": ["probe", "spike", "t0", "t1", "t2", "t3"],
+  "default-when-unconfirmed": "t1",
+  "default-when-unconfirmed-note": "未確認時取 t1（有驗收語言的最小交付深度），不取 t3。舊模型『未確認→最貴路徑』是最大的單一浪費來源：不確定該用探索 run 解決，不是用預算解決。但 t0 仍不得作為預設 —— t0 放棄了 doer/orchestrator 分離。",
   "escalation-only": true,
+  "downgrade": "user-explicit-only",
   "enforced-by": ".codex/scripts/handoff-lint.ps1",
   "call-count-tracked-in": "bdd-docs/runs/{run-id}/workflow-state.json subagent-calls.count",
-  "call-count-note": "orchestrator 每次 spawn 後必須遞增，比照 quality-loop.iteration。handoff-lint 讀此欄位與本區塊的 max-subagent-calls 機械阻斷超額 spawn；不遞增等同讓上限失效。",
+  "call-count-note": "orchestrator 每次 spawn 後必須遞增。handoff-lint 讀此欄位與本區塊的 max-subagent-calls 機械阻斷超額 spawn；不遞增等同讓上限失效。t0 的上限為 0，因此 t0 的任何 spawn 都會被 hook 阻斷 —— 這是 t0『orchestrator 自行完成』的機械保證，不是靠自律。",
   "profiles": {
-    "lite": {
-      "display-name": "低難度快速路徑",
-      "applies-to": "單檔改動、加欄位、修 bug、複製既有 pattern",
-      "stages": [
-        "intake",
-        "complexity-assessment",
-        "scan",
-        "formulate",
-        "tdd",
-        "tdd-done",
-        "completed"
+    "probe": {
+      "display-name": "探測（讀）",
+      "kind": "discovery",
+      "applies-to": "現況不明：無 schema 定義、相依黑箱、legacy 邏輯待萃取、bug 無重現步驟、需求無可驗證完成定義",
+      "trigger-questions": [
+        "能否寫出可驗證的『完成的樣子』？",
+        "是否知道要改的東西現在長什麼樣（現況／schema／相依／重現步驟）？"
       ],
-      "gates": [
-        "gate-lite"
-      ],
-      "agents": [
-        "formulator",
-        "tdd-implementer"
-      ],
+      "produces": "事實，不產 production code",
+      "exit-condition": "能對交付 tier 與行為數做出有信心的判定",
+      "stages": ["intake", "route-assessment", "probe", "probe-done"],
+      "gates": ["gate-probe"],
+      "agents": ["project-scanner", "db-introspection-scanner", "analyst"],
       "reviewers": [],
-      "scan-mode": "inventory",
-      "keeps-gherkin": true,
       "max-subagent-calls": 2,
-      "design-bridge": "disabled",
-      "context-pack": "disabled",
-      "checklist-columns": "minimal",
-      "not-applicable-reason": "profile-lite: 低難度快速路徑不產出此項",
+      "max-subagent-calls-note": "探測超過 2 次代表它不是探測，是交付。停下來改開交付 run。",
+      "touches-production-code": false,
+      "handoff-artifact": "bdd-docs/runs/{run-id}/artifacts/probe-findings.md",
+      "handoff-artifact-max-chars": 2000,
+      "context-reset": "mandatory-at-exit",
+      "context-reset-note": "探索 run 的 transcript 必須隨 run 結束一起丟棄。交付 run 只讀 probe-findings.md，不讀探索 run 的 log。這是本模型最大的單一 token 槓桿：把未知度收斂在一段短命對話裡，交付從乾淨 context 起跑。",
+      "scan-policy": "index-plus-scoped",
+      "impact-top-n": 12,
+      "sql-scan": "on-demand",
+      "orchestrator-handles": ["run-skeleton", "checklist", "log", "checkpoint", "decision-log", "index-read"]
+    },
+    "spike": {
+      "display-name": "Spike（寫，但丟棄）",
+      "kind": "discovery",
+      "applies-to": "可行性不明：新技術／新框架首次採用、黑箱相依行為未知、效能量級未知",
+      "trigger-questions": ["這個技術路徑確定做得出來嗎？"],
+      "produces": "結論保留，程式丟棄",
+      "exit-condition": "同 probe —— 能判定交付 tier 與行為數",
+      "stages": ["intake", "route-assessment", "spike", "probe-done"],
+      "gates": ["gate-probe"],
+      "agents": ["tdd-implementer"],
+      "reviewers": [],
+      "max-subagent-calls": 3,
+      "max-subagent-calls-note": "比 probe 多 1 次，因為 spike 需要 build／run 循環。",
+      "touches-production-code": false,
+      "spike-code-location": "bdd-docs/runs/{run-id}/spike/",
+      "spike-code-disposition": "discard-at-gate",
+      "handoff-artifact": "bdd-docs/runs/{run-id}/artifacts/probe-findings.md",
+      "handoff-artifact-max-chars": 2000,
+      "context-reset": "mandatory-at-exit",
       "scan-policy": "index-only",
       "impact-top-n": 5,
       "sql-scan": "disabled",
-      "orchestrator-handles": [
-        "run-skeleton",
-        "index-read",
-        "impact-scope",
-        "checklist",
-        "log",
-        "checkpoint",
-        "decision-log"
-      ]
+      "orchestrator-handles": ["run-skeleton", "checklist", "log", "checkpoint", "decision-log", "index-read"]
     },
-    "standard": {
-      "display-name": "中難度標準路徑",
-      "applies-to": "單一 feature、新增 endpoint、不動 schema、不碰遺留 SQL",
-      "stages": [
-        "intake",
-        "complexity-assessment",
-        "scan",
-        "scan-done",
-        "domain",
-        "discovery-phase0",
-        "discovery-phase1",
-        "discovery-done",
-        "formulate",
-        "formulate-done",
-        "atdd",
-        "atdd-done",
-        "tdd",
-        "tdd-done",
-        "integration",
-        "integration-done",
-        "living-doc",
-        "completed"
+    "t0": {
+      "display-name": "直通（可 revert、行為等價）",
+      "kind": "delivery",
+      "irreversibility": "none",
+      "applies-to": "改動可在單一 commit revert、無對外可見差異、無狀態變更。文案、log level、既有欄位補回既有 response、加測試",
+      "acceptance-language": "one-line-dod",
+      "acceptance-language-note": "不寫 Gherkin。對『改一個字串』寫 Given-When-Then 是純儀式成本，換不到任何驗證價值。",
+      "stages": ["intake", "route-assessment", "implement", "close"],
+      "gates": ["gate-close"],
+      "agents": [],
+      "reviewers": [],
+      "max-subagent-calls": 0,
+      "max-subagent-calls-note": "**0 是刻意的。** spawn 固定成本 4-8k tokens；t0 的整個 diff 通常比一次 spawn 的框架開銷還小。orchestrator 自行實作。任何 spawn 需求 = 判定過低 = 升 t1，不是加 spawn。",
+      "orchestrator-implements": true,
+      "orchestrator-implements-note": "這是 t0 唯一放寬 orchestrator 寫入邊界的地方。doer/orchestrator 分離買的是高風險改動的可稽核性，而 t0 的定義就是『這個保證不適用的那一類』。",
+      "escalate-when": [
+        "diff 超出單一 commit 可 revert 的範圍",
+        "發現有行為變更需要被驗收",
+        "需要任何 spawn"
       ],
-      "gates": [
-        "gate-std-1",
-        "gate-std-2"
-      ],
-      "agents": [
-        "project-scanner",
-        "analyst",
-        "formulator",
-        "atdd-automator",
-        "tdd-implementer",
-        "integration-tester"
-      ],
-      "reviewers": [
-        "spec-reviewer"
-      ],
+      "scan-policy": "index-only",
+      "impact-top-n": 5,
+      "sql-scan": "disabled",
+      "checklist-columns": "minimal",
+      "not-applicable-reason": "tier-t0: 行為等價的可 revert 改動不產出此項",
+      "orchestrator-handles": ["run-skeleton", "index-read", "impact-scope", "checklist", "log", "checkpoint", "decision-log", "implementation"]
+    },
+    "t1": {
+      "display-name": "內含（有行為變更，消費者在控制範圍內）",
+      "kind": "delivery",
+      "irreversibility": "low",
+      "applies-to": "改動限於我控制的邊界內、不改對外契約、不動既有資料。內部 service method、只給自家前端的 endpoint、既有 flow 加業務分支",
+      "acceptance-language": "gherkin",
+      "acceptance-language-note": "第一個真正需要驗收語言的層級 —— 有行為變更就要有驗收依據。",
+      "stages": ["intake", "route-assessment", "scan", "formulate", "atdd", "tdd", "verify", "close"],
+      "gates": ["gate-close"],
+      "agents": ["formulator", "atdd-automator", "tdd-implementer"],
+      "reviewers": ["spec-reviewer"],
       "review-count": 1,
+      "review-scope": "spec-only",
+      "review-scope-note": "審驗收條件（spec-reviewer, mode: gherkin），不審 code。code 品質由測試綠燈把關；驗收條件錯了測試會忠實地驗證錯的東西 —— 那是測試抓不到的缺陷類別。",
       "keeps-gherkin": true,
+      "keeps-outside-in": true,
       "merged-mode-calls": {
-        "integration-tester": "single-call-all-modes",
-        "analyst": "whole-example-map"
+        "tdd-implementer": "whole-backlog-group",
+        "note": "atdd-automator 與 tdd-implementer 維持分開 —— 它們對『可否實作 production 行為』持相反規則，那是 Outside-In 的全部保證所在，不是穩定性偏好。"
       },
-      "max-subagent-calls": 10,
+      "max-subagent-calls": 5,
+      "max-subagent-calls-note": "formulator + atdd-automator + tdd-implementer + spec-reviewer = 4，留 1 次給修正輪。舊模型的 standard 給 10 次卻在零修正輪時就用滿 —— 預算要留修正空間，否則 hook 會在最不該擋的時候擋下。",
       "design-bridge": "disabled",
       "context-pack": "disabled",
-      "checklist-columns": "standard",
-      "not-applicable-reason": "profile-standard: 中難度標準路徑不產出此項",
+      "living-doc": "disabled",
+      "checklist-columns": "minimal",
+      "not-applicable-reason": "tier-t1: 內含變更不產出此項",
       "scan-policy": "index-plus-scoped",
       "impact-top-n": 12,
       "sql-scan": "disabled",
-      "orchestrator-handles": [
-        "run-skeleton",
-        "checkpoint",
-        "decision-log",
-        "checklist",
-        "log",
-        "index-read"
-      ]
+      "orchestrator-handles": ["run-skeleton", "index-read", "impact-scope", "checklist", "log", "checkpoint", "decision-log"]
     },
-    "full": {
-      "display-name": "高難度完整路徑",
-      "applies-to": "遺留系統重構、DB schema 變更、破壞性公開契約、需 DB introspection、含敏感來源",
+    "t2": {
+      "display-name": "契約（有我控制不了的消費者會看到差異）",
+      "kind": "delivery",
+      "irreversibility": "medium",
+      "applies-to": "對外 API、事件 schema、共用 library 介面、CLI 參數、給外部查的 view。新增 table（尚無寫入者）、新增 nullable 欄位",
+      "direction-rule": "只約束『我提供契約給別人』。**消費別人的契約是 t1** —— 消費端改錯只有自己壞，提供端改錯是別人壞。",
+      "acceptance-language": "gherkin-plus-contract-spec",
+      "stages": ["intake", "route-assessment", "scan", "domain", "formulate", "contract", "contract-review", "atdd", "tdd", "integration", "close"],
+      "gates": ["gate-contract", "gate-close"],
+      "gate-order-invariant": "gate-contract 必須在任何 production 實作之前。這是唯一能省下重工的位置；放到實作之後就只是驗屍。",
+      "agents": ["project-scanner", "analyst", "formulator", "design-modeler", "atdd-automator", "tdd-implementer", "integration-tester"],
+      "reviewers": ["spec-reviewer", "code-reviewer"],
+      "review-count": 2,
+      "review-scope": "contract-mandatory-plus-code",
+      "review-scope-note": "契約必須由人審 —— 『契約設計得不好』是測試抓不到的缺陷類別。",
+      "keeps-gherkin": true,
+      "keeps-outside-in": true,
+      "merged-mode-calls": {
+        "design-modeler": "contract-only",
+        "design-modeler-note": "只產契約產物（api／event schema／data contract）。sequence／module／traceability 在 t2 不產出 —— 它們是設計文件，不是契約，換不到任何驗證價值。",
+        "integration-tester": "single-call-all-modes",
+        "integration-tester-note": "contract／integration／smoke 共用同一次 build，分開呼叫會 build 3 次。",
+        "analyst": "whole-example-map"
+      },
+      "max-subagent-calls": 9,
+      "design-bridge": "contract-only",
+      "context-pack": "disabled",
+      "living-doc": "disabled",
+      "checklist-columns": "standard",
+      "not-applicable-reason": "tier-t2: 契約層變更不產出此項",
+      "scan-policy": "index-plus-scoped",
+      "impact-top-n": 12,
+      "sql-scan": "disabled",
+      "orchestrator-handles": ["run-skeleton", "index-read", "checklist", "log", "checkpoint", "decision-log"]
+    },
+    "t3": {
+      "display-name": "有狀態（碰到已存在的資料或已在跑的流量）",
+      "kind": "delivery",
+      "irreversibility": "high",
+      "applies-to": "schema migration、data backfill、線上大表加索引、破壞性契約變更（移除欄位／改簽章）、**認證授權變更**",
+      "definition-note": "以『碰到已存在的資料或已在跑的流量』定義，不以『改 schema』定義。backfill script 不改 schema 但完全不可逆；認證變更不碰 DB 但權限放寬出去收不回來。",
+      "acceptance-language": "gherkin-plus-contract-spec",
       "stages": "all",
-      "gates": [
-        "intake",
-        "gate-a",
-        "gate-b",
-        "gate-c",
-        "gate-d",
-        "gate-e"
-      ],
+      "gates": ["gate-contract", "gate-migration", "gate-release"],
+      "gate-nature": "irreversibility-gates",
+      "gate-nature-note": "t3 的閘門不是品質閘門。使用者批准的是『我接受這件事可能回不去』，不是『我覺得程式寫得不錯』。",
       "agents": "all",
       "reviewers": "all",
+      "required-artifacts": ["migration-plan", "rollback-plan", "staged-rollout-plan"],
+      "rollback-plan-note": "**rollback 計畫是 t3 的必要產出。** 對不可逆變更而言，它比任何設計圖都重要。",
       "keeps-gherkin": true,
+      "keeps-outside-in": true,
       "merged-mode-calls": {
-        "note": "v1.13.0：解除原本『full 一律逐一 mode 分開呼叫』的凍結。分組依產物依賴關係，不是任意合併；每次 spawn 的固定成本 4-8k，分開呼叫買到的是穩定性而非任何正確性保證。仍分開的邊界（doer/reviewer、atdd/tdd、db-scanner）各自帶著具體保證，不在此列。",
-        "design-modeler": "foundation(api+data) -> elaboration(sequence+module+traceability)；兩組之間的分界刻意保留，供 spec-reviewer(mode: design) 在 foundation 錯誤污染下游前介入。不得再併為一次。",
-        "integration-tester": "single-call-all-modes；contract/integration/smoke 共用同一次 build，分開呼叫會 build 3 次。",
-        "still-sliced": "tdd-implementer 維持 1 個 behavior slice、analyst 維持 1 個 story —— 這兩者的切片對應真實的失敗復原邊界，不合併。"
+        "design-modeler": "foundation(api+data) -> elaboration(sequence+module+traceability)；兩組之間保留分界供 spec-reviewer(mode: design) 在 foundation 錯誤污染下游前介入",
+        "integration-tester": "single-call-all-modes",
+        "still-sliced": "tdd-implementer 維持 1 個 behavior slice、analyst 維持 1 個 story —— 這兩者的切片邊界等於真實的失敗復原邊界"
       },
-      "max-subagent-calls": 20,
+      "max-subagent-calls": 14,
+      "max-subagent-calls-note": "14 而非舊模型的 20：t3 通常前置一個 probe run，帶著事實起跑，修正輪大幅減少。逼近上限代表範圍過大 —— 拆多個 run，不放寬上限。",
       "design-bridge": "enabled",
       "context-pack": "cross-stage-only",
+      "living-doc": "enabled",
+      "living-doc-note": "living-doc 只在 t3 啟用。委派寫檔的損益平衡是『產物大小 × 剩餘輪次 > spawn 成本』；只有 t3 的 run 夠長、產物夠大而值得。t0-t2 的 run 帳務（checkpoint／decision-log／checklist）由 orchestrator 自行寫入，內容產物由產出它的 doer 自行寫入 —— 兩者都不經過 orchestrator 的 context。",
       "checklist-columns": "full",
       "scan-policy": "full-index-plus-sql",
       "impact-top-n": 12,
       "sql-scan": "enabled"
     }
   },
+  "modifiers": {
+    "note": "修正因子改變計畫，**不改變 tier**。",
+    "N": {
+      "name": "behaviour-count",
+      "measure": "可寫成獨立 Given-When-Then 的行為數，**不是檔案數**",
+      "measure-note": "檔案數是壞度量：一次 rename 改 50 檔、一次演算法改寫改 1 檔。",
+      "thresholds": {
+        "1-3": "單次交付",
+        "4-10": "切片交付",
+        ">10": "強制拆多個 run（不加深度）"
+      }
+    },
+    "V": {
+      "name": "verifiability",
+      "values": {
+        "auto": "綠燈即證據",
+        "manual": "人工驗收 checklist + 截圖證據",
+        "prod-only": "交付閘門必須含分階段上線或 feature flag"
+      }
+    },
+    "P": {
+      "name": "sensitivity",
+      "trigger": "素材或資料含個資、金流、憑證",
+      "effect": "全程 DLP 脫敏 + 殘留掃描 + 不得寫入 artifact",
+      "effect-note": "**不抬高 tier。**『在 log 遮罩一個信用卡號』是 t0/t1 + P，不是重構。"
+    }
+  },
   "escalation-triggers": [
-    "改動檔案數超出該 profile 上限",
-    "需要 DB schema 變更或 DB introspection",
-    "破壞性公開契約變更",
-    "遺留系統重構或 legacy SQL 邏輯萃取",
-    "來源素材含敏感資料需 DLP 脫敏",
-    "safe-change envelope 判定 high risk",
-    "代理呼叫次數超出 max-subagent-calls"
+    "t0：diff 超出單一 commit 可 revert 範圍、出現需驗收的行為變更、或需要任何 spawn",
+    "t1：發現對外契約會被消費者看到差異",
+    "t2：發現會動到既有資料、在跑的流量或認證授權",
+    "任何 tier：代理呼叫次數逼近 max-subagent-calls 且尚未綠燈",
+    "任何 tier：發現現況不明或可行性不明（→ 停止交付，改開 probe／spike run，不是升 tier）"
   ],
-  "downgrade": "user-explicit-only"
+  "unconditional-rules": {
+    "note": "以下不因 tier 放寬，任何 tier 觸發條件成立即生效。",
+    "rules": [
+      "secret safety：prompt／log／artifact 不得出現 credentials、連線字串、DLP mapping table",
+      "DLP 脫敏與殘留掃描（P 因子命中時）",
+      "safe-change envelope 使用者批准",
+      "smoke test／Web·API 啟動／DB introspection 使用者批准",
+      "綠燈門檻不因 tier 降低（t0 的等效要求是相關既有測試全綠）"
+    ]
+  }
 }

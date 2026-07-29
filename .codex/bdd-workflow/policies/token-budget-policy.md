@@ -4,12 +4,15 @@
 
 ## Never Remove For Token Saving
 
-以下規則**只約束該 tier 已啟用的階段**（tier 定義見 `workflow-contract.json` `route-profiles`）。未啟用的階段不受約束 —— 例如 lite 不產出 Gherkin，就沒有 ATDD acceptance path 可走。
+以下規則**只約束該 tier 已啟用的階段**（tier 定義見 `route-profiles.json`；判定程序內建於 `bdd-orchestrator`）。未啟用的階段不受約束 —— 例如 `t0` 不產出 Gherkin，就沒有 ATDD acceptance path 可走。
 
-- Outside-In：Example Mapping / Gherkin → ATDD walking skeleton → TDD 內圈。（standard / full）
-- ATDD 必須走 `.feature` → step definition → driver/helper 的真 BDD acceptance path。（standard / full）
-- TDD `completed` 前 full acceptance 必須 `failed == 0` 且 `pending == 0`。（M / H；lite 等效要求為相關單元／focused 測試 `failed == 0` 且 `skipped == 0`）
+- Outside-In：Example Mapping / Gherkin → ATDD walking skeleton → TDD 內圈。（`t1`／`t2`／`t3`）
+- ATDD 必須走 `.feature` → step definition → driver/helper 的真 BDD acceptance path。（`t1`／`t2`／`t3`）
+- 全量 acceptance 在 TDD `completed` 前必須 `failed == 0` 且 `pending == 0`。（`t1`–`t3`；`t0` 等效要求為相關既有單元／focused 測試 `failed == 0` 且 `skipped == 0`）
+- 契約先於實作：`gate-contract` 核准前不得有 production 實作。（`t2`／`t3`）
+- 不可逆性承擔：`rollback-plan` 不得省略或標 `not-applicable`；交付不得一次全量。（`t3`）
 - reviewer FAIL 上限、Gate 升級不可跳過。（該 tier 有啟用 reviewer / Gate 時）
+- **未知度不得以抬高交付 tier 吸收** —— 現況或可行性不明時開 `probe`／`spike` run。這條省下的不只是流程稅，還有探索 transcript 在交付 run 每一輪重送的租金。
 
 以下規則**不分 tier，一律適用**：
 

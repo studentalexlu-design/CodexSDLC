@@ -12,10 +12,10 @@
 
 ## 階段定位
 
-- 萃取（識別）：`scan` 系統分析階段，併入 **Gate-A**。
-- 處置決策（使用者規劃確認）：`domain` 需求分析階段，併入 **Gate-B**。
-- 分層落實：`design`（Gate-D）+ `tdd`。
-- 行為對等驗證：`integration`（Gate-E）。
+- 萃取（識別）：`scan` 系統分析階段，併入該 tier 的交付 Gate（`t3` → `gate-contract`）。
+- 處置決策（使用者規劃確認）：`domain` 需求分析階段，併入 **`gate-contract`**。
+- 分層落實：`contract`（`gate-contract`）+ `tdd`。
+- 行為對等驗證：`integration`（`gate-release`）。
 
 不新增 FSM stage；掛在既有 `scan` 與 `domain`。
 
@@ -56,9 +56,9 @@
 2. **規則改寫**：`business-rule` 用 domain 語言改寫成白話規則敘述（遮蔽識別符）。
 3. **矛盾登錄**：規則與其他來源矛盾時，寫入 `source-conflicts.md`（`rule-contradiction`）。
 4. **回填 glossary**：規則涉及的術語補進 `domain-glossary.md`。
-5. **提出處置建議**：對每條 business-rule 建議處置（見決策矩陣），狀態 `pending`，待 Gate-B 使用者裁定。
+5. **提出處置建議**：對每條 business-rule 建議處置（見決策矩陣），狀態 `pending`，待 `gate-contract` 使用者裁定。
 
-## 處置決策矩陣（建議值，最終由使用者於 Gate-B 裁定）
+## 處置決策矩陣（建議值，最終由使用者於 `gate-contract` 裁定）
 
 | 情境 | 建議處置 | 目標分層 |
 | --- | --- | --- |
@@ -77,10 +77,10 @@
 
 ## Gate 對齊
 
-- **Gate-A**：`sql-logic-extraction.status in [extracted, dispositions-resolved, not-applicable]`。
-- **Gate-B**：`sql-logic-extraction.dispositions-resolved OR not-applicable`；使用者逐條確認處置（keep/move/redesign/drop/defer）。
-- **Gate-D**：`design-traceability` 把每條 `move-to-*` 規則映到 module + endpoint；repository SQL 維持 thin。
-- **Gate-E**：`move-to-*` / `redesign` 規則以行為對等 example 驗證新實作保留可觀察行為。
+- **`probe` 出口**：`sql-logic-extraction.status in [extracted, dispositions-resolved, not-applicable]`。
+- **`gate-contract`**：`sql-logic-extraction.dispositions-resolved OR not-applicable`；使用者逐條確認處置（keep/move/redesign/drop/defer）。
+- **`gate-contract`**：`design-traceability` 把每條 `move-to-*` 規則映到 module + endpoint；repository SQL 維持 thin。
+- **`gate-release`**：`move-to-*` / `redesign` 規則以行為對等 example 驗證新實作保留可觀察行為。
 
 ## 開發落實守門（`tdd-implementer` / `code-reviewer`（`mode: tdd`））
 

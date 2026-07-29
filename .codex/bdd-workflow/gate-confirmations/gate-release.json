@@ -1,0 +1,108 @@
+{
+    "gate-id": "gate-release",
+    "applies-to-tiers": ["t3"],
+    "display-name": "上線批准與交付（不可逆性閘門）",
+    "gate-nature": "irreversibility",
+    "subsumes": "舊模型的 Gate-E",
+    "current-boundary": "migration-execution -> completed",
+    "next-stage-if-approved": "completed",
+    "requires": [
+        "gate-migration.approved",
+        "migration.executed OR migration.not-applicable",
+        "migration.post-verification-passed",
+        "staged-rollout-plan.exists",
+        "abort-criteria.defined",
+        "monitoring-signals.defined",
+        "contract-tests.passed",
+        "integration-evidence.passed",
+        "smoke-test.user-approved-and-passed OR smoke.not-applicable",
+        "lean-sdlc.checklist.rows satisfied-or-not-applicable"
+    ],
+    "staged-rollout-invariant": {
+        "note": "t3 的交付**不得一次全量**。分階段是不可逆變更唯一的實質保險：它把『發現錯了』的時間點提前到影響範圍還小的時候。",
+        "must-cover": [
+            "分階段順序與每階段的流量或資料範圍",
+            "每階段的觀察窗與通過標準",
+            "**中止標準（abort criteria）** —— 什麼訊號出現就停止並回復",
+            "監控訊號與觀察對象（誰在看、看多久）"
+        ],
+        "v-prod-note": "V-prod 因子（只有 production 才驗得出來）命中時，本區塊是唯一的驗證手段，不得標 not-applicable。"
+    },
+    "documents-to-review": [
+        {
+            "id": "staged-rollout-plan",
+            "name": "**分階段上線計畫（含中止標準與監控訊號）**",
+            "path": "bdd-docs/runs/{run-id}/artifacts/migration/staged-rollout-plan.md",
+            "required": true
+        },
+        {
+            "id": "migration-post-verification",
+            "name": "遷移後驗證證據（資料筆數對帳、抽樣比對、FK 完整性）",
+            "path": "bdd-docs/runs/{run-id}/artifacts/evidence/",
+            "required": "unless-not-applicable"
+        },
+        {
+            "id": "integration-evidence",
+            "name": "contract / integration / smoke 證據（integration-tester `mode: all` 單次產出）",
+            "path": "bdd-docs/runs/{run-id}/artifacts/integration/",
+            "required": true
+        },
+        {
+            "id": "rollback-plan",
+            "name": "rollback 計畫（上線期間仍為有效回復路徑）",
+            "path": "bdd-docs/runs/{run-id}/artifacts/migration/rollback-plan.md",
+            "required": true
+        },
+        {
+            "id": "living-doc-refs",
+            "name": "活文件更新（decision-log、context pack、traceability；t3 由 living-doc 維護）",
+            "path": "bdd-docs/runs/{run-id}/artifacts/",
+            "required": true
+        },
+        {
+            "id": "lean-sdlc-checklist",
+            "name": "lean SDLC checklist 全欄位 rows",
+            "path": "bdd-docs/runs/{run-id}/artifacts/lean-sdlc-checklist.md",
+            "required": true
+        }
+    ],
+    "user-verification-checklist": [
+        "分階段順序與每階段範圍是否可接受 —— **t3 不得一次全量上線**",
+        "**中止標準是否具體可觀測** —— 「看起來怪怪的」不是中止標準",
+        "監控訊號、觀察窗與負責觀察的人是否明確",
+        "rollback 計畫在上線期間是否仍然有效（遷移已執行後，回復路徑可能已改變）",
+        "遷移後驗證是否通過：筆數對帳、抽樣比對、FK 完整性",
+        "契約測試、整合測試是否全綠；smoke 是否已批准執行且通過",
+        "認證授權變更情境：權限變更是否可稽核，是否已確認無非預期放寬",
+        "活文件與 traceability 是否已更新到可交接狀態",
+        "checklist 標為 not-applicable 的項目是否都帶有 reason",
+        "是否批准上線並結案"
+    ],
+    "escalate-instead-of-approve-when": [
+        "分階段計畫缺中止標準或監控訊號",
+        "遷移後驗證未通過或未執行",
+        "smoke 未取得使用者批准即已執行（流程違規：停止並記錄）",
+        "上線窗口與遷移窗口已脫節，需重新評估影響量"
+    ],
+    "decision-options": [
+        "approve-release",
+        "return-for-fix",
+        "approve-first-stage-only",
+        "reschedule",
+        "pause-workflow",
+        "free-text"
+    ],
+    "context-reset": "not-offered",
+    "context-reset-note": "收尾 Gate 不提供換對話續跑 —— 剩餘工作太短，換對話的摩擦大於效益。",
+    "decision-log-requirements": [
+        "gate-id",
+        "tier",
+        "reviewed-document-refs",
+        "verification-checklist",
+        "staged-rollout-plan-ref",
+        "abort-criteria",
+        "rollback-plan-ref",
+        "user-decision",
+        "next-stage-if-approved"
+    ]
+}

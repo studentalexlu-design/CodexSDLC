@@ -8,7 +8,7 @@
 
 FSM：`formulate-done → design → design-done → data-model-p2-5 → atdd`。
 在 Gherkin 定稿後、ATDD 外殼前，產出 draft 設計契約。不設獨立 user-confirmation Gate；
-以 `spec-reviewer`（`mode: design`） 品質迴圈把關，並將 design draft 併入 **Gate-D** 一次確認。
+以 `spec-reviewer`（`mode: design`） 品質迴圈把關，並將 design draft 併入 **`gate-contract`** 一次確認（**位於任何 production 實作之前**）。
 
 ## Mode 執行順序（建議）
 
@@ -47,11 +47,11 @@ FSM：`formulate-done → design → design-done → data-model-p2-5 → atdd`�
 - 命名不得洩漏 DB 實體/欄位（除官方業務術語）。
 - spec-reviewer (mode: design) 發現疑似洩漏時，回報 orchestrator 觸發 `dlp-residual-scan.ps1`（見 `runbooks/dlp-verification.md`）。
 
-## 品質迴圈與 Gate-D
+## 品質迴圈與 `gate-contract`
 
 - spec-reviewer (mode: design) `VERDICT: PASS|FAIL`，最多 3 輪，超過升級 user arbitration。
-- PASS 後 orchestrator 將 design draft 併入 Gate-D `documents-to-review`，
-  Gate-D `requires` 檢查 `design-drafts.reviewed OR design.not-applicable`。
+- PASS 後 orchestrator 將 design draft 併入 `gate-contract` `documents-to-review`，
+  `gate-contract` `requires` 檢查 `spec-reviewer.verdict == PASS (mode: design)`。
 - living-doc 於 checklist「設計橋接（draft）」區段更新 path/status/evidence refs。
 
 ## 適用性（N/A 準則）
@@ -59,4 +59,4 @@ FSM：`formulate-done → design → design-done → data-model-p2-5 → atdd`�
 - 純 UI/無 API → `api` = N/A。
 - 無資料持久化 → `data` = N/A。
 - 無跨元件互動 → `sequence` 可精簡。
-- 皆 N/A 時 design 階段快速通過，Gate-D 以 `design.not-applicable` 放行。
+- 皆 N/A 時 design 階段快速通過，`gate-contract` 以 `design.not-applicable` 放行（`t2` 仍須有 data/API contract）。

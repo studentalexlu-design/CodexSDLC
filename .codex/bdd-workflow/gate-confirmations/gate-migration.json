@@ -1,0 +1,108 @@
+{
+    "gate-id": "gate-migration",
+    "applies-to-tiers": ["t3"],
+    "display-name": "遷移計畫批准（不可逆性閘門）",
+    "gate-nature": "irreversibility",
+    "gate-nature-note": "**這不是品質閘門。** 使用者批准的是『我接受這件事可能回不去』，不是『我覺得程式寫得不錯』。因此本 Gate 不接受『看起來沒問題』作為核准依據 —— 它要求一份具體的回復路徑。",
+    "subsumes": "舊模型的 Gate-D 在 schema／資料變更情境的角色",
+    "current-boundary": "tdd -> migration-execution",
+    "next-stage-if-approved": "migration-execution",
+    "requires": [
+        "gate-contract.approved",
+        "migration-plan.exists",
+        "rollback-plan.exists",
+        "rollback-plan.tested",
+        "affected-row-count.estimated",
+        "lock-and-downtime.estimated",
+        "backfill.idempotent OR backfill.not-applicable",
+        "dry-run.evidence present",
+        "acceptance-tests.passed",
+        "code-reviewer.verdict == PASS (mode: tdd)",
+        "dlp.residual-scan-clean OR sensitivity.not-applicable"
+    ],
+    "rollback-plan-invariant": {
+        "note": "**rollback 計畫是 t3 的必要產出，不得標 not-applicable。** 對不可逆變更而言它比任何設計圖都重要。若某個變更真的無法回復（例如已刪除的資料），計畫必須明說『不可回復』並改為要求前置備份與驗證還原程序 —— 『無法回復』是一個必須被使用者明確接受的結論，不是一個可以跳過的欄位。",
+        "must-cover": [
+            "回復觸發條件（什麼訊號代表要回頭）",
+            "回復步驟與預估耗時",
+            "回復後的資料狀態（是否有無法回復的部分）",
+            "回復演練證據（未演練過的 rollback 計畫等於沒有計畫）"
+        ]
+    },
+    "documents-to-review": [
+        {
+            "id": "migration-plan",
+            "name": "遷移計畫（步驟、順序、FK 依賴、前後相容窗口）",
+            "path": "bdd-docs/runs/{run-id}/artifacts/migration/migration-plan.md",
+            "required": true
+        },
+        {
+            "id": "rollback-plan",
+            "name": "**rollback 計畫（必要，含演練證據）**",
+            "path": "bdd-docs/runs/{run-id}/artifacts/migration/rollback-plan.md",
+            "required": true
+        },
+        {
+            "id": "impact-estimate",
+            "name": "影響量估計（affected rows、鎖表時間、停機需求、線上流量影響）",
+            "path": "bdd-docs/runs/{run-id}/artifacts/migration/impact-estimate.md",
+            "required": true
+        },
+        {
+            "id": "dry-run-evidence",
+            "name": "演練證據（非 production 環境的遷移 + 回復各一次）",
+            "path": "bdd-docs/runs/{run-id}/artifacts/evidence/",
+            "required": true
+        },
+        {
+            "id": "review-evidence",
+            "name": "審核證據（spec-reviewer design + code-reviewer tdd）",
+            "path": "bdd-docs/runs/{run-id}/artifacts/reviews/",
+            "required": true
+        },
+        {
+            "id": "dlp-residual-scan",
+            "name": "DLP 殘留掃描結果（P 因子命中時）",
+            "path": "bdd-docs/runs/{run-id}/artifacts/evidence/",
+            "required": "unless-not-applicable"
+        }
+    ],
+    "user-verification-checklist": [
+        "**回復路徑是否具體可執行，且已實際演練過** —— 未演練的 rollback 計畫等於沒有計畫",
+        "是否有無法回復的部分？若有，是否已明確標示並由你接受",
+        "affected rows 與鎖表／停機估計是否可接受，是否需要改排維護時窗",
+        "backfill 是否具幂等性（可安全重跑）",
+        "前後相容窗口是否足夠 —— 舊版程式在遷移期間是否仍能運作",
+        "認證授權變更情境：權限是否只縮不放；若有放寬，是否已確認可稽核誰用過",
+        "acceptance 與契約測試是否全綠",
+        "P 因子命中時：DLP 殘留掃描是否乾淨、mapping table 是否未落地",
+        "是否批准執行遷移 —— **核准即接受不可逆風險**"
+    ],
+    "escalate-instead-of-approve-when": [
+        "rollback 計畫不存在、未演練、或結論為完全不可回復且無前置備份",
+        "影響量估計缺失或明顯超出可接受停機窗",
+        "已用滿 max-subagent-calls 仍未達成綠燈 → 拆 run，不放寬上限",
+        "遷移範圍在此階段才發現遠超原判 → 停止，回到 probe"
+    ],
+    "decision-options": [
+        "approve-migration",
+        "approve-and-resume-in-new-conversation",
+        "return-for-fix",
+        "reschedule-to-maintenance-window",
+        "pause-workflow",
+        "free-text"
+    ],
+    "context-reset": "recommended-when subagent-calls.count - count-at-last-reset >= 3",
+    "decision-log-requirements": [
+        "gate-id",
+        "tier",
+        "reviewed-document-refs",
+        "verification-checklist",
+        "rollback-plan-ref",
+        "rollback-rehearsal-evidence-ref",
+        "irreversible-parts-accepted-by-user",
+        "impact-estimate-summary",
+        "user-decision",
+        "next-stage-if-approved"
+    ]
+}

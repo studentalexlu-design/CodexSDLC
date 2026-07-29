@@ -7,7 +7,7 @@
 ## 階段定位
 
 FSM：`tdd-done → integration → integration-done → living-doc → verified`。
-在 TDD 完成後、收尾前，產出契約/整合/smoke 測試證據，供 **Gate-E** 使用者確認。
+在 TDD 完成後、收尾前，產出契約/整合/smoke 測試證據，供交付 Gate 使用者確認（`t2` → `gate-close`；`t3` → `gate-release`）。
 
 ## Mode 執行順序（建議）
 
@@ -53,13 +53,13 @@ FSM：`tdd-done → integration → integration-done → living-doc → verified
 - 契約端點 > 15 或整合案例過多：回 `partial-completed`，附 `next-step`。
 - orchestrator 先委派 `living-doc` checkpoint，再依 next-step 續跑。
 
-## Gate-E 收斂
+## 交付 Gate 收斂
 
-- 三項（contract/integration/smoke）通過或 N/A → Gate-E user confirmation。
+- 三項（contract/integration/smoke）通過或 N/A → 交付 Gate user confirmation。
 - living-doc 於 checklist「整合驗證（evidence）」更新 path/status/evidence refs。
-- Gate-E 通過後進入 living-doc 收尾（`verified` → `completed`）。
+- 交付 Gate 通過後收尾（`t3` 經 living-doc；`t2` 由 orchestrator 自行寫入）。
 
 ## 適用性（N/A 準則）
 
 - 無對外 API → contract N/A；無整合面 → integration N/A；純函式庫 → smoke N/A。
-- 三者皆 N/A 時 Gate-E 退化為快速確認，避免過重。
+- 三者皆 N/A 時交付 Gate 退化為快速確認，避免過重。

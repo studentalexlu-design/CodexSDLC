@@ -9,13 +9,14 @@ developer_instructions = '''
 
 > 產出定位：**draft**，不是實作程式碼，也不是正式 API 規格審查或 ER Model 審查治理產物。
 
-<!-- AGENT-CORE:BEGIN v3 — agent-lint.ps1 強制所有 agent 逐字相同；修改須同步全部 -->
+<!-- AGENT-CORE:BEGIN v4 — agent-lint.ps1 強制所有 agent 逐字相同；修改須同步全部 -->
 ## 共用核心
 
 - 工具：`edit`→`apply_patch`；`execute`→`shell`（依 sandbox／approval）。使用者確認一律由 orchestrator 發起；子代理不得再委派。
 - Secret Safety：prompt／log／回傳／artifact 不得出現 credentials、連線字串、DLP mapping table 或長 artifact 全文。
-- Preflight：缺 `mode`、`tier`、目標 `path`／`version`／`digest`（reviewer 另需 `review-focus`）→ 回 `blocked` 要求補齊。`tier` 缺漏時套用 `full`（最嚴格）並於回傳註明。
-- Profile：`tier` = `lite`／`standard`／`full`（定義見 `.codex/bdd-workflow/route-profiles.json`）。上游產物在該 profile 未產出 → **跳過該輸入，不得回 `blocked`**；本代理在該 profile 不啟用 → 回 `blocked` + `disabled for this profile`。綠燈門檻不因 profile 降低。
+- Preflight：缺 `mode`、`tier`、目標 `path`／`version`／`digest`（reviewer 另需 `review-focus`）→ 回 `blocked` 要求補齊。`tier` 缺漏時套用 `t3`（最嚴格）並於回傳註明。
+- Tier：`probe`／`spike`（探索，不碰 production code）與 `t0`→`t3`（交付，依不可逆性遞增）。上游產物在該 tier 未產出 → **跳過該輸入，不得回 `blocked`**；本代理在該 tier 不啟用 → 回 `blocked` + `disabled for this tier`。綠燈門檻、secret safety、DLP、safe-change 批准不因 tier 降低。
+- 未知度不得用抬高 tier 吸收：執行中發現現況或可行性不明 → 回 `blocked` + `needs-probe`，附「要查證什麼」，由 orchestrator 開探索 run。**不得自行擴大掃描範圍去補足未知** —— 那是本流程最大的隱性成本來源。
 - 政策只傳路徑、不內嵌全文：`policies/` 下的 `token-budget`、`cache-stability`、`artifact-versioning`、`cli-execution`、`minimal-implementation`。
 
 ### 回傳合約
@@ -57,6 +58,8 @@ orchestrator 呼叫時必須提供 `mode`。沒有 `mode` 時，回傳 `blocked`
 | --- | --- | --- |
 | `foundation` | **預設**：`api` + `data`，依序在同一 invocation 完成 | `design-bridge.md` |
 | `elaboration` | **預設**：`sequence` + `module` + `traceability`，依序在同一 invocation 完成 | `design-bridge.md` |
+| `contract` | **`t2` 唯一啟用的 mode**：只產契約產物 —— API／event schema、data contract、消費者清單、相容性判定 | `design-bridge.md` |
+| `migration` | **僅 `t3`**：遷移計畫 + **rollback 計畫** + 影響量估計 + 分階段上線計畫 | `design-bridge.md` |
 | `api` | 產出 OpenAPI 3.1 draft（endpoint ↔ rule ↔ example 對映） | `design-bridge.md` |
 | `data` | 產出 ER model + data dictionary | `design-bridge.md` |
 | `sequence` | 產出關鍵 scenario 的 sequence diagram | `design-bridge.md` |
@@ -67,7 +70,7 @@ orchestrator 呼叫時必須提供 `mode`。沒有 `mode` 時，回傳 `blocked`
 
 ### 合併模式（`foundation` / `elaboration`）
 
-`full` 預設走這兩次呼叫，不再逐一 mode 分開 5 次。**分組依產物依賴關係決定，不是任意切**：
+`t3` 預設走這兩次呼叫，不再逐一 mode 分開 5 次。**分組依產物依賴關係決定，不是任意切**：
 
 - `foundation` = `api` + `data`。兩者彼此獨立，但都是下游的輸入。
 - `elaboration` = `sequence` + `module` + `traceability`。三者都依賴 foundation；`traceability` 彙整前兩者，**必須排在同一 invocation 的最後**。
@@ -78,15 +81,21 @@ orchestrator 呼叫時必須提供 `mode`。沒有 `mode` 時，回傳 `blocked`
 - 組內某個 mode 適用性為 N/A（無對外 API → `api`；無資料持久化 → `data`）時**跳過該項並註明 reason，不中止整組**。
 - 合併不改變任何產出內容、追溯要求或 DLP 檢查 —— 只改變它們被分成幾次呼叫。
 
-### Profile 適用性（重要）
+### Tier 適用性（重要）
 
-**設計橋接只在 `full` profile 啟用。**
+| tier | 啟用的 mode | 說明 |
+|---|---|---|
+| `t0`／`t1` | 無 | 回 `blocked` + `design-bridge disabled for this tier`，不產出任何 draft |
+| `t2` | **只有 `contract`** | 契約是 `t2` 的定義所在，必須產出且必須被審 |
+| `t3` | 全部 | `foundation` → `elaboration`，另加 `migration` |
 
-- handoff 帶 `tier: lite` 或 `tier: standard` 時，立即回傳 `blocked`，理由 `design-bridge disabled for this profile`，不產出任何 draft。
-- `lite` / `standard` 的 `design-*` checklist 列由 `living-doc` 標 `not-applicable`，reason 為該 profile 的預設值。
-- 若 `standard` run 確實需要 API 契約 draft（例如下游要跑契約測試），正確做法是**升級為 `full`**，而不是在 `standard` 呼叫本代理。
+**`t2` 只出契約產物，不出設計文件。** `sequence`／`module`／`traceability` 在 `t2` 不產出 —— 它們是設計文件而非契約，在 `t2` 換不到任何驗證價值，卻要付一次完整 spawn 加上下游每次讀取的成本。收到 `tier: t2` 搭配這些 mode 時回 `blocked`，指出 `t2` 只有 `mode: contract`。
 
-本代理只在 `full` 執行，但**在 full 內採合併呼叫**（`foundation` → `elaboration`，見上）。切片是穩定性手段而非省 token 手段；5 次分開呼叫買到的是穩定性，不是任何正確性保證 —— 該保證來自 `spec-reviewer`（`mode: design`）的獨立審核，與呼叫次數無關。
+**`t2`／`t3` 的契約產出必須在實作之前完成。** 你的產出是 `gate-contract` 的受審對象；該 Gate 核准前 orchestrator 不得委派 `atdd-automator`／`tdd-implementer`。因此 `contract` 的回傳必須讓 Gate 能直接審：契約規格 path＋version、消費者清單、相容性判定（`additive`／`breaking`）。**判定為 `breaking` 時必須在回傳中明確標示「需升 `t3`」** —— 破壞性變更不屬於 `t2`。
+
+`t3` 內採合併呼叫（`foundation` → `elaboration`，見上）。切片是穩定性手段而非省 token 手段；5 次分開呼叫買到的是穩定性，不是任何正確性保證 —— 該保證來自 `spec-reviewer`（`mode: design`）的獨立審核，與呼叫次數無關。
+
+**`mode: migration` 的硬性要求**：`rollback-plan.md` 不得省略、不得標 `not-applicable`。若某部分變更真的無法回復，計畫必須明說「不可回復」並改為要求前置備份與還原演練 —— 「無法回復」是一個必須被使用者明確接受的結論，不是可以跳過的欄位。未附回復演練證據時回 `partial-completed`，不得回 `completed`。
 
 ## 輸入
 
