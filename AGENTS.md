@@ -33,7 +33,7 @@ The workflow depth is chosen per run, not fixed. `bdd-orchestrator` runs `comple
 | Profile | Scope | Gates | Reviewers | Budget |
 |---|---|---|---|---|
 | **lite** | single-file change, add a field, copy an existing pattern | `gate-lite` | none | **≤ 2 subagent calls** |
-| **standard** | one feature, new endpoint, no schema change, no legacy SQL | `gate-std-1` + `gate-std-2` | 1 (`spec-reviewer`) | ≤ 12 subagent calls |
+| **standard** | one feature, new endpoint, no schema change, no legacy SQL | `gate-std-1` + `gate-std-2` | 1 (`spec-reviewer`) | ≤ 10 subagent calls |
 | **full** | legacy rewrite, DB schema change, breaking public contract, sensitive sources | intake + Gate A–E | all | ≤ 20 subagent calls |
 
 **All three profiles keep Gherkin and the Outside-In TDD spine.** Routing trims process tax, not BDD itself — even `lite` runs `formulator` before `tdd-implementer`. What `lite` drops is Example Mapping, domain glossary, ATDD skeleton, design bridge, reviewers, and context packs.
@@ -48,7 +48,7 @@ Multi-agent costs *more* tokens per operation, not fewer: each spawn is a cold s
 2. **Review independence.** A reviewer that never saw the doer's reasoning gives genuinely independent judgement.
 3. **Least privilege.** `spec-reviewer` is read-only; the orchestrator cannot touch the DB; `db-introspection-scanner` is the only MCP exit.
 
-The cost crossover against a single long thread sits near **10 operations** (spawn fixed cost vs. quadratic context accumulation). `standard` (12) and `full` (20) are above it. `lite` is well below it — which is why `lite` was cut to 2 spawns rather than kept structurally uniform with the others.
+The cost crossover against a single long thread sits near **10 operations** (spawn fixed cost vs. quadratic context accumulation). `standard` (10) and `full` (20) are at or above it. `lite` is well below it — which is why `lite` was cut to 2 spawns rather than kept structurally uniform with the others.
 
 - Routing facts live in `workflow-contract.json` `route-profiles`; judgement criteria and per-profile procedure live in `.codex/bdd-workflow/runbooks/complexity-routing.md`.
 - The chosen profile is stored in `bdd-docs/runs/{run-id}/workflow-state.json` `runtime-metadata.profile` and reused on resume — never re-assessed mid-run. Handoffs carry it in the `tier:` field.
@@ -102,19 +102,24 @@ Ponytail marketplace is optional. This repo uses local Codex instructions as the
 
 When starting or resuming a BDD workflow, read only the minimum context in this order:
 
-1. `.codex/bdd-workflow/workflow-contract.json` — `contract-version`, `context-budget`, `route-profiles`.
+1. `.codex/bdd-workflow/bdd-workflow-version.json` — version compatibility only.
 2. `bdd-docs/workflow-state.json`.
-3. Active run `workflow-state.json` runtime metadata (including `runtime-metadata.profile` and `quality-loop`), `index.md`, and recent or delta `log.md` entries.
+3. Active run `workflow-state.json` runtime metadata (including `runtime-metadata.profile`, `quality-loop`, and `subagent-calls`), `index.md`, and recent or delta `log.md` entries.
 4. The relevant context pack path and short summary.
 5. Full artifacts only when needed for a gate, reviewer, repair, or digest mismatch.
+
+**Do not read `workflow-contract.json` at startup.** It is a pointer file: the version lives in the version file, routing in `route-profiles.json`, gate conditions in each gate's own confirmation file. Reading it whole costs ~3k tokens that then stay resident for the entire run. Read it only on a version-check failure, or when `compiled-context` / `operations` / `repo-index` detail is actually needed.
+
+`route-profiles.json` is read once per run, at `complexity-assessment`. On resume it is not read at all — `runtime-metadata.profile` already holds the answer.
 
 Everything else is read on demand only: per-gate confirmation files, `lean-sdlc-schema.json`, `agent-skill-matrix.json`, policies, and runbooks are all pointer-loaded, never preloaded.
 
 ## User Confirmation
 
 - Use explicit user confirmation for workflow start, resume, gate passage, phase switching, conflict decisions, smoke tests, DB introspection, and high-risk changes.
-- Gate passage confirmation must name the Gate, the next stage, the document refs the user should review, and the concrete verification checklist. Use `.codex/bdd-workflow/workflow-contract.json` `gate-user-confirmations` and `.codex/bdd-workflow/templates/gate-confirmation.md`; never ask only a generic "continue/pass Gate?" question.
+- Gate passage confirmation must name the Gate, the next stage, the document refs the user should review, and the concrete verification checklist. Read the single file `.codex/bdd-workflow/gate-confirmations/{gate-id}.json` — it carries that gate's `requires`, `merges`, documents, and checklist — plus `.codex/bdd-workflow/templates/gate-confirmation.md`; never ask only a generic "continue/pass Gate?" question. For a merged gate (`gate-lite`, `gate-std-1`, `gate-std-2`), do not fall back to reading the gates it merges.
 - Before asking for Gate passage, repair missing/stale artifact refs or incomplete lean SDLC checklist rows through `living-doc`; Gate confirmations must reference path/version/digest/evidence refs, not full artifacts.
+- Where the gate file offers `approve-and-resume-in-new-conversation`, present it alongside plain approval. Everything the orchestrator reads stays in the conversation and is re-sent every subsequent turn, so a long run pays for its own history; a Gate is the one point where the checkpoint is complete enough that starting a fresh conversation loses nothing. It is a variant of approval, not an extra question, and not a pause — the run is already approved into the next stage. Recommend it once `subagent-calls.count` − `count-at-last-reset` reaches 4.
 - If confirmation is canceled, skipped, or incomplete, treat approval as not granted. Ask once more in a shorter form; if still unresolved, stop the high-risk step.
 - DB introspection must first confirm the schema source strategy: user-provided schema/DDL/screenshot, code/doc inference, approved read-only DB MCP, or no DB introspection.
 - Live DB access is MCP-only and must follow `.codex/bdd-workflow/policies/db-mcp-introspection-policy.md`. If no DB MCP tool is available in the current Codex session, `db-introspection-scanner` must return `blocked` and use manual schema/source alternatives.

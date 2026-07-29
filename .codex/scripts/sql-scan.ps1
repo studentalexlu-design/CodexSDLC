@@ -119,7 +119,7 @@ $result = [pscustomobject]@{
     truncated           = $truncated
     'next-step'         = if ($truncated) { "訊號超過 $MaxSignals；以 -MaxSignals 提高上限或分批處置" }
                           elseif ($dbObjectSource -eq 'none-found' -and $inlineSignals.Count -eq 0) { 'sql-logic-extraction 可標 not-applicable' }
-                          else { 'domain-analyst 以 sql-logic-extraction mode 判定 data-access vs business-rule' }
+                          else { 'analyst 以 sql-logic-extraction mode 判定 data-access vs business-rule' }
     'by-construct'      = ($emit | Group-Object 'construct-type' |
                             ForEach-Object { [pscustomobject]@{ type=$_.Name; count=$_.Count } })
     signals             = $emit

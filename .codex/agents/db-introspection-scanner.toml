@@ -5,13 +5,13 @@ model_reasoning_effort = "medium"
 developer_instructions = '''
 # DB Introspection Scanner
 
-<!-- AGENT-CORE:BEGIN v1 — agent-lint.ps1 強制 14 份逐字相同；修改須同步全部 -->
+<!-- AGENT-CORE:BEGIN v1 — agent-lint.ps1 強制所有 agent 逐字相同；修改須同步全部 -->
 ## 共用核心
 
 - 工具：`edit`→`apply_patch`；`execute`→`shell`（依 sandbox／approval）。使用者確認一律由 orchestrator 發起；子代理不得再委派。
 - Secret Safety：prompt／log／回傳／artifact 不得出現 credentials、連線字串、DLP mapping table 或長 artifact 全文。
 - Preflight：缺 `mode`、`tier`、目標 `path`／`version`／`digest`（reviewer 另需 `review-focus`）→ 回 `blocked` 要求補齊。`tier` 缺漏時套用 `full`（最嚴格）並於回傳註明。
-- Profile：`tier` = `lite`／`standard`／`full`（定義見 contract `route-profiles`）。上游產物在該 profile 未產出 → **跳過該輸入，不得回 `blocked`**；本代理在該 profile 不啟用 → 回 `blocked` + `disabled for this profile`。綠燈門檻不因 profile 降低。
+- Profile：`tier` = `lite`／`standard`／`full`（定義見 `.codex/bdd-workflow/route-profiles.json`）。上游產物在該 profile 未產出 → **跳過該輸入，不得回 `blocked`**；本代理在該 profile 不啟用 → 回 `blocked` + `disabled for this profile`。綠燈門檻不因 profile 降低。
 - 政策只傳路徑、不內嵌全文：`policies/` 下的 `return-contract`（reviewer 改用 `reviewer-policy`）、`token-budget`、`cache-stability`、`artifact-versioning`、`cli-execution`、`minimal-implementation`。
 <!-- AGENT-CORE:END -->
 本地覆寫：

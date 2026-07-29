@@ -13,18 +13,18 @@
 - 使用 `templates/handoff-{mode}.md` 固定模板；同 mode 不得改段落順序與欄位名稱。
 - 有 artifact digest 或 project-profile cache 時，優先傳 digest/cache path 與 hash；不得要求子代理重掃 solution / test toolchain。
 - 要求子代理在單一切片完成後回傳 `completed` 或 `partial-completed`，不得自行展開下一階段。
-- 同一輪不連續呼叫超過 1 個 doer（**full 限制**；L/standard 見 `complexity-routing.md` 的合併呼叫規則）。
+- 同一輪不連續呼叫超過 1 個 doer（**full 限制**；lite／standard 見 `complexity-routing.md` 的合併呼叫規則）。
 
 ## analyst 切片守門（full）
 
-- `phase0` 一次只允許 1 輪 flow alignment；不得在同一 handoff 要求 analyst 等待使用者回應或直接進入 `phase1`。
-- `phase1` 一次只允許 1 個 story；handoff 不得出現「涵蓋所有 stories」「完成整份 example map」或等價要求。
+- `flow` 一次只允許 1 輪 flow alignment；不得在同一 handoff 要求 analyst 等待使用者回應或直接進入 `example-map`。
+- `example-map` 一次只允許 1 個 story；handoff 不得出現「涵蓋所有 stories」「完成整份 example map」或等價要求。
 - 同 turn 最多自動續跑 2 個 story；仍有 pending 時先委派 `living-doc` checkpoint，回傳 `partial-completed` 與 resume 指引。
 - handoff 優先傳 artifact path/version 與 pending-items，不貼 requirements / schema / context pack 全文。
 - 若 analyst work 已跨越 6 分鐘，或前一輪曾發生 transport failure，下一次 handoff 必須縮到最小可恢復切片。
 - 若目標產物目錄不存在，先委派 `living-doc` 補目錄或 checkpoint；不要要求 analyst 同輪自行處理目錄修復與內容探索。
 
-> L / standard：`analyst` 一次處理整張 example map，不套用上述切片守門。
+> standard：`analyst`（`mode: example-map`）一次處理整張 example map，不套用上述切片守門。lite 不委派 `analyst`。
 
 ## 同 turn 續跑規則
 
@@ -55,4 +55,12 @@
 
 ## Context 膨脹處理
 
-若對話已累積多輪 tool output，或上次子代理輸入過大，優先請使用者以 active run / checkpoint **開新對話 resume**，不在同一個膨脹 context 中繼續大型委派。
+**首選是預防，不是補救。** 常規手段是 Gate 邊界的 context reset（見 orchestrator 指令檔「Gate 邊界的 context reset」）—— Gate 核准時 checkpoint 已完整落地，換對話零資訊損失，且不額外增加一次提問。
+
+本節只處理**兩個 Gate 之間**就已經膨脹的情況：
+
+- 判斷訊號：同一 stage 內累積多輪大型 tool output、上次子代理輸入接近上限、或 `subagent-calls.count` − `count-at-last-reset` 已 ≥ 6 而下一個 Gate 還很遠。
+- 處理：先委派 `living-doc` 寫 checkpoint（`lite`／`standard` 由 orchestrator 自行寫），再以 `Codex user confirmation` 請使用者開新對話 resume。**不在膨脹的 context 中繼續大型委派。**
+- resume 後更新 `count-at-last-reset = count`。
+
+兩者的差別只在時機：Gate reset 是計畫內的、隨核准一起發生；本節是計畫外的、需要額外一次確認。能等到下一個 Gate 就等。

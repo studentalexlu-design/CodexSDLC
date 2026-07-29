@@ -1,8 +1,16 @@
 {
     "gate-id": "gate-b",
     "display-name": "Domain 確認",
-    "current-boundary": "domain -> analyst/formulation",
+    "current-boundary": "domain -> discovery",
     "next-stage-if-approved": "discovery-phase0",
+    "requires": [
+        "domain-glossary.status == approved",
+        "domain-confirmation.user-approved",
+        "context-pack.domain.status == active",
+        "source-conflicts.resolved",
+        "sql-logic-extraction.dispositions-resolved OR sql-logic-extraction.not-applicable",
+        "lean-sdlc.stage.requirements-analysis.domain-artifacts satisfied-or-not-applicable"
+    ],
     "documents-to-review": [
         {
             "id": "domain-glossary",
@@ -17,8 +25,8 @@
             "required": true
         },
         {
-            "id": "domain-reviewer-evidence",
-            "name": "domain reviewer evidence",
+            "id": "spec-reviewer-domain-evidence",
+            "name": "spec-reviewer（mode: domain）審核證據",
             "path": "bdd-docs/runs/{run-id}/artifacts/reviews/",
             "required": true
         },
@@ -40,11 +48,12 @@
         "source conflicts 是否已解決或有明確決策",
         "domain context pack 是否忠實反映已核准 domain",
         "每條 legacy SQL 內嵌業務規則的處置（keep-in-sql / move-to-domain / move-to-application / redesign / drop / defer）是否確認（重構情境）",
-        "下游 analyst / formulation 是否可採信此 domain context",
-        "是否同意進入 analyst"
+        "下游 Example Mapping／Gherkin 是否可採信此 domain context",
+        "是否同意進入 discovery（Example Mapping）"
     ],
     "decision-options": [
         "approve-gate",
+        "approve-and-resume-in-new-conversation",
         "return-for-fix",
         "pause-workflow",
         "free-text"

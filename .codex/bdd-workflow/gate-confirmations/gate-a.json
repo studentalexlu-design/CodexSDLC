@@ -1,8 +1,14 @@
 {
     "gate-id": "gate-a",
     "display-name": "系統分析確認",
-    "current-boundary": "scan -> domain/analyst",
+    "current-boundary": "scan -> domain",
     "next-stage-if-approved": "domain",
+    "requires": [
+        "project-profile.exists",
+        "impact-report.exists OR greenfield",
+        "sql-logic-extraction.extracted OR sql-logic-extraction.not-applicable OR greenfield",
+        "lean-sdlc.stage.system-analysis.required-artifacts satisfied-or-not-applicable"
+    ],
     "documents-to-review": [
         {
             "id": "project-profile",
@@ -41,10 +47,11 @@
         "impact report 的 editable / forbidden / risky areas 是否可接受",
         "DB schema 來源策略是否符合已批准狀態",
         "legacy SQL 內嵌業務邏輯是否已萃取並區分 data-access / business-rule（重構情境）",
-        "是否同意進入 domain / analyst"
+        "是否同意進入 domain（領域術語與 bounded context 分析）"
     ],
     "decision-options": [
         "approve-gate",
+        "approve-and-resume-in-new-conversation",
         "return-for-fix",
         "pause-workflow",
         "free-text"

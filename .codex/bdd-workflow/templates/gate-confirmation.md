@@ -19,9 +19,13 @@ Use this template whenever `bdd-orchestrator` asks the user to approve a Gate. D
 
 ## 決策選項
 - 核准通過 Gate，進入 {{NEXT_STAGE_IF_APPROVED}}
+- 核准通過 Gate，並在**新對話**續跑 {{NEXT_STAGE_IF_APPROVED}}（保留全部進度，只歸零已累積的對話 context）{{RESET_RECOMMENDED_MARKER}}
 - 退回修正，列出需修正的文件或驗證項目
 - 暫停流程，保留目前 checkpoint
 - 自行輸入其他決策
+
+> 第二項僅在 `full` 的各 Gate 與 `standard` 的 `gate-std-1` 出現；`lite` 省略。
+> `subagent-calls.count` − `count-at-last-reset` ≥ 4 時，將其排為第一項並標示「建議」。
 
 ## 記錄要求
 - If approved, delegate `living-doc` to write gate id, reviewed document refs, verification checklist, user decision, and next stage to `decision-log.md` and the stage checkpoint.

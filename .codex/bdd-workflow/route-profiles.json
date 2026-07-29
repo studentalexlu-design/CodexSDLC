@@ -1,0 +1,150 @@
+{
+  "schema-note": "Extracted from workflow-contract.json (v1.12.0). This is the startup routing slice: bdd-orchestrator reads THIS file at complexity-assessment, not the whole contract. On resume it reads neither — runtime-metadata.profile already holds the answer.",
+  "note": "啟動時讀取。決定本 run 走哪一個 profile。判定準則與各 profile 詳細程序見 runbook-ref；本區塊只提供路由所需的最小事實。",
+  "runbook-ref": ".codex/bdd-workflow/runbooks/complexity-routing.md",
+  "assessed-at-stage": "complexity-assessment",
+  "assessed-once-per-run": true,
+  "profile-stored-in": "bdd-docs/runs/{run-id}/workflow-state.json runtime-metadata.profile",
+  "handoff-field": "tier",
+  "default-when-unconfirmed": "standard",
+  "escalation-only": true,
+  "enforced-by": ".codex/scripts/handoff-lint.ps1",
+  "call-count-tracked-in": "bdd-docs/runs/{run-id}/workflow-state.json subagent-calls.count",
+  "call-count-note": "orchestrator 每次 spawn 後必須遞增，比照 quality-loop.iteration。handoff-lint 讀此欄位與本區塊的 max-subagent-calls 機械阻斷超額 spawn；不遞增等同讓上限失效。",
+  "profiles": {
+    "lite": {
+      "display-name": "低難度快速路徑",
+      "applies-to": "單檔改動、加欄位、修 bug、複製既有 pattern",
+      "stages": [
+        "intake",
+        "complexity-assessment",
+        "scan",
+        "formulate",
+        "tdd",
+        "tdd-done",
+        "completed"
+      ],
+      "gates": [
+        "gate-lite"
+      ],
+      "agents": [
+        "formulator",
+        "tdd-implementer"
+      ],
+      "reviewers": [],
+      "scan-mode": "inventory",
+      "keeps-gherkin": true,
+      "max-subagent-calls": 2,
+      "design-bridge": "disabled",
+      "context-pack": "disabled",
+      "checklist-columns": "minimal",
+      "not-applicable-reason": "profile-lite: 低難度快速路徑不產出此項",
+      "scan-policy": "index-only",
+      "impact-top-n": 5,
+      "sql-scan": "disabled",
+      "orchestrator-handles": [
+        "run-skeleton",
+        "index-read",
+        "impact-scope",
+        "checklist",
+        "log",
+        "checkpoint",
+        "decision-log"
+      ]
+    },
+    "standard": {
+      "display-name": "中難度標準路徑",
+      "applies-to": "單一 feature、新增 endpoint、不動 schema、不碰遺留 SQL",
+      "stages": [
+        "intake",
+        "complexity-assessment",
+        "scan",
+        "scan-done",
+        "domain",
+        "discovery-phase0",
+        "discovery-phase1",
+        "discovery-done",
+        "formulate",
+        "formulate-done",
+        "atdd",
+        "atdd-done",
+        "tdd",
+        "tdd-done",
+        "integration",
+        "integration-done",
+        "living-doc",
+        "completed"
+      ],
+      "gates": [
+        "gate-std-1",
+        "gate-std-2"
+      ],
+      "agents": [
+        "project-scanner",
+        "analyst",
+        "formulator",
+        "atdd-automator",
+        "tdd-implementer",
+        "integration-tester"
+      ],
+      "reviewers": [
+        "spec-reviewer"
+      ],
+      "review-count": 1,
+      "keeps-gherkin": true,
+      "merged-mode-calls": {
+        "integration-tester": "single-call-all-modes",
+        "analyst": "whole-example-map"
+      },
+      "max-subagent-calls": 10,
+      "design-bridge": "disabled",
+      "context-pack": "disabled",
+      "checklist-columns": "standard",
+      "not-applicable-reason": "profile-standard: 中難度標準路徑不產出此項",
+      "scan-policy": "index-plus-scoped",
+      "impact-top-n": 12,
+      "sql-scan": "disabled",
+      "orchestrator-handles": [
+        "run-skeleton",
+        "checkpoint",
+        "decision-log",
+        "checklist",
+        "log",
+        "index-read"
+      ]
+    },
+    "full": {
+      "display-name": "高難度完整路徑",
+      "applies-to": "遺留系統重構、DB schema 變更、破壞性公開契約、需 DB introspection、含敏感來源",
+      "stages": "all",
+      "gates": [
+        "intake",
+        "gate-a",
+        "gate-b",
+        "gate-c",
+        "gate-d",
+        "gate-e"
+      ],
+      "agents": "all",
+      "reviewers": "all",
+      "keeps-gherkin": true,
+      "max-subagent-calls": 20,
+      "design-bridge": "enabled",
+      "context-pack": "cross-stage-only",
+      "checklist-columns": "full",
+      "scan-policy": "full-index-plus-sql",
+      "impact-top-n": 12,
+      "sql-scan": "enabled"
+    }
+  },
+  "escalation-triggers": [
+    "改動檔案數超出該 profile 上限",
+    "需要 DB schema 變更或 DB introspection",
+    "破壞性公開契約變更",
+    "遺留系統重構或 legacy SQL 邏輯萃取",
+    "來源素材含敏感資料需 DLP 脫敏",
+    "safe-change envelope 判定 high risk",
+    "代理呼叫次數超出 max-subagent-calls"
+  ],
+  "downgrade": "user-explicit-only"
+}

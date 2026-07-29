@@ -10,13 +10,21 @@
 #   3. 每個 agent 都登錄於 agent-skill-matrix.json（且無多餘項）
 #   4. 引用的 policy / runbook / script 路徑真實存在
 #   5. 無已知的過時引用
+#   6. bdd-workflow-version.json 與 contract 的版本號一致
+#      （啟動只讀版本檔，兩者不一致等於啟動讀到錯的相容性資訊）
+#   7. route-profiles 用到的每個 gate 都有對應的 gate-confirmations 檔且帶 requires
+#      （缺檔會讓該 profile 的 Gate 變成即席拼裝 —— 使用者核准的驗證清單將不確定）
 #
 # Exit: 0 = 全部通過；2 = 有違規。
 
 [CmdletBinding()]
 param(
-    [string]$AgentDir = '.codex/agents',
-    [string]$Matrix   = '.codex/bdd-workflow/agent-skill-matrix.json',
+    [string]$AgentDir    = '.codex/agents',
+    [string]$Matrix      = '.codex/bdd-workflow/agent-skill-matrix.json',
+    [string]$Contract      = '.codex/bdd-workflow/workflow-contract.json',
+    [string]$VersionFile   = '.codex/bdd-workflow/bdd-workflow-version.json',
+    [string]$RouteProfiles = '.codex/bdd-workflow/route-profiles.json',
+    [string]$GateDir       = '.codex/bdd-workflow/gate-confirmations',
     [switch]$Json
 )
 
@@ -106,6 +114,60 @@ foreach ($a in $agents) {
     $t = Get-Content $a.FullName -Raw
     foreach ($s in $stale) {
         if ($t -match $s) { Add-V 'stale-ref' "$($a.Name): $s" '該檔／概念已移除，更新引用' }
+    }
+}
+
+# ---- 6. 版本檔與 contract 一致 ----
+$contractJson = $null
+if ((Test-Path $Contract) -and (Test-Path $VersionFile)) {
+    try {
+        $contractJson = Get-Content $Contract -Raw | ConvertFrom-Json
+        $ver = Get-Content $VersionFile -Raw | ConvertFrom-Json
+        foreach ($k in @('contract-version', 'min-compatible-version')) {
+            if ($ver.$k -ne $contractJson.$k) {
+                Add-V 'version-file-drift' "$k : version-file=$($ver.$k) contract=$($contractJson.$k)" `
+                      "同步 $VersionFile —— 啟動只讀此檔，不一致會讀到錯的相容性資訊"
+            }
+        }
+    } catch { Add-V 'version-file-unparsable' $VersionFile '修正 JSON 格式' }
+} else {
+    Add-V 'version-file-missing' $VersionFile '建立版本檔（啟動讀取來源）'
+}
+
+# ---- 7. gate 定義完整性 ----
+$profiles = $null
+if (Test-Path $RouteProfiles) {
+    try { $profiles = (Get-Content $RouteProfiles -Raw | ConvertFrom-Json).profiles }
+    catch { Add-V 'route-profiles-unparsable' $RouteProfiles '修正 JSON 格式' }
+} else {
+    Add-V 'route-profiles-missing' $RouteProfiles '建立 route-profiles.json（啟動路由讀取來源）'
+}
+if ($profiles) {
+    $needed = @()
+    foreach ($p in $profiles.PSObject.Properties) { $needed += @($p.Value.gates) }
+    $needed = @($needed | Where-Object { $_ } | Sort-Object -Unique)
+
+    foreach ($g in $needed) {
+        $gf = Join-Path $GateDir "$g.json"
+        if (-not (Test-Path $gf)) {
+            Add-V 'gate-confirmation-missing' "$g (由 route-profiles 啟用)" `
+                  "建立 $gf —— 缺檔會讓該 Gate 每次即席拼裝，使用者核准的驗證清單將不確定"
+            continue
+        }
+        try {
+            $gj = Get-Content $gf -Raw | ConvertFrom-Json
+            foreach ($k in @('gate-id', 'requires', 'documents-to-review', 'user-verification-checklist', 'next-stage-if-approved')) {
+                if (-not $gj.$k) { Add-V 'gate-confirmation-incomplete' "${g}: 缺 $k" "補上 $k" }
+            }
+            if ($gj.'gate-id' -and $gj.'gate-id' -ne $g) {
+                Add-V 'gate-id-mismatch' "${gf}: gate-id=$($gj.'gate-id')" 'gate-id 必須與檔名一致'
+            }
+            foreach ($src in @($gj.merges)) {
+                if ($src -and -not (Test-Path (Join-Path $GateDir "$src.json"))) {
+                    Add-V 'gate-merge-dangling' "$g merges $src（不存在）" '修正 merges 或建立來源 gate 檔'
+                }
+            }
+        } catch { Add-V 'gate-confirmation-unparsable' $gf '修正 JSON 格式' }
     }
 }
 

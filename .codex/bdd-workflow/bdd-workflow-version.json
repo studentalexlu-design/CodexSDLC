@@ -1,6 +1,8 @@
 {
-    "contract-version": "1.11.0",
+    "contract-version": "1.12.0",
+    "min-compatible-version": "1.0.0",
     "extension-version": "0.1.6",
-    "deployed-at": "2026-07-26T00:00:00.000Z",
-    "note": "contract-version 必須與 .codex/bdd-workflow/workflow-contract.json 的 contract-version 一致；不一致代表此檔已失修。extension-version 是 .github Copilot 來源版本，Codex 流程不使用。"
+    "deployed-at": "2026-07-29T00:00:00.000Z",
+    "startup-read": true,
+    "note": "啟動時讀本檔做版本相容性檢查，不讀 workflow-contract.json 全檔（21k 字元，啟動只需版本號）。contract-version／min-compatible-version 必須與 workflow-contract.json 一致；一致性由 .codex/scripts/agent-lint.ps1 強制。extension-version 是 .github Copilot 來源版本，Codex 流程不使用。"
 }

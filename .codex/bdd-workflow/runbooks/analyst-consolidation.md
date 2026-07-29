@@ -1,4 +1,4 @@
-# Domain Analyst — Consolidation（多舊系統合併）
+# Analyst — Consolidation（多舊系統合併）
 
 供 `analyst` 在合併多個舊系統的情境下讀取；單一系統/greenfield 情境不需要讀此檔。
 

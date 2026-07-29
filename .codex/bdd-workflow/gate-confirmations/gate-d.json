@@ -3,6 +3,13 @@
     "display-name": "開發準備與證據確認",
     "current-boundary": "formulation/ATDD -> TDD",
     "next-stage-if-approved": "tdd",
+    "requires": [
+        "feature-spec.reviewed",
+        "acceptance-tests.executable",
+        "safe-change-envelope.confirmed",
+        "design-drafts.reviewed OR design.not-applicable",
+        "lean-sdlc.stage.program-development.required-artifacts satisfied-or-not-applicable"
+    ],
     "documents-to-review": [
         {
             "id": "feature-spec-gherkin-final",
@@ -51,6 +58,7 @@
     ],
     "decision-options": [
         "approve-gate",
+        "approve-and-resume-in-new-conversation",
         "return-for-fix",
         "pause-workflow",
         "free-text"

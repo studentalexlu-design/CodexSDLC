@@ -1,0 +1,97 @@
+{
+    "gate-id": "gate-std-1",
+    "profile": "standard",
+    "display-name": "需求與領域就緒",
+    "merges": [
+        "intake",
+        "gate-a",
+        "gate-b",
+        "gate-c"
+    ],
+    "current-boundary": "discovery-done -> formulate",
+    "next-stage-if-approved": "formulate",
+    "requires": [
+        "source-materials-register.status != pending",
+        "project-profile.exists",
+        "domain-glossary.status == approved",
+        "example-map.blocking-questions == 0",
+        "source-conflicts.resolved OR source-conflicts.none",
+        "lean-sdlc.stage.requirements-analysis.domain-artifacts satisfied-or-not-applicable"
+    ],
+    "documents-to-review": [
+        {
+            "id": "source-materials-register",
+            "name": "來源素材登錄",
+            "path": "bdd-docs/runs/{run-id}/artifacts/source-materials-register.md",
+            "required": true
+        },
+        {
+            "id": "project-profile",
+            "name": "project profile",
+            "path": "bdd-docs/artifacts/project-profile.md",
+            "required": true
+        },
+        {
+            "id": "impact-report",
+            "name": "impact report / safe-change envelope",
+            "path": "bdd-docs/runs/{run-id}/artifacts/impact-report.md",
+            "required": "unless-greenfield"
+        },
+        {
+            "id": "domain-glossary",
+            "name": "domain glossary",
+            "path": "bdd-docs/runs/{run-id}/artifacts/domain-glossary.md",
+            "required": true
+        },
+        {
+            "id": "source-conflicts",
+            "name": "source conflicts",
+            "path": "bdd-docs/runs/{run-id}/artifacts/source-conflicts.md",
+            "required": "unless-none"
+        },
+        {
+            "id": "example-map",
+            "name": "example map（standard 一次處理整張 map，不切 story）",
+            "path": "bdd-docs/runs/{run-id}/artifacts/example-map.md",
+            "required": true
+        },
+        {
+            "id": "lean-sdlc-checklist-requirements-analysis",
+            "name": "lean SDLC checklist 需求收集、系統分析與需求分析 rows",
+            "path": "bdd-docs/runs/{run-id}/artifacts/lean-sdlc-checklist.md",
+            "required": true
+        }
+    ],
+    "user-verification-checklist": [
+        "來源素材是否完整、需求描述是否符合原始意圖",
+        "專案邊界、介接與資料需求是否正確",
+        "impact report 的 editable / forbidden / risky areas 是否可接受",
+        "domain terms 是否正確，source conflicts 是否已解決或有明確決策",
+        "rules / examples / questions 是否完整，blocking questions 是否為 0",
+        "acceptance criteria 是否可測且無明顯誤解",
+        "本 Gate 合併了 intake、Gate-A、Gate-B、Gate-C —— domain 未另設獨立確認點，請一併確認 domain 可供下游 Gherkin 採信",
+        "checklist 標為 not-applicable 的項目是否都帶有 `profile-standard` reason",
+        "是否同意進入 formulation（Gherkin）"
+    ],
+    "escalate-instead-of-approve-when": [
+        "發現需要新增或變更 DB schema、migration",
+        "發現需要 DB introspection 或來源素材含敏感資料",
+        "發現破壞性公開契約變更或遺留 SQL 邏輯萃取需求",
+        "safe-change envelope 判定為 high risk"
+    ],
+    "decision-options": [
+        "approve-gate",
+        "approve-and-resume-in-new-conversation",
+        "return-for-fix",
+        "escalate-to-full",
+        "pause-workflow",
+        "free-text"
+    ],
+    "decision-log-requirements": [
+        "gate-id",
+        "reviewed-document-refs",
+        "verification-checklist",
+        "user-decision",
+        "next-stage-if-approved"
+    ]
+}

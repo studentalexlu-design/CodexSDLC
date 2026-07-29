@@ -8,6 +8,8 @@
 #   3. 必填 meta 欄位：mode、tier
 #   4. 禁用 payload：完整 log、完整 source register、長測試輸出、secrets
 #   5. quality-loop 迭代上限（讀 workflow-state.json，超限即阻斷）
+#   6. profile 的 max-subagent-calls 上限（spawn 次數是成本主導變數，
+#      上限值一律從 contract 的 route-profiles 讀取，不在本檔重複宣告）
 #
 # Exit: 0 = 通過；2 = 違規（阻斷 spawn）。
 
@@ -16,6 +18,7 @@ param(
     [string]$Payload,
     [int]$MaxChars = 1200,
     [int]$MaxQualityLoopIterations = 3,
+    [string]$RouteProfilesPath = '.codex/bdd-workflow/route-profiles.json',
     [switch]$Json
 )
 
@@ -77,13 +80,15 @@ foreach ($f in $forbidden) {
     }
 }
 
-# --- 5. quality-loop 上限 ---
+# --- 5 & 6. run 狀態相關檢查（一次讀取，兩項檢查）---
 $runId = if ($prompt -match '(?im)^\s*[-*]?\s*run-id\s*:\s*(\S+)') { $Matches[1] } else { $null }
 if ($runId) {
     $statePath = "bdd-docs/runs/$runId/workflow-state.json"
     if (Test-Path $statePath) {
         try {
             $state = Get-Content $statePath -Raw | ConvertFrom-Json
+
+            # --- 5. quality-loop 上限 ---
             $iter = $state.'quality-loop'.iteration
             $last = $state.'quality-loop'.'last-verdict'
             if ($null -ne $iter -and $iter -ge $MaxQualityLoopIterations -and $last -eq 'FAIL') {
@@ -91,6 +96,28 @@ if ($runId) {
                     rule = 'quality-loop-exceeded'
                     detail = "iteration=$iter last-verdict=FAIL"
                     fix = '禁止再呼叫 doer+reviewer；必須以 Codex user confirmation 升級使用者裁定'
+                }
+            }
+
+            # --- 6. max-subagent-calls 上限 ---
+            # 已用次數由 orchestrator 於每次 spawn 後遞增（比照 quality-loop）。
+            # 上限值從 contract 讀取，避免本檔成為第二份會走鐘的預算宣告。
+            $used = $state.'subagent-calls'.count
+            if ($null -ne $used) {
+                $profile = $state.'runtime-metadata'.profile
+                $cap = $null
+                try {
+                    $rp = (Get-Content $RouteProfilesPath -Raw | ConvertFrom-Json).profiles
+                    if ($profile) { $cap = $rp.$profile.'max-subagent-calls' }
+                    # profile 不明時退回 full 的上限當天花板，不 hard-block 合法流程。
+                    if ($null -eq $cap) { $cap = $rp.full.'max-subagent-calls' }
+                } catch { }
+                if ($null -ne $cap -and $used -ge $cap) {
+                    $violations += [pscustomobject]@{
+                        rule = 'subagent-budget-exceeded'
+                        detail = "used=$used cap=$cap profile=$(if ($profile) { $profile } else { 'unknown(套用 full 上限)' })"
+                        fix = '停止委派；以 Codex user confirmation 讓使用者選擇升級 profile、拆成多個 run 或放寬切片'
+                    }
                 }
             }
         } catch { }

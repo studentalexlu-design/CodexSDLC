@@ -1,8 +1,14 @@
 {
     "gate-id": "gate-c",
     "display-name": "行為需求確認",
-    "current-boundary": "analyst -> formulation/ATDD",
+    "current-boundary": "discovery -> formulate/ATDD",
     "next-stage-if-approved": "formulate",
+    "requires": [
+        "flow-description.status == approved",
+        "example-map.flow-description-version == flow-description.version",
+        "example-map.blocking-questions == 0",
+        "lean-sdlc.stage.requirements-analysis.behavior-artifacts satisfied-or-not-applicable"
+    ],
     "documents-to-review": [
         {
             "id": "flow-description",
@@ -32,6 +38,7 @@
     ],
     "decision-options": [
         "approve-gate",
+        "approve-and-resume-in-new-conversation",
         "return-for-fix",
         "pause-workflow",
         "free-text"

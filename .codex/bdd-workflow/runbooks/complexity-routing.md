@@ -3,7 +3,9 @@
 對應 `workflow-contract.json` 的 `complexity-assessment` stage 與 `route-profiles` 區塊。
 
 > 目的：讓需求難度決定流程深度。低難度需求不應付出遺留系統重構的代價。
-> 此 runbook 只在 `complexity-assessment` stage 讀取一次；判定寫入 `runtime-metadata.profile` 後，後續階段直接讀該欄位，不再重讀本檔。
+> **本檔不在 `complexity-assessment` 讀取。** 判定訊號與升級規則已內建於 `bdd-orchestrator` 指令檔 ——
+> 那是每個 run 都要做的無條件判斷，放在有 cache 的系統提示裡，比每個 run 付一次 ~2.6k tokens 的執行期讀取便宜。
+> 本檔只在**條件成立時**讀：profile 升降級程序、某個 profile 的細部流程、掃描成本細節。
 > **三個 profile 都保留 Gherkin 與 Outside-In TDD 骨幹** —— 分流砍的是流程稅，不是 BDD 本身。
 
 ## 執行時機
@@ -14,37 +16,15 @@ resume 時直接沿用 `runtime-metadata.profile`，不重新判定；只有使�
 
 handoff 以 `tier:` 欄位傳遞 profile 名稱（`lite` / `standard` / `full`）。`handoff-lint` hook 會強制此欄位存在。
 
-## 判定訊號
+## 判定訊號與使用者確認
 
-orchestrator 依下列訊號產生**建議 profile**，再以一次 `Codex user confirmation` 讓使用者確認或覆寫。
+**唯一定義在 `bdd-orchestrator` 指令檔的「難度分流」段。** 此處刻意不複製一份 ——
+未被機械強制的重複正是本 repo 反覆出過的漏洞（見同目錄 `cache-metrics.md` 曾把 lite 上限寫成 5）。
 
-| 訊號 | lite | standard | full |
-|---|---|---|---|
-| 預估改動 production 檔案數 | ≤ 3 | 4–15 | > 15 或不確定 |
-| 是否新增/變更 DB schema、migration | 否 | 否 | 是 |
-| 是否需要 DB introspection | 否 | 否 | 是 |
-| 是否變更跨模組/對外公開契約 | 否 | 僅新增，不破壞既有 | 是（破壞性變更）|
-| 是否為遺留系統重構 / legacy SQL 邏輯萃取 | 否 | 否 | 是 |
-| 來源素材是否含敏感資料（需 DLP 脫敏）| 否 | 否 | 是 |
-| 是否需要新的 domain 術語與 bounded context | 否（沿用既有）| 少量新增 | 是（新領域）|
-| 是否需要 API/ER/sequence 設計 draft | 否 | 否 | 是 |
-
-**升級規則（保守優先）**：任一訊號落在 full 欄 → 建議 full。無 full 訊號但任一落在 standard 欄 → 建議 standard。全部落在 lite 欄 → 建議 lite。
-
-**不確定時一律往上升一級。** 判定錯誤往下（把 full 當 lite 做）的代價遠高於往上。
-
-## 使用者確認
-
-固定使用 `Codex user confirmation`，選項為：
-
-- `lite — 低難度快速路徑`（附建議理由與預估：≤5 次代理呼叫）
-- `standard — 中難度標準路徑`（≤12 次代理呼叫）
-- `full — 高難度完整路徑`（≤20 次代理呼叫，完整 Gate 與稽核）
-- `✏️ 自行輸入…`
-
-建議 profile 排在第一項。確認後由 orchestrator 直接寫入 `runtime-metadata.profile`，並委派 `living-doc` 記錄至 `decision-log.md`。
-
-若使用者取消或未完成確認：**預設採用 standard**，並記錄「未確認，採保守預設」。不得預設 lite。
+摘要：8 個訊號中 6 個是純 full 觸發（DB schema／introspection／破壞性契約／legacy 重構／敏感資料／設計 draft），
+真正區分 lite 與 standard 的只有改動檔案數與 domain 術語增量。不確定時往上升一級。
+確認後 orchestrator 寫入 `runtime-metadata.profile`；`full` 委派 `living-doc` 記 decision-log，
+`lite`／`standard` 由 orchestrator 自行寫入（此二 profile 不啟用 `living-doc`）。
 
 ---
 
@@ -83,7 +63,7 @@ orchestrator 依下列訊號產生**建議 profile**，再以一次 `Codex user 
 
 ---
 
-## standard：中難度標準路徑（≤12 次委派）
+## standard：中難度標準路徑（≤10 次委派）
 
 **適用**：單一 feature、新增 API endpoint、不動 schema、不碰遺留 SQL。
 
@@ -93,12 +73,12 @@ orchestrator 依下列訊號產生**建議 profile**，再以一次 `Codex user 
 - `gate-std-1`（需求與領域就緒）= intake + Gate-A + Gate-B + Gate-C 合併。
 - `gate-std-2`（實作就緒與交付）= Gate-D + Gate-E 合併。
 
-**agent**：`project-scanner`、`analyst`、`analyst`、`formulator`、`atdd-automator`、`tdd-implementer`、`integration-tester`、`living-doc`。
+**agent**：`project-scanner`、`analyst`、`formulator`、`atdd-automator`、`tdd-implementer`、`integration-tester`。（**不含 `living-doc`** —— 見下方「跳過」。）
 
 **reviewer**：**只有 1 次** —— `spec-reviewer`（`mode: gherkin`）於 Gherkin 定稿後。TDD 完成後不另跑 reviewer，改由 `gate-std-2` 的使用者確認把關。
 
 **合併呼叫**：
-- `analyst`：`phase0` 1 輪 + `phase1` 一次處理整張 example map（不切 story）。
+- `analyst`：`glossary` 1 次 + `example-map` 一次處理整張 map（不切 story）。`flow` 不執行（僅 full）。
 - `integration-tester`：`contract` / `integration` / `smoke` 合併為單次 `mode: all`。
 - `tdd-implementer`：一次處理同一 backlog group（8 production + 8 test 檔上限）。
 

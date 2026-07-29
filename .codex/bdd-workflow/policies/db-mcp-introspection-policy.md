@@ -2,6 +2,17 @@
 
 This policy controls live database introspection through MCP tools. MCP is a tool transport and evidence source; it does not replace `bdd-orchestrator` approval, safe-change boundaries, DLP rules, or artifact evidence.
 
+## Schema Source Strategy
+
+Before any introspection, `bdd-orchestrator` must confirm which of these four the run will use. Only the third continues into this policy; the others skip DB introspection entirely.
+
+1. `user-provided-schema-ddl-or-screenshot`
+2. `code-doc-inference`
+3. `approved-read-only-db-mcp`
+4. `no-db-introspection`
+
+Never request or persist credentials while confirming this.
+
 ## Scope
 
 Live DB access is allowed only through currently available, explicitly configured DB MCP tools and only after `bdd-orchestrator` records user approval.

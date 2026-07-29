@@ -3,6 +3,12 @@
     "display-name": "整合與契約測試確認",
     "current-boundary": "integration -> living-doc/verified",
     "next-stage-if-approved": "living-doc",
+    "requires": [
+        "contract-tests.passed OR contract.not-applicable",
+        "integration-tests.passed OR integration.not-applicable",
+        "smoke-test.user-approved-and-passed OR smoke.not-applicable",
+        "lean-sdlc.stage.integration-verification.required-artifacts satisfied-or-not-applicable"
+    ],
     "documents-to-review": [
         {
             "id": "contract-test-evidence",

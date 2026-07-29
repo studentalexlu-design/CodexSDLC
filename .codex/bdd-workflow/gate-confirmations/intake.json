@@ -3,6 +3,10 @@
     "display-name": "需求收集確認",
     "current-boundary": "intake -> project scan",
     "next-stage-if-approved": "scan",
+    "requires": [
+        "source-materials-register.status != pending",
+        "lean-sdlc.stage.requirements-collection.required-artifacts satisfied-or-not-applicable"
+    ],
     "documents-to-review": [
         {
             "id": "source-materials-register",
@@ -32,6 +36,7 @@
     ],
     "decision-options": [
         "approve-gate",
+        "approve-and-resume-in-new-conversation",
         "return-for-fix",
         "pause-workflow",
         "free-text"

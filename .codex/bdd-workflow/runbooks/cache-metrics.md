@@ -39,7 +39,7 @@
 
 | 指標 | 目標 |
 |---|---|
-| `spawns-per-run` | ≤ profile 的 `max-subagent-calls`（lite 5／standard 12／full 20）|
+| `spawns-per-run` | ≤ profile 的 `max-subagent-calls`（lite 2／standard 10／full 20）|
 | `fixed-cost-per-spawn` | ≤ 6,000 tokens |
 | `agent-toml-modified-during-run` | 0 |
 | `handoff-template-adoption-rate` | ≥ 90% |

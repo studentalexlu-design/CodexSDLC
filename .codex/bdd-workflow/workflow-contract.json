@@ -1,7 +1,7 @@
 {
-  "contract-version": "1.11.0",
+  "contract-version": "1.12.0",
   "min-compatible-version": "1.0.0",
-  "released": "2026-07-26",
+  "released": "2026-07-29",
   "stages": [
     "init",
     "intake",
@@ -31,107 +31,21 @@
     "verified",
     "completed"
   ],
-  "gates": {
-    "intake": {
-      "requires": [
-        "source-materials-register.status != pending",
-        "lean-sdlc.stage.requirements-collection.required-artifacts satisfied-or-not-applicable"
-      ]
-    },
-    "gate-a": {
-      "requires": [
-        "project-profile.exists",
-        "impact-report.exists OR greenfield",
-        "sql-logic-extraction.extracted OR sql-logic-extraction.not-applicable OR greenfield",
-        "lean-sdlc.stage.system-analysis.required-artifacts satisfied-or-not-applicable"
-      ]
-    },
-    "gate-b": {
-      "requires": [
-        "domain-glossary.status == approved",
-        "domain-confirmation.user-approved",
-        "context-pack.domain.status == active",
-        "source-conflicts.resolved",
-        "sql-logic-extraction.dispositions-resolved OR sql-logic-extraction.not-applicable",
-        "lean-sdlc.stage.requirements-analysis.domain-artifacts satisfied-or-not-applicable"
-      ]
-    },
-    "gate-c": {
-      "requires": [
-        "flow-description.status == approved",
-        "example-map.flow-description-version == flow-description.version",
-        "example-map.blocking-questions == 0",
-        "lean-sdlc.stage.requirements-analysis.behavior-artifacts satisfied-or-not-applicable"
-      ]
-    },
-    "gate-d": {
-      "requires": [
-        "feature-spec.reviewed",
-        "acceptance-tests.executable",
-        "safe-change-envelope.confirmed",
-        "design-drafts.reviewed OR design.not-applicable",
-        "lean-sdlc.stage.program-development.required-artifacts satisfied-or-not-applicable"
-      ]
-    },
-    "gate-e": {
-      "requires": [
-        "contract-tests.passed OR contract.not-applicable",
-        "integration-tests.passed OR integration.not-applicable",
-        "smoke-test.user-approved-and-passed OR smoke.not-applicable",
-        "lean-sdlc.stage.integration-verification.required-artifacts satisfied-or-not-applicable"
-      ]
-    },
-    "gate-lite": {
-      "profile": "lite",
-      "display-name": "交付確認",
-      "merges": [
-        "intake",
-        "gate-a",
-        "gate-d"
-      ],
-      "requires": [
-        "source-materials-register.status != pending",
-        "feature-spec.exists",
-        "focused-tests.passed",
-        "safe-change-envelope.confirmed",
-        "lean-sdlc.checklist.minimal-rows satisfied-or-not-applicable"
-      ]
-    },
-    "gate-std-1": {
-      "profile": "standard",
-      "display-name": "需求與領域就緒",
-      "merges": [
-        "intake",
-        "gate-a",
-        "gate-b",
-        "gate-c"
-      ],
-      "requires": [
-        "source-materials-register.status != pending",
-        "project-profile.exists",
-        "domain-glossary.status == approved",
-        "example-map.blocking-questions == 0",
-        "source-conflicts.resolved OR source-conflicts.none",
-        "lean-sdlc.stage.requirements-analysis.domain-artifacts satisfied-or-not-applicable"
-      ]
-    },
-    "gate-std-2": {
-      "profile": "standard",
-      "display-name": "實作就緒與交付確認",
-      "merges": [
-        "gate-d",
-        "gate-e"
-      ],
-      "requires": [
-        "feature-spec.reviewed",
-        "acceptance-tests.executable",
-        "safe-change-envelope.confirmed",
-        "contract-tests.passed OR contract.not-applicable",
-        "integration-tests.passed OR integration.not-applicable",
-        "smoke-test.user-approved-and-passed OR smoke.not-applicable",
-        "lean-sdlc.stage.program-development.required-artifacts satisfied-or-not-applicable"
-      ]
-    }
+  "gates-ref": {
+    "note": "Extracted for lean loading (v1.12.0). Each gate's `requires`, `merges`, documents-to-review and verification checklist now live in that gate's own confirmation file. Read ONLY the single gate file for the gate being confirmed — never the whole set. Which gates are active is decided by `route-profiles.profiles.{profile}.gates`.",
+    "dir": ".codex/bdd-workflow/gate-confirmations/",
+    "requires-key": "requires",
+    "gate-ids": [
+      "intake",
+      "gate-a",
+      "gate-b",
+      "gate-c",
+      "gate-d",
+      "gate-e",
+      "gate-lite",
+      "gate-std-1",
+      "gate-std-2"
+    ]
   },
   "repo-index": {
     "note": "確定性索引。機械性探索（定位檔案、列相依、比對 SQL 樣式、抓簽章）一律由腳本完成，LLM 只讀索引與訊號清單。程序見 runbook-ref。",
@@ -160,184 +74,32 @@
     "impact-default-top-n": 12,
     "unavailable-behavior": "fall-back-to-bounded-llm-scan-and-mark environment:index-unavailable"
   },
-  "route-profiles": {
-    "note": "啟動時讀取。決定本 run 走哪一個 profile。判定準則與各 profile 詳細程序見 runbook-ref；本區塊只提供路由所需的最小事實。",
-    "runbook-ref": ".codex/bdd-workflow/runbooks/complexity-routing.md",
-    "assessed-at-stage": "complexity-assessment",
-    "assessed-once-per-run": true,
-    "profile-stored-in": "bdd-docs/runs/{run-id}/workflow-state.json runtime-metadata.profile",
+  "route-profiles-ref": {
+    "note": "Extracted for lean loading (v1.12.0). This is the startup routing slice — bdd-orchestrator reads the referenced file at complexity-assessment instead of this whole contract. On resume it reads neither: runtime-metadata.profile already holds the answer. handoff-lint.ps1 reads max-subagent-calls from the same file.",
+    "path": ".codex/bdd-workflow/route-profiles.json",
     "handoff-field": "tier",
-    "default-when-unconfirmed": "standard",
-    "escalation-only": true,
+    "profile-stored-in": "bdd-docs/runs/{run-id}/workflow-state.json runtime-metadata.profile",
+    "call-count-tracked-in": "bdd-docs/runs/{run-id}/workflow-state.json subagent-calls.count",
+    "context-reset-tracked-in": "bdd-docs/runs/{run-id}/workflow-state.json subagent-calls.count-at-last-reset",
+    "context-reset-note": "Gate 核准時可選擇在新對話續跑（gate 檔的 decision-options 含 approve-and-resume-in-new-conversation 時提供）。count − count-at-last-reset >= 4 時該選項排第一並標為建議。orchestrator 讀進的檔案會在之後每一輪重送，Gate 是唯一零資訊損失的歸零點。",
     "enforced-by": ".codex/scripts/handoff-lint.ps1",
-    "profiles": {
-      "lite": {
-        "display-name": "低難度快速路徑",
-        "applies-to": "單檔改動、加欄位、修 bug、複製既有 pattern",
-        "stages": [
-          "intake",
-          "complexity-assessment",
-          "scan",
-          "formulate",
-          "tdd",
-          "tdd-done",
-          "completed"
-        ],
-        "gates": [
-          "gate-lite"
-        ],
-        "agents": [
-          "formulator",
-          "tdd-implementer"
-        ],
-        "reviewers": [],
-        "scan-mode": "inventory",
-        "keeps-gherkin": true,
-        "max-subagent-calls": 2,
-        "design-bridge": "disabled",
-        "context-pack": "disabled",
-        "checklist-columns": "minimal",
-        "not-applicable-reason": "profile-lite: 低難度快速路徑不產出此項",
-        "scan-policy": "index-only",
-        "impact-top-n": 5,
-        "sql-scan": "disabled",
-        "orchestrator-handles": [
-          "run-skeleton",
-          "index-read",
-          "impact-scope",
-          "checklist",
-          "log"
-        ]
-      },
-      "standard": {
-        "display-name": "中難度標準路徑",
-        "applies-to": "單一 feature、新增 endpoint、不動 schema、不碰遺留 SQL",
-        "stages": [
-          "intake",
-          "complexity-assessment",
-          "scan",
-          "scan-done",
-          "domain",
-          "discovery-phase0",
-          "discovery-phase1",
-          "discovery-done",
-          "formulate",
-          "formulate-done",
-          "atdd",
-          "atdd-done",
-          "tdd",
-          "tdd-done",
-          "integration",
-          "integration-done",
-          "living-doc",
-          "completed"
-        ],
-        "gates": [
-          "gate-std-1",
-          "gate-std-2"
-        ],
-        "agents": [
-          "project-scanner",
-          "analyst",
-          "formulator",
-          "atdd-automator",
-          "tdd-implementer",
-          "integration-tester"
-        ],
-        "reviewers": [
-          "spec-reviewer"
-        ],
-        "review-count": 1,
-        "keeps-gherkin": true,
-        "merged-mode-calls": {
-          "integration-tester": "single-call-all-modes",
-          "analyst": "whole-example-map"
-        },
-        "max-subagent-calls": 10,
-        "design-bridge": "disabled",
-        "context-pack": "disabled",
-        "checklist-columns": "standard",
-        "not-applicable-reason": "profile-standard: 中難度標準路徑不產出此項",
-        "scan-policy": "index-plus-scoped",
-        "impact-top-n": 12,
-        "sql-scan": "disabled",
-        "orchestrator-handles": [
-          "run-skeleton",
-          "checkpoint",
-          "decision-log",
-          "checklist",
-          "log",
-          "index-read"
-        ]
-      },
-      "full": {
-        "display-name": "高難度完整路徑",
-        "applies-to": "遺留系統重構、DB schema 變更、破壞性公開契約、需 DB introspection、含敏感來源",
-        "stages": "all",
-        "gates": [
-          "intake",
-          "gate-a",
-          "gate-b",
-          "gate-c",
-          "gate-d",
-          "gate-e"
-        ],
-        "agents": "all",
-        "reviewers": "all",
-        "keeps-gherkin": true,
-        "max-subagent-calls": 20,
-        "design-bridge": "enabled",
-        "context-pack": "cross-stage-only",
-        "checklist-columns": "full",
-        "scan-policy": "full-index-plus-sql",
-        "impact-top-n": 12,
-        "sql-scan": "enabled"
-      }
-    },
-    "escalation-triggers": [
-      "改動檔案數超出該 profile 上限",
-      "需要 DB schema 變更或 DB introspection",
-      "破壞性公開契約變更",
-      "遺留系統重構或 legacy SQL 邏輯萃取",
-      "來源素材含敏感資料需 DLP 脫敏",
-      "safe-change envelope 判定 high risk",
-      "代理呼叫次數超出 max-subagent-calls"
-    ],
-    "downgrade": "user-explicit-only"
-  },
-  "gate-user-confirmations-ref": {
-    "note": "Extracted for lean loading (v1.10.0). Read ONLY the single relevant gate file when confirming that gate; do not read all six.",
-    "dir": ".codex/bdd-workflow/gate-confirmations/",
-    "files": {
-      "intake": ".codex/bdd-workflow/gate-confirmations/intake.json",
-      "gate-a": ".codex/bdd-workflow/gate-confirmations/gate-a.json",
-      "gate-b": ".codex/bdd-workflow/gate-confirmations/gate-b.json",
-      "gate-c": ".codex/bdd-workflow/gate-confirmations/gate-c.json",
-      "gate-d": ".codex/bdd-workflow/gate-confirmations/gate-d.json",
-      "gate-e": ".codex/bdd-workflow/gate-confirmations/gate-e.json"
-    }
+    "profile-names": [ "lite", "standard", "full" ]
   },
   "lean-sdlc-ref": {
     "note": "Extracted for lean loading (v1.10.0). Read only when checking lean-SDLC checklist requirements for a specific stage boundary.",
     "path": ".codex/bdd-workflow/lean-sdlc-schema.json"
   },
-  "minimal-implementation-policy": {
+  "minimal-implementation-policy-ref": {
+    "note": "Extracted for lean loading (v1.12.0). The ladder, prohibited list, and required-preservation list live ONLY in the policy file — they were duplicated here verbatim, which is the drift risk this contract otherwise forbids. Pass the path; do not inline the content.",
     "mode": "local-guardrail",
     "policy-path": ".codex/bdd-workflow/policies/minimal-implementation-policy.md",
-    "external-plugin": {
-      "name": "ponytail",
-      "required": false,
-      "recommended-mode": "normal/full/default",
-      "avoid-mode": "ultra-for-initial-bdd-workflow",
-      "treat-as": "auxiliary-productivity-layer"
-    },
     "applies-to-agents": [
       "tdd-implementer",
       "code-reviewer (mode: tdd)",
       "project-scanner"
     ],
     "does-not-override": [
-      "workflow-contract gates",
+      "gates",
       "lean-sdlc checklist",
       "DLP and secret-safety rules",
       "safe-change approvals",
@@ -346,119 +108,19 @@
       "error handling",
       "security",
       "accessibility"
-    ],
-    "pre-implementation-ladder": [
-      "existing behavior already satisfies acceptance criteria",
-      "existing helper/service/endpoint/fixture/local pattern",
-      "standard-library or native framework feature",
-      "already-installed dependency",
-      "smallest focused diff for the current failing test or behavior slice"
-    ],
-    "prohibited-without-approval": [
-      "new framework",
-      "new dependency",
-      "new abstraction layer",
-      "generic engine",
-      "broad unrelated refactor",
-      "future-scenario boilerplate",
-      "cross-layer rewrite",
-      "unrequested future-proofing"
-    ],
-    "required-preservation": [
-      "validation",
-      "error handling",
-      "security and DLP protections",
-      "accessibility where UI is touched",
-      "existing observability conventions",
-      "tests and build evidence",
-      "focused verification evidence",
-      "artifact evidence and lean SDLC checklist updates"
     ]
   },
-  "db-introspection": {
+  "db-introspection-ref": {
+    "note": "Extracted for lean loading (v1.12.0). Only `full` runs that chose the DB-MCP schema-source strategy ever need this. Approval envelope fields, run-scoped SELECT authorization bounds, query-safety and forbidden lists live in the policy file — read it at that point, not at startup.",
     "mode": "approved-read-only-mcp",
     "policy-path": ".codex/bdd-workflow/policies/db-mcp-introspection-policy.md",
     "live-db-access": "mcp-only",
-    "allowed-schema-source-strategies": [
-      "user-provided-schema-ddl-or-screenshot",
-      "code-doc-inference",
-      "approved-read-only-db-mcp",
-      "no-db-introspection"
-    ],
+    "sole-exit": "db-introspection-scanner",
+    "requires-user-approval-before-spawn": true,
     "allowed-scopes": [
       "metadata",
       "definition",
       "approved-select"
-    ],
-    "default-select-authorization": {
-      "mode": "run-scoped-bounded",
-      "artifact-path": "bdd-docs/runs/{run-id}/artifacts/db-select-authorization.md",
-      "default-row-limit": 50,
-      "explicit-columns-required": true,
-      "select-star": "forbidden",
-      "raw-row-storage": "forbidden",
-      "validity": "single-run-only",
-      "expires-on": [
-        "run-completed",
-        "run-archived",
-        "authorization-revoked",
-        "scope-broadened"
-      ],
-      "scope-expansion-requires-approval": [
-        "new database or schema",
-        "new table or view",
-        "additional columns",
-        "sensitive columns",
-        "join not in envelope",
-        "new purpose",
-        "row-limit above 50"
-      ]
-    },
-    "approval-required-fields": [
-      "run-id",
-      "feature-id",
-      "approval-summary",
-      "decision-log-ref",
-      "mcp-server-or-connection-profile-alias",
-      "database-or-schema",
-      "allowed-scope",
-      "approved-object-list-or-bounded-target",
-      "target-report-path"
-    ],
-    "default-select-authorization-required-fields": [
-      "run-id",
-      "feature-id",
-      "decision-log-ref",
-      "mcp-server-or-connection-profile-alias",
-      "database-or-schema",
-      "approved-objects",
-      "approved-columns",
-      "approved-purpose",
-      "default-row-limit",
-      "target-report-path"
-    ],
-    "approved-select-required-fields": [
-      "table-or-view",
-      "columns",
-      "purpose",
-      "authorization-ref OR explicit-approval-summary"
-    ],
-    "approved-select-defaulted-fields": {
-      "row-limit": 50
-    },
-    "forbidden": [
-      "credentials in prompts or artifacts",
-      "connection strings in prompts or artifacts",
-      "shell-based DB access",
-      "ad hoc driver scripts",
-      "DDL",
-      "DML",
-      "schema sync",
-      "unrestricted SELECT",
-      "SELECT *",
-      "raw row-level result storage",
-      "large result export",
-      "scope broadening without orchestrator approval"
     ],
     "unavailable-mcp-behavior": "return blocked and use manual schema/source alternatives"
   },
@@ -527,24 +189,17 @@
     "cache-stability": {
       "policy-path": ".codex/bdd-workflow/policies/cache-stability-policy.md",
       "artifact-versioning-policy-path": ".codex/bdd-workflow/policies/artifact-versioning-policy.md",
-      "checkpoint-schema-runbook-path": ".codex/bdd-workflow/runbooks/checkpoint-schema.md",
-      "cache-metrics-runbook-path": ".codex/bdd-workflow/runbooks/cache-metrics.md",
       "handoff-template-dir": ".codex/bdd-workflow/templates",
-      "handoff-templates": [
-        "handoff-checkpoint.md",
-        "handoff-review.md",
-        "handoff-resume.md",
-        "handoff-feature.md"
-      ],
       "enforce-template-by-mode": true,
       "stable-prompt-structure": [
+        "constraints",
+        "output-contract",
         "meta",
         "target",
-        "gate",
-        "summary",
-        "constraints",
-        "output-contract"
+        "gate|review-focus|context",
+        "summary"
       ],
+      "stable-prompt-structure-note": "靜態在前、易變在後。`constraints` 與 `output-contract` 同 mode 完全固定，排前面才可能進入共用前綴；`meta`（run-id / feature-id / tier）每次都變，排最後。順序顛倒會讓靜態內容永遠無法快取。`.codex/bdd-workflow/templates/` 是此順序的 source of truth。",
       "atdd-partial-requires-checkpoint-before-retry": true,
       "avoid-frequent-full-agent-edit": true
     },
