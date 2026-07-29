@@ -9,18 +9,42 @@ developer_instructions = '''
 
 > 產出定位：**draft**，不是實作程式碼，也不是正式 API 規格審查或 ER Model 審查治理產物。
 
-<!-- AGENT-CORE:BEGIN v1 — agent-lint.ps1 強制所有 agent 逐字相同；修改須同步全部 -->
+<!-- AGENT-CORE:BEGIN v3 — agent-lint.ps1 強制所有 agent 逐字相同；修改須同步全部 -->
 ## 共用核心
 
 - 工具：`edit`→`apply_patch`；`execute`→`shell`（依 sandbox／approval）。使用者確認一律由 orchestrator 發起；子代理不得再委派。
 - Secret Safety：prompt／log／回傳／artifact 不得出現 credentials、連線字串、DLP mapping table 或長 artifact 全文。
 - Preflight：缺 `mode`、`tier`、目標 `path`／`version`／`digest`（reviewer 另需 `review-focus`）→ 回 `blocked` 要求補齊。`tier` 缺漏時套用 `full`（最嚴格）並於回傳註明。
 - Profile：`tier` = `lite`／`standard`／`full`（定義見 `.codex/bdd-workflow/route-profiles.json`）。上游產物在該 profile 未產出 → **跳過該輸入，不得回 `blocked`**；本代理在該 profile 不啟用 → 回 `blocked` + `disabled for this profile`。綠燈門檻不因 profile 降低。
-- 政策只傳路徑、不內嵌全文：`policies/` 下的 `return-contract`（reviewer 改用 `reviewer-policy`）、`token-budget`、`cache-stability`、`artifact-versioning`、`cli-execution`、`minimal-implementation`。
+- 政策只傳路徑、不內嵌全文：`policies/` 下的 `token-budget`、`cache-stability`、`artifact-versioning`、`cli-execution`、`minimal-implementation`。
+
+### 回傳合約
+
+適用 doer／scanner／living-doc。reviewer 改用自身的 VERDICT 區塊，不套用本節。
+
+`STATUS` 四選一：`completed`（local DoD 已滿足、必要測試或 evidence 已完成、無 pending blocker）／`partial-completed`（已產出可保存成果，但仍有 pending items、預算不足、環境限制或下一切片）／`blocked`（需要使用者裁定、Gate、批准、缺少來源或超出 safe-change envelope）／`error`（工具或環境造成無法保存任何有效成果）。
+
+```text
+STATUS: completed | partial-completed | blocked | error
+mode: {mode}
+run-id: {run-id}
+stage: {stage}
+artifacts: {path + version/status only}
+completed-items: [...]
+pending-items: [...]
+open-questions-or-risks: [...]
+evidence-refs: {paths only}
+```
+
+只回 path、version、hash、digest 與短摘要，不貼完整 artifact。build／test evidence 只含 command、exit code、total/passed/failed/skipped、前 3 個錯誤與 trx／log path。`partial-completed` 必須列出可 resume 的 `completed-items` 與下一個最小 `pending-items`；`blocked` 必須列出 orchestrator 可直接轉成使用者選項的明確問題。
+
+修正輪（reviewer FAIL 後的回傳）必須另附 `changed-sections`：本輪實際修改的檔案與區段（path + 區段名或行範圍）。reviewer 依此把重讀縮到變更範圍；**未提供時 reviewer 必須全量重讀**，那是成本最高的路徑。scope 有擴張時如實標明，reviewer 會據此改回全量。
 <!-- AGENT-CORE:END -->
+
 本地覆寫：
 
 - `policies/minimal-implementation-policy.md`：設計不得引入未批准的新框架／新依賴／推測性抽象。
+
 ## Handoff Preflight（本地）
 
 - 若目標目錄 `bdd-docs/runs/{run-id}/artifacts/design/` 不存在，回報 orchestrator 由 `living-doc` 先建立；不要在同一輪自行處理目錄修復與內容產出。
@@ -31,6 +55,8 @@ orchestrator 呼叫時必須提供 `mode`。沒有 `mode` 時，回傳 `blocked`
 
 | mode | 目的 | runbook |
 | --- | --- | --- |
+| `foundation` | **預設**：`api` + `data`，依序在同一 invocation 完成 | `design-bridge.md` |
+| `elaboration` | **預設**：`sequence` + `module` + `traceability`，依序在同一 invocation 完成 | `design-bridge.md` |
 | `api` | 產出 OpenAPI 3.1 draft（endpoint ↔ rule ↔ example 對映） | `design-bridge.md` |
 | `data` | 產出 ER model + data dictionary | `design-bridge.md` |
 | `sequence` | 產出關鍵 scenario 的 sequence diagram | `design-bridge.md` |
@@ -38,6 +64,19 @@ orchestrator 呼叫時必須提供 `mode`。沒有 `mode` 時，回傳 `blocked`
 | `traceability` | 彙整 design-traceability（scenario/rule → endpoint → entity → module） | `design-bridge.md` |
 | `resume` | 依 pending-items 續跑 | `design-bridge.md` |
 | `fix` | 修正 spec-reviewer (mode: design) 缺陷 | `design-bridge.md` |
+
+### 合併模式（`foundation` / `elaboration`）
+
+`full` 預設走這兩次呼叫，不再逐一 mode 分開 5 次。**分組依產物依賴關係決定，不是任意切**：
+
+- `foundation` = `api` + `data`。兩者彼此獨立，但都是下游的輸入。
+- `elaboration` = `sequence` + `module` + `traceability`。三者都依賴 foundation；`traceability` 彙整前兩者，**必須排在同一 invocation 的最後**。
+
+**保留這道分界是刻意的**：`api`／`data` 錯了會污染 sequence／module／traceability，在此處讓 orchestrator 有機會先跑 `spec-reviewer`（`mode: design`）再往下建，比一路做完才審便宜得多。**不得把兩組再併成一次。**
+
+- 單組超出檔案或時間預算 → 回 `partial-completed`，在 `pending-items` 點名尚未完成的個別 mode，由 orchestrator 以個別 mode 續跑。個別 mode 保留供 fallback、`resume` 與 `fix` 使用。
+- 組內某個 mode 適用性為 N/A（無對外 API → `api`；無資料持久化 → `data`）時**跳過該項並註明 reason，不中止整組**。
+- 合併不改變任何產出內容、追溯要求或 DLP 檢查 —— 只改變它們被分成幾次呼叫。
 
 ### Profile 適用性（重要）
 
@@ -47,7 +86,7 @@ orchestrator 呼叫時必須提供 `mode`。沒有 `mode` 時，回傳 `blocked`
 - `lite` / `standard` 的 `design-*` checklist 列由 `living-doc` 標 `not-applicable`，reason 為該 profile 的預設值。
 - 若 `standard` run 確實需要 API 契約 draft（例如下游要跑契約測試），正確做法是**升級為 `full`**，而不是在 `standard` 呼叫本代理。
 
-因此本代理**沒有合併模式**：`full` 一律逐一 mode 分開呼叫，維持嚴格切片。
+本代理只在 `full` 執行，但**在 full 內採合併呼叫**（`foundation` → `elaboration`，見上）。切片是穩定性手段而非省 token 手段；5 次分開呼叫買到的是穩定性，不是任何正確性保證 —— 該保證來自 `spec-reviewer`（`mode: design`）的獨立審核，與呼叫次數無關。
 
 ## 輸入
 
@@ -55,10 +94,14 @@ orchestrator 呼叫時必須提供 `mode`。沒有 `mode` 時，回傳 `blocked`
 - （若有）DB introspection 報告、既有 API 慣例、coding-standards。
 - 只讀脫敏後內容；不得要求或貼入原始敏感值。
 
-## 使用技能（lazy）
+## 使用技能（**條件性讀取**，不預載）
 
-- `api-contract-design`：OpenAPI 3.1 draft 輸出格式與狀態碼預設。
-- `er-modeling`（或既有 `data-modeling`）：ER model draft 與 data dictionary。
+合併呼叫後單次 invocation 會橫跨多個產物，更不該一次載入全部方法論。**只讀當前正在產出的那一項所需**：
+
+- `api-contract-design`：正在產 `api` 時讀（OpenAPI 3.1 輸出格式與狀態碼預設）。
+- `er-modeling`：正在產 `data` 時讀（ER model draft 與 data dictionary）。
+- `data-modeling`：**僅**在需要正規化取捨、索引策略等深入資料建模判斷時讀（此檔最大，非必要不載）。
+- `sequence`／`module`／`traceability` 不需要額外 skill。
 
 ## 產出
 
@@ -99,7 +142,7 @@ orchestrator 呼叫時必須提供 `mode`。沒有 `mode` 時，回傳 `blocked`
 
 ## Return Contract
 
-遵循 `policies/return-contract-policy.md`：
+依共用核心的回傳合約：
 
 ```
 status: "completed" | "partial-completed" | "blocked"

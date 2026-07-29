@@ -92,7 +92,13 @@ handoff 以 `tier:` 欄位傳遞 profile 名稱（`lite` / `standard` / `full`�
 
 **維持完整流程**：28 stages、6 個 gate（intake + A~E）、全部 agent、全部 reviewer、完整 DLP 脫敏與殘留掃描、safe-change approval、legacy SQL 邏輯萃取、design bridge。
 
-切片預算維持嚴格（`tdd-implementer` 3 production + 2 test、`analyst` 1 story、`design-modeler` 5 modes 分開、`integration-tester` 3 modes 分開）。
+切片預算維持嚴格 —— 但**只在切片對應真實失敗復原邊界的地方**：
+
+- `tdd-implementer` 3 production + 2 test、`analyst` 1 story：**維持分開**。這兩者的切片邊界就是 Red-Green-Refactor 與單一 story 的復原點，合併會讓失敗時要重做的範圍變大。
+- `design-modeler`：**合併為 2 次**（`foundation` = api + data → `elaboration` = sequence + module + traceability）。分組依產物依賴，`traceability` 必須最後。中間保留分界供 `spec-reviewer`（`mode: design`）在 foundation 錯誤污染下游前介入。
+- `integration-tester`：**合併為 1 次**（`mode: all`）。contract／integration／smoke 共用同一次 build，分開呼叫會 build 3 次。
+
+> 原本「full 一律逐一 mode 分開呼叫」的規則已於 v1.13.0 解除。理由見 `policies/token-budget-policy.md` 的 Slice Rules：切片是**穩定性**手段，不是省 token 手段；分開呼叫買到的是穩定性，不是任何正確性保證 —— 設計與整合的正確性保證來自獨立審核與綠燈門檻，與呼叫次數無關。smoke 的使用者批准、DLP、safe-change 等強制項不因合併放寬。
 
 **但 full 仍有上限：≤20 次委派。** 超過代表切片過細或範圍過大 —— 先 checkpoint，以 `Codex user confirmation` 讓使用者選擇拆成多個 run 或放寬切片，**不得無限展開**。這是與改造前最大的差別：full 不再是無底洞。
 

@@ -69,7 +69,21 @@ Prompt cache 依**前綴精確匹配**運作。因此：
 
 - **run 進行中不得修改 agent `.toml`** —— 這會作廢該 agent 已累積的所有 cache，是最昂貴的失誤。
 - 不得頻繁整份重寫 agent `.toml`；以增量 patch 為預設，每次僅調整必要段落。
-- 行為規範優先外掛到 policy/runbook/template，維持 agent 檔精簡且穩定。
-  **例外**：`AGENT-CORE` 共用核心刻意內嵌（理由見上方「Cache 實際如何運作」），
-  修改時必須同步全部 14 份並跑 `agent-lint.ps1` 驗證逐字相同。
+- `AGENT-CORE` 共用核心刻意內嵌（理由見上方「Cache 實際如何運作」），
+  修改時必須同步全部 12 份並跑 `agent-lint.ps1` 驗證逐字相同。
+
+### 內嵌 vs 外掛：以「讀取頻率」決定，不是以「檔案精簡」決定
+
+判準只有一條 —— **該 agent ≥80% 的 invocation 都會讀到 → 內嵌進系統提示；真正條件性 → 留在 policy／runbook／skill。**
+
+理由直接來自上方的 cache 機制：系統提示可跨同 agent 的重複呼叫命中 cache（約 1/10 成本），執行期讀取排在易變的 handoff 之後，**每次 spawn 都付全額**。因此對會被重複 spawn 的 agent（`full` 下 `tdd-implementer` 每切片一次、`analyst` 每 story 一次、`living-doc` 每 stage boundary 一次），把必讀內容外掛是**淨損失**：
+
+> N 次 spawn × 全額讀取　vs　1 次 cache write + (N−1) 次 cache read
+
+「維持 agent 檔精簡」本身不是目標 —— 精簡若換來每次 spawn 重讀，就是把成本從看得見的地方搬到看不見的地方。
+
+兩個配套要求：
+
+1. **蒸餾，不是複製。** skill／runbook 是給人讀的教學文件，內嵌時只取**判斷規則**，捨棄說明、對話模板與範例鋪陳。整份貼進去會讓提示膨脹吃掉 cache 的好處。
+2. **內嵌就有漂移風險，必須機械綁定。** 回傳合約的內嵌區塊與 `return-contract-policy.md` 由 `agent-lint.ps1` 檢查一致；新增其他內嵌時比照辦理，否則就會重演 DLP 兩份實作走鐘的老問題。
 

@@ -128,6 +128,12 @@
       "agents": "all",
       "reviewers": "all",
       "keeps-gherkin": true,
+      "merged-mode-calls": {
+        "note": "v1.13.0：解除原本『full 一律逐一 mode 分開呼叫』的凍結。分組依產物依賴關係，不是任意合併；每次 spawn 的固定成本 4-8k，分開呼叫買到的是穩定性而非任何正確性保證。仍分開的邊界（doer/reviewer、atdd/tdd、db-scanner）各自帶著具體保證，不在此列。",
+        "design-modeler": "foundation(api+data) -> elaboration(sequence+module+traceability)；兩組之間的分界刻意保留，供 spec-reviewer(mode: design) 在 foundation 錯誤污染下游前介入。不得再併為一次。",
+        "integration-tester": "single-call-all-modes；contract/integration/smoke 共用同一次 build，分開呼叫會 build 3 次。",
+        "still-sliced": "tdd-implementer 維持 1 個 behavior slice、analyst 維持 1 個 story —— 這兩者的切片對應真實的失敗復原邊界，不合併。"
+      },
       "max-subagent-calls": 20,
       "design-bridge": "enabled",
       "context-pack": "cross-stage-only",

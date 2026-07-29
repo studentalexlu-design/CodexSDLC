@@ -23,6 +23,9 @@
 - artifact-path: {{ARTIFACT_PATH}}
 - artifact-version: {{ARTIFACT_VERSION}}
 - artifact-digest: {{ARTIFACT_DIGEST}}
+- review-round: {{REVIEW_ROUND}}
+- changed-sections: {{CHANGED_SECTIONS_OR_NA}}
+- prior-defect-locations: {{PRIOR_DEFECT_LOCATIONS_OR_NA}}
 
 ## review-focus
 - focus-1: {{FOCUS_1}}

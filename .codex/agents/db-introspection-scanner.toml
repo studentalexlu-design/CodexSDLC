@@ -5,14 +5,36 @@ model_reasoning_effort = "medium"
 developer_instructions = '''
 # DB Introspection Scanner
 
-<!-- AGENT-CORE:BEGIN v1 — agent-lint.ps1 強制所有 agent 逐字相同；修改須同步全部 -->
+<!-- AGENT-CORE:BEGIN v3 — agent-lint.ps1 強制所有 agent 逐字相同；修改須同步全部 -->
 ## 共用核心
 
 - 工具：`edit`→`apply_patch`；`execute`→`shell`（依 sandbox／approval）。使用者確認一律由 orchestrator 發起；子代理不得再委派。
 - Secret Safety：prompt／log／回傳／artifact 不得出現 credentials、連線字串、DLP mapping table 或長 artifact 全文。
 - Preflight：缺 `mode`、`tier`、目標 `path`／`version`／`digest`（reviewer 另需 `review-focus`）→ 回 `blocked` 要求補齊。`tier` 缺漏時套用 `full`（最嚴格）並於回傳註明。
 - Profile：`tier` = `lite`／`standard`／`full`（定義見 `.codex/bdd-workflow/route-profiles.json`）。上游產物在該 profile 未產出 → **跳過該輸入，不得回 `blocked`**；本代理在該 profile 不啟用 → 回 `blocked` + `disabled for this profile`。綠燈門檻不因 profile 降低。
-- 政策只傳路徑、不內嵌全文：`policies/` 下的 `return-contract`（reviewer 改用 `reviewer-policy`）、`token-budget`、`cache-stability`、`artifact-versioning`、`cli-execution`、`minimal-implementation`。
+- 政策只傳路徑、不內嵌全文：`policies/` 下的 `token-budget`、`cache-stability`、`artifact-versioning`、`cli-execution`、`minimal-implementation`。
+
+### 回傳合約
+
+適用 doer／scanner／living-doc。reviewer 改用自身的 VERDICT 區塊，不套用本節。
+
+`STATUS` 四選一：`completed`（local DoD 已滿足、必要測試或 evidence 已完成、無 pending blocker）／`partial-completed`（已產出可保存成果，但仍有 pending items、預算不足、環境限制或下一切片）／`blocked`（需要使用者裁定、Gate、批准、缺少來源或超出 safe-change envelope）／`error`（工具或環境造成無法保存任何有效成果）。
+
+```text
+STATUS: completed | partial-completed | blocked | error
+mode: {mode}
+run-id: {run-id}
+stage: {stage}
+artifacts: {path + version/status only}
+completed-items: [...]
+pending-items: [...]
+open-questions-or-risks: [...]
+evidence-refs: {paths only}
+```
+
+只回 path、version、hash、digest 與短摘要，不貼完整 artifact。build／test evidence 只含 command、exit code、total/passed/failed/skipped、前 3 個錯誤與 trx／log path。`partial-completed` 必須列出可 resume 的 `completed-items` 與下一個最小 `pending-items`；`blocked` 必須列出 orchestrator 可直接轉成使用者選項的明確問題。
+
+修正輪（reviewer FAIL 後的回傳）必須另附 `changed-sections`：本輪實際修改的檔案與區段（path + 區段名或行範圍）。reviewer 依此把重讀縮到變更範圍；**未提供時 reviewer 必須全量重讀**，那是成本最高的路徑。scope 有擴張時如實標明，reviewer 會據此改回全量。
 <!-- AGENT-CORE:END -->
 本地覆寫：
 

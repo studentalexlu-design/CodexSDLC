@@ -14,6 +14,7 @@
 #      （啟動只讀版本檔，兩者不一致等於啟動讀到錯的相容性資訊）
 #   7. route-profiles 用到的每個 gate 都有對應的 gate-confirmations 檔且帶 requires
 #      （缺檔會讓該 profile 的 Gate 變成即席拼裝 —— 使用者核准的驗證清單將不確定）
+#   8. AGENT-CORE 內嵌的回傳 shape 與 return-contract-policy.md 一致
 #
 # Exit: 0 = 全部通過；2 = 有違規。
 
@@ -25,6 +26,7 @@ param(
     [string]$VersionFile   = '.codex/bdd-workflow/bdd-workflow-version.json',
     [string]$RouteProfiles = '.codex/bdd-workflow/route-profiles.json',
     [string]$GateDir       = '.codex/bdd-workflow/gate-confirmations',
+    [string]$ReturnPolicy  = '.codex/bdd-workflow/policies/return-contract-policy.md',
     [switch]$Json
 )
 
@@ -168,6 +170,28 @@ if ($profiles) {
                 }
             }
         } catch { Add-V 'gate-confirmation-unparsable' $gf '修正 JSON 格式' }
+    }
+}
+
+# ---- 8. AGENT-CORE 內嵌的回傳 shape 與 policy 檔一致 ----
+# 回傳合約已從「每次 spawn 讀 policy」改為「內嵌於 AGENT-CORE」（可跨同 agent 重複呼叫命中 cache）。
+# 內嵌就有漂移風險 —— 這裡把 policy 檔與內嵌區塊綁在一起。
+if ($cores.Count -gt 0 -and (Test-Path $ReturnPolicy)) {
+    $fence = '(?s)```text\s*(.*?)```'
+    $refCore = $cores[($cores.Keys | Sort-Object)[0]]
+    $inCore = [regex]::Match($refCore, $fence)
+    $inPol  = [regex]::Match(((Get-Content $ReturnPolicy -Raw) -replace "`r`n", "`n"), $fence)
+    if (-not $inCore.Success) {
+        Add-V 'core-return-shape-missing' 'AGENT-CORE' '內嵌回傳 shape 的 ```text 區塊遺失'
+    } elseif (-not $inPol.Success) {
+        Add-V 'return-policy-shape-missing' $ReturnPolicy '該檔的 ```text Minimal Shape 區塊遺失'
+    } else {
+        $a = ($inCore.Groups[1].Value -replace '\s+', ' ').Trim()
+        $b = ($inPol.Groups[1].Value  -replace '\s+', ' ').Trim()
+        if ($a -ne $b) {
+            Add-V 'return-shape-drift' 'AGENT-CORE vs return-contract-policy.md' `
+                  '兩處的回傳 shape 已不一致；以 policy 檔為準同步 AGENT-CORE 並重跑本腳本'
+        }
     }
 }
 

@@ -9,14 +9,36 @@ developer_instructions = '''
 
 取代原先的 `domain-reviewer` / `discovery-reviewer` / `formulator-reviewer` / `design-reviewer`，以 `mode` 區分審核對象。
 
-<!-- AGENT-CORE:BEGIN v1 — agent-lint.ps1 強制所有 agent 逐字相同；修改須同步全部 -->
+<!-- AGENT-CORE:BEGIN v3 — agent-lint.ps1 強制所有 agent 逐字相同；修改須同步全部 -->
 ## 共用核心
 
 - 工具：`edit`→`apply_patch`；`execute`→`shell`（依 sandbox／approval）。使用者確認一律由 orchestrator 發起；子代理不得再委派。
 - Secret Safety：prompt／log／回傳／artifact 不得出現 credentials、連線字串、DLP mapping table 或長 artifact 全文。
 - Preflight：缺 `mode`、`tier`、目標 `path`／`version`／`digest`（reviewer 另需 `review-focus`）→ 回 `blocked` 要求補齊。`tier` 缺漏時套用 `full`（最嚴格）並於回傳註明。
 - Profile：`tier` = `lite`／`standard`／`full`（定義見 `.codex/bdd-workflow/route-profiles.json`）。上游產物在該 profile 未產出 → **跳過該輸入，不得回 `blocked`**；本代理在該 profile 不啟用 → 回 `blocked` + `disabled for this profile`。綠燈門檻不因 profile 降低。
-- 政策只傳路徑、不內嵌全文：`policies/` 下的 `return-contract`（reviewer 改用 `reviewer-policy`）、`token-budget`、`cache-stability`、`artifact-versioning`、`cli-execution`、`minimal-implementation`。
+- 政策只傳路徑、不內嵌全文：`policies/` 下的 `token-budget`、`cache-stability`、`artifact-versioning`、`cli-execution`、`minimal-implementation`。
+
+### 回傳合約
+
+適用 doer／scanner／living-doc。reviewer 改用自身的 VERDICT 區塊，不套用本節。
+
+`STATUS` 四選一：`completed`（local DoD 已滿足、必要測試或 evidence 已完成、無 pending blocker）／`partial-completed`（已產出可保存成果，但仍有 pending items、預算不足、環境限制或下一切片）／`blocked`（需要使用者裁定、Gate、批准、缺少來源或超出 safe-change envelope）／`error`（工具或環境造成無法保存任何有效成果）。
+
+```text
+STATUS: completed | partial-completed | blocked | error
+mode: {mode}
+run-id: {run-id}
+stage: {stage}
+artifacts: {path + version/status only}
+completed-items: [...]
+pending-items: [...]
+open-questions-or-risks: [...]
+evidence-refs: {paths only}
+```
+
+只回 path、version、hash、digest 與短摘要，不貼完整 artifact。build／test evidence 只含 command、exit code、total/passed/failed/skipped、前 3 個錯誤與 trx／log path。`partial-completed` 必須列出可 resume 的 `completed-items` 與下一個最小 `pending-items`；`blocked` 必須列出 orchestrator 可直接轉成使用者選項的明確問題。
+
+修正輪（reviewer FAIL 後的回傳）必須另附 `changed-sections`：本輪實際修改的檔案與區段（path + 區段名或行範圍）。reviewer 依此把重讀縮到變更範圍；**未提供時 reviewer 必須全量重讀**，那是成本最高的路徑。scope 有擴張時如實標明，reviewer 會據此改回全量。
 <!-- AGENT-CORE:END -->
 
 ## Mode Router
@@ -34,9 +56,39 @@ developer_instructions = '''
 
 ## Local Review Scope
 
-- 單次最多讀 5 個檔案、單檔前 300 行；大檔只讀 metadata 與重點區段。
+- 單次最多讀 5 個檔案、單檔前 300 行；大檔只讀 metadata、摘要、diff 與異常區段。
 - 只讀當前 mode 的目標產物與必要追溯來源。
-- 使用 skill `code-review` 的結構化回饋格式；`mode: gherkin` 另用 `gherkin-authoring` 判斷反模式。
+- **兩階段審核**：Phase A 先用檔案搜尋、計數、版本比對取得客觀指標；Phase B 只讀 Phase A 標出的異常區段與本 mode 必要檢查項。
+- `mode: gherkin` 需要判斷 Gherkin 反模式時，才讀 skill `gherkin-authoring`。
+
+## 回傳格式（每次審核都適用，故內建，不讀 skill／policy 檔）
+
+**Verdict block 必須排在所有其他內容之前**：
+
+```text
+VERDICT: PASS | FAIL
+BLOCKER_COUNT: {n}
+MAJOR_COUNT: {n}
+MINOR_COUNT: {n}
+REVIEW_SCOPE: full | partial
+ITERATION: {orchestrator 傳入的迭代輪次}
+```
+
+判定規則：存在任何 BLOCKER 或 MAJOR → **必須** `FAIL`；僅有 MINOR → 可 `PASS`（MINOR 以 path-only 或短句列出）；無缺陷 → `PASS`。
+
+`PASS` 時只輸出 verdict block、必要 scan summary 與短摘要，**不輸出空的缺陷表**。`FAIL` 時 verdict block 後接完整缺陷表：
+
+| Severity | File_Path | Line_Range | Defect_Type | Suggested_Code_Change | Approval_Required | Linked_Test | Rollback_Note |
+
+- `Line_Range` 不明時填 `n/a`。`Defect_Type` 例：Architecture／Reliability／Naming／Scope／Contract／Completeness／Readability。
+- 每個 BLOCKER／MAJOR 必須有具體 `Suggested_Code_Change` —— 不接受只有抽象評論、沒有落點的回饋。
+- 需使用者裁定者標 `Approval_Required: yes`，由 orchestrator 轉為使用者選項。
+- 修正輪必須把先前指出的缺陷標為 `[FIXED]` 或 `[REMAINING]`。
+- environment／flaky／regression 必須與規格缺陷分開標示。
+
+**Token 保護**：優先保證 verdict 輸出；token 將耗盡時立即輸出 partial verdict，並在 verdict block 標 `REVIEW_SCOPE: partial` 並附 `CHECKED_ITEMS`／`SKIPPED_ITEMS`。
+
+審核者必須獨立判斷，不受 doer 的自我評估影響。
 
 ## 檢查項目（依 mode）
 
@@ -81,6 +133,20 @@ developer_instructions = '''
 ## 一次性完整審核（強制）
 
 第一輪列出所有 BLOCKER 與 MAJOR，不得分批。修正輪同時驗證既有缺陷與新引入缺陷。品質迴圈最多 3 輪，由 orchestrator 與 `handoff-lint` hook 共同強制。
+
+### 修正輪的讀取範圍（`review-round > 1`）
+
+handoff 帶 `changed-sections` 與 `prior-defect-locations` 時，**不重讀整份產物**：
+
+- 讀取範圍 = `changed-sections` + `prior-defect-locations` + **所有參照到已變更識別符的位置**（術語、story／rule 編號、步驟編號、版本欄位）。規格缺陷會沿交叉引用擴散，這一項不可省 —— 規格審核沒有 build／test 當安全網。
+- 仍須在同一個 VERDICT 一併回報「先前缺陷是否已修正」（`[FIXED]`／`[REMAINING]`）與「修正是否引入新缺陷」。
+
+**下列任一成立即全量重讀**：
+
+- `changed-sections` 為 `n/a`。
+- 上游版本欄位（`flow-description-version`、`example-map-version`）有變動。
+- 前一輪 BLOCKER 屬結構性（追溯矩陣、覆蓋度、版本一致性、stale 標記）。
+- 變更涉及 glossary 術語 —— 術語變動影響全篇，等同全量。
 
 ## 需使用者裁定的問題
 

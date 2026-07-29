@@ -67,10 +67,14 @@ LLM 只做**判斷**：SQL 是 data-access 還是 business-rule、風險等級�
 
 ## Slice Rules（依 tier）
 
-- **H**：每次 invocation 只處理一個 mode 與最小 behavior slice。
-- **M**：允許合併呼叫 —— `design-modeler` 與 `integration-tester` 使用 `mode: all`，`analyst` 一次處理整張 example map，`tdd-implementer` 一次處理同一 backlog group。
+- **H**：`tdd-implementer` 每次一個最小 behavior slice、`analyst` 每次一個 story；`design-modeler` 合併為 `foundation` + `elaboration` 兩次，`integration-tester` 合併為 `mode: all` 一次。
+- **M**：允許合併呼叫 —— `integration-tester` 使用 `mode: all`，`analyst` 一次處理整張 example map，`tdd-implementer` 一次處理同一 backlog group。（`design-modeler` 在 M 不啟用。）
 - **L**：單次 invocation 完成整個需求。
 - 任何 tier：若該 tier 定義的範圍仍有剩餘，先回 `partial-completed`，由 orchestrator 決定是否續跑。
 
-切得越細 = 冷啟動次數越多 = 總 token 越高。切片是**穩定性**手段，不是省 token 手段；只在 full 的高風險情境才值得付這個代價。
+切得越細 = 冷啟動次數越多 = 總 token 越高。切片是**穩定性**手段，不是省 token 手段。
+
+因此切片只保留在**切片邊界等於真實失敗復原邊界**的地方：`tdd-implementer` 的 behavior slice 就是 Red-Green-Refactor 的復原點，`analyst` 的 story 就是需求探索的復原點 —— 合併會放大失敗時要重做的範圍。反之，`design-modeler` 的 5 個 mode 與 `integration-tester` 的 3 個 mode 之間沒有這種邊界，分開呼叫只是重複付 4-8k 的冷啟動固定成本（`integration-tester` 更是重複 build 3 次）。
+
+**合併不得跨越帶有保證的邊界**：doer 與 reviewer、`atdd-automator` 與 `tdd-implementer`、`integration-tester` 與 `tdd-implementer`、`db-introspection-scanner` 的單一出口 —— 這些分開是為了正確性，不是穩定性，不在可合併之列。
 
