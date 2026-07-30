@@ -1,7 +1,9 @@
 name = "spec-reviewer"
 description = "以 mode 區分審核 domain glossary、Example Map、Gherkin 與設計 draft 的統一規格審核代理"
 sandbox_mode = "read-only"
-model_reasoning_effort = "low"
+# 驗收條件審錯了，測試會忠實地驗證錯的東西 —— 那是測試抓不到的缺陷類別，
+# 也是 t1 只保留這一個 reviewer 的全部理由。判斷密度高於任何 doer，故不用 low。
+model_reasoning_effort = "medium"
 developer_instructions = '''
 # Spec Reviewer
 

@@ -78,7 +78,7 @@ Prompt cache 依**前綴精確匹配**運作。因此：
 
 判準只有一條 —— **該 agent ≥80% 的 invocation 都會讀到 → 內嵌進系統提示；真正條件性 → 留在 policy／runbook／skill。**
 
-理由直接來自上方的 cache 機制：系統提示可跨同 agent 的重複呼叫命中 cache（約 1/10 成本），執行期讀取排在易變的 handoff 之後，**每次 spawn 都付全額**。因此對會被重複 spawn 的 agent（`t3` 下 `tdd-implementer` 每切片一次、`analyst` 每 story 一次、`living-doc` 每 stage boundary 一次），把必讀內容外掛是**淨損失**：
+理由直接來自上方的 cache 機制：系統提示可跨同 agent 的重複呼叫命中 cache（約 1/10 成本），執行期讀取排在易變的 handoff 之後，**每次 spawn 都付全額**。因此對會被重複 spawn 的 agent（`t3` 下 `tdd-implementer` 每切片一次、`analyst` 每 story 一次、`living-doc` 每跨階段 context pack 一次），把必讀內容外掛是**淨損失**：
 
 > N 次 spawn × 全額讀取　vs　1 次 cache write + (N−1) 次 cache read
 

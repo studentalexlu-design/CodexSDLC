@@ -6,7 +6,7 @@
 
 ## 階段定位
 
-FSM：`tdd-done → integration → integration-done → living-doc → verified`。
+FSM：`tdd-done → integration → integration-done → verified`（收尾的 checkpoint 由 orchestrator 自行寫入）。
 在 TDD 完成後、收尾前，產出契約/整合/smoke 測試證據，供交付 Gate 使用者確認（`t2` → `gate-close`；`t3` → `gate-release`）。
 
 ## Mode 執行順序（建議）
@@ -46,18 +46,18 @@ FSM：`tdd-done → integration → integration-done → living-doc → verified
 
 ## 目錄前置
 
-若 `bdd-docs/runs/{run-id}/artifacts/integration/` 不存在，先由 orchestrator 委派 `living-doc` 建立，再委派 integration-tester 產出證據。
+若 `bdd-docs/runs/{run-id}/artifacts/integration/` 不存在，由 integration-tester 於寫入第一份證據時一併建立（`apply_patch` 會建立父目錄）。**不得為了建目錄委派 `living-doc`**。
 
 ## 切片與 partial-completed
 
 - 契約端點 > 15 或整合案例過多：回 `partial-completed`，附 `next-step`。
-- orchestrator 先委派 `living-doc` checkpoint，再依 next-step 續跑。
+- orchestrator **自行**寫 checkpoint，再依 next-step 續跑。
 
 ## 交付 Gate 收斂
 
 - 三項（contract/integration/smoke）通過或 N/A → 交付 Gate user confirmation。
-- living-doc 於 checklist「整合驗證（evidence）」更新 path/status/evidence refs。
-- 交付 Gate 通過後收尾（`t3` 經 living-doc；`t2` 由 orchestrator 自行寫入）。
+- orchestrator 於 checklist「整合驗證（evidence）」更新 path/status/evidence refs。
+- 交付 Gate 通過後由 orchestrator 自行寫收尾 checkpoint（所有 tier）。
 
 ## 適用性（N/A 準則）
 

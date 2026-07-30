@@ -93,7 +93,7 @@ evidence-refs: {paths only}
 | `t2` | ≤9 | `gate-contract` → `gate-close` | 上列 + `project-scanner`、`analyst`、`design-modeler`(**僅契約產物**)、`integration-tester`(`all`)、`code-reviewer` |
 | `t3` | ≤14 | `gate-contract` → `gate-migration` → `gate-release` | 全部（含 `living-doc`） |
 
-步驟：以一次 `Codex user confirmation` 確認 tier（建議項排第一並附理由，同時說明 spawn 上限與 Gate 數）→ 寫入 `runtime-metadata.tier`、初始化 `subagent-calls.count = 0` → 記 decision-log（`t3` 委派 `living-doc`，其餘自行寫入）。
+步驟：以一次 `Codex user confirmation` 確認 tier（建議項排第一並附理由，同時說明 spawn 上限與 Gate 數）→ 寫入 `runtime-metadata.tier`、初始化 `subagent-calls.count = 0` → 自行記 decision-log。
 
 未確認或取消 → 預設 **`t1`**，記錄「未確認，採保守預設」。**不得預設 `t0`**（放棄了 doer/orchestrator 分離），**也不得預設 `t3`**（未確認不是不可逆的證據）。resume 沿用既有 tier，不重新判定。
 
@@ -129,7 +129,7 @@ Gate 確認固定用 `gate-confirmations/{gate-id}.json` + `templates/gate-confi
 - Gate 前檢查 `runtime-metadata.needs-lint` 與該 stage 的 checklist rows；缺 path／status／owner／evidence 或 `not-applicable` 無 reason → 先修復，不得要求核准。
 - 命中該 gate 的 `escalate-instead-of-approve-when` → 不得核准，改以 user confirmation 升級 tier 或開探索 run。
 - 取消／skipped／未完成 = 未核准。以更短形式重問一次，仍未明確核准則停止推進並保留 checkpoint。
-- 核准後寫 checkpoint（gate id、reviewed refs、verification checklist、user decision、next stage）：`t3` 委派 `living-doc`，其餘自行寫入。
+- 核准後**自行**寫 checkpoint 與 decision-log（gate id、reviewed refs、verification checklist、user decision、next stage），所有 tier 皆然，欄位見 `runbooks/checkpoint-schema.md`。這是你剛從使用者手上拿到的單點事實，委派省不到任何讀取。
 
 ### Gate 邊界的 context reset
 
@@ -148,12 +148,14 @@ Gate 核准後 checkpoint 已完整落地，該 run 可純由 checkpoint 續跑 
 - `bdd-docs/runs/{run-id}/workflow-state.json`（含 `runtime-metadata`、`quality-loop`、`subagent-calls`）
 - `bdd-docs/runs/{run-id}/checkpoints/{stage}.md`
 - `bdd-docs/runs/{run-id}/artifacts/lean-sdlc-checklist.md` 的既有列狀態
+- `bdd-docs/runs/{run-id}/artifacts/decision-log.md`（決策、核准、例外、rollback 註記）
+- `bdd-docs/runs/{run-id}/artifacts/mask-audit.md`、`bdd-docs/runs/{run-id}/.dlp-disabled`、`bdd-docs/runs/{run-id}/artifacts/db-select-authorization.md`
 
-這四項是**狀態**，不是產物。純寫狀態不得委派 —— 那是最主要的無謂成本來源。
+這些是**狀態與單點紀錄**，不是產物：事實在使用者確認或子代理回傳時就已經在你手上，委派省不到任何讀取，只多付一次 spawn。**純寫狀態不得委派 —— 那是最主要的無謂成本來源。** 欄位規格見 `runbooks/checkpoint-schema.md`。
 
-**唯讀探索**（所有 tier）：直接讀 `bdd-docs/artifacts/repo-index/index.json`，並可執行 `.codex/scripts/` 下的唯讀腳本（`repo-index.ps1 -StatusOnly`、`impact-scope.ps1`）。這不產生 artifact，不違反「不寫產物」。
+**唯讀探索**（所有 tier）：直接讀 `bdd-docs/artifacts/repo-index/index.json`，並可執行 `.codex/scripts/` 下的唯讀腳本（`repo-index.ps1 -StatusOnly`、`impact-scope.ps1`、`dlp-residual-scan.ps1`）。這不產生 artifact，不違反「不寫產物」。**委派前的 DLP 殘留掃描由你自己跑** —— 為一次唯讀掃描開一次 spawn，等於讓每次委派都變成兩次。
 
-**`living-doc` 只在 `t3` 啟用。** 委派寫檔的損益平衡是「產物大小 × 剩餘輪次 > spawn 成本」，只有 `t3` 的 run 夠長、產物夠大而值得。`t0`–`t2` 的 run 帳務（checkpoint、decision-log、checklist）由你自行寫入（寫入邊界放寬到 `decision-log.md`），內容產物由**產出它的 doer 自行寫入** —— 兩者都不經過你的 context。在 `t0`–`t2` 委派 `living-doc` 是錯誤。
+**`living-doc` 只在 `t3` 啟用，且只做「要讀多份上游才編得出來」的產物**：`new-run`（run 骨架 + 來源登錄）、`context-pack`（跨階段編譯）、`lint`／`archive`／`migration`。委派它買到的是「那些讀取不進你的對話」；上表那些你已經知道答案的紀錄，委派買不到任何東西，且會吃掉 `t3` 本來就不寬裕的 spawn 預算。`t0`–`t2` 連 `new-run`／`context-pack` 都由你自行處理（`context-pack` 在這些 tier 本來就 disabled），內容產物由**產出它的 doer 自行寫入**（含該產物的 sidecar digest）。在 `t0`–`t2` 委派 `living-doc` 是錯誤。
 
 **`t0` 的例外（唯一放寬產物寫入的地方）**：`t0` 的 `max-subagent-calls` 是 0，`handoff-lint` 會擋下任何 spawn。你自行完成：讀索引取專案輪廓、以 `impact-scope.ps1` 產 safe-change envelope、實作、跑相關測試、寫 checklist 與 log。doer/orchestrator 分離買的是高風險改動的可稽核性，而 `t0` 的定義就是「這個保證不適用的那一類」。**diff 一旦超出單一 commit 可 revert 的範圍、或出現需驗收的行為變更 → 立即升 `t1`，不得繼續自行實作。**
 
@@ -190,13 +192,15 @@ Gate 核准後 checkpoint 已完整落地，該 run 可純由 checkpoint 續跑 
 | TDD micro-iterations、production code、smoke test、spike | `tdd-implementer` | `slice`／`spike`／`resume`／`smoke` | spike／t1–t3 |
 | 契約／整合／smoke 證據 | `integration-tester` | **`all`**（單次；分開呼叫會 build 3 次） | t2／t3 |
 | 驗收條件／glossary／example-map／契約 draft 審核 | `spec-reviewer` | `domain`／`example-map`／`gherkin`／`design` | t1–t3 |
-| ATDD skeleton 審核 | `code-reviewer`（`mode: atdd`） | `review` | t2／t3 |
+| ATDD skeleton 審核 | `code-reviewer`（`mode: atdd`） | `review` | **僅 t3** |
 | TDD 實作審核 | `code-reviewer`（`mode: tdd`） | `review` | t2／t3 |
-| run 文件、checkpoint、index、log、context pack、DoD | `living-doc` | `new-run`／`checkpoint`／`context-pack`／`lint` | **僅 t3** |
+| run 骨架、來源登錄、跨階段 context pack、文件健檢／封存 | `living-doc` | `new-run`／`context-pack`／`lint`／`archive` | **僅 t3** |
 
 切片只保留在**切片邊界等於失敗復原邊界**之處：`tdd-implementer` 維持 1 個 behavior slice（Red-Green-Refactor 復原點）、`analyst` 維持 1 個 story（僅 `t3`；`t2` 一次處理整張 example map）。`design-modeler` 在 `t2` 只出契約產物 —— sequence／module／traceability 是設計文件不是契約，在 `t2` 換不到任何驗證價值。
 
 **資料建模單一 owner 是 `design-modeler`。** `t0`–`t2` 依定義不動既有資料；實際需要 migration 或 backfill → 升 `t3`。
+
+**reviewer 的數量依 tier 遞增，判準是「這個產物有沒有機械 oracle」**：有 oracle 的產物不設 reviewer（`t1` 不審 code —— 綠燈即證據；`t1`／`t2` 不審 ATDD skeleton —— acceptance test 必須先紅後綠，`t2` 另有 `integration-tester` 再驗一次契約）。沒有 oracle 的產物必須審，因為它本身就是後面所有測試的 oracle（驗收條件、契約設計）。`mode: atdd` 只在 `t3` 啟用。
 
 **doer 與 reviewer 永遠分開呼叫**，品質迴圈上限 3 輪（絕對 4）後升級使用者裁定。呼叫 reviewer 前先讀 `quality-loop.iteration`；`iteration >= 3` 且 `last-verdict == FAIL` → **禁止**再呼叫 doer+reviewer，立即以 user confirmation 升級（接受現版本降級 PASS／指定重點跑最後 1 輪／暫停／✏️ 自行輸入…）。此上限由 `handoff-lint` 機械強制。細節見 skill `quality-loop`。
 

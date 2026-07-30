@@ -92,8 +92,8 @@ analyst 額外附：`glossary_delta` 與 `domain-check-completed`。
 當 reviewer 回傳 FAIL：
 
 1. 萃取 BLOCKER 與 MAJOR 缺陷，保留缺陷 ID、位置、原因、建議修正。
-2. **遞增** `working-state.quality-loop.iteration`（由 orchestrator 維護或委派 `living-doc` 更新）。
-3. 委派 `living-doc` 寫入品質迴圈 checkpoint。
+2. **遞增** `working-state.quality-loop.iteration`（由 orchestrator 自行維護；`handoff-lint` 讀此欄位強制上限）。
+3. orchestrator 自行寫入品質迴圈 checkpoint。
 4. **Preflight 檢查**：若 `iteration >= 3`，禁止再呼叫 doer + reviewer，以 `Codex user confirmation` 升級使用者裁定。
 5. 若 `iteration < 3`，呼叫 doer 修正，只傳必要缺陷摘要與目標產物。
 6. 修正完成後重新呼叫同一 reviewer。
@@ -109,4 +109,4 @@ analyst 額外附：`glossary_delta` 與 `domain-check-completed`。
 - 下游產物記錄的 upstream version 一致。
 - `index.md` 與 `workflow-state.json` 對同一產物狀態一致。
 
-不一致時，先委派 `living-doc` 執行 lint 或修復索引，再重新評估 Gate。
+不一致時先修復狀態再重新評估 Gate；索引層級的不一致在 `t3` 可委派 `living-doc`（`mode: lint`）。

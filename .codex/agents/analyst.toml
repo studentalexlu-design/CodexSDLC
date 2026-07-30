@@ -93,7 +93,7 @@ handoff 帶入 `tier`。未帶入時**一律套用 `t3`**（最嚴格）。
 - 回傳只含**結論與 evidence ref**（path／物件名／行範圍），不含 SQL 全文、不含 schema 全文。結論會被寫進 `probe-findings.md`（硬上限 2000 字元）。
 - 事實不足以下結論時回 `partial-completed` 並列出「還缺哪一份來源」。**不得推測填補** —— 推測會以事實的形式進入交付 run，那是最貴的錯誤類型。
 - 探索的產物不是驗收依據。`probe` 結束後交付 run 會重新跑 `example-map`（若該 tier 啟用）。
-- 目錄不存在或下游產物 stale 需 `living-doc` 處理時，回 `blocked` 或 `partial-completed`。
+- 目標目錄不存在時**自行建立**（`apply_patch` 會建立父目錄），不為此回 `blocked`。只有下游產物 stale 需重編 context pack 時才回 `partial-completed` 並註明。
 - 單一 story 超過 7 條 rules 時回傳建議拆分，不在同一輪硬做完。
 
 ## `mode: glossary`
@@ -177,7 +177,7 @@ handoff 帶入 `tier`。未帶入時**一律套用 `t3`**（最嚴格）。
 3. 提出**處置建議**：`keep-in-sql` / `move-to-domain` / `move-to-application` / `redesign` / `drop` / `defer`（決策矩陣見 runbook），狀態 `pending`，待該 tier 的 Gate 使用者裁定（`t2`／`t3` → `gate-contract`）。
 4. 規則與其他來源矛盾時寫入 `source-conflicts.md`（`rule-contradiction`）。
 5. 規則涉及術語直接回填 `domain-glossary.md`（同一代理，無需跨 agent）。
-6. 產出寫入 `bdd-docs/runs/{run-id}/artifacts/legacy-sql-analysis/{feature-id}.md`；目錄不存在時回報 orchestrator 由 `living-doc` 建立後重試。
+6. 產出寫入 `bdd-docs/runs/{run-id}/artifacts/legacy-sql-analysis/{feature-id}.md`；目錄不存在時自行建立（可參考 `bdd-docs/artifacts/legacy-sql-analysis/template.md` 的骨架）。
 7. 全部訊號皆 `data-access` → 標 `dispositions-resolved`；來源無任何 SQL 邏輯 → 標 `not-applicable` + reason。
 8. 訊號 > 20 條時回 `partial-completed`，附 `completed-items` / `pending-items` / `next-step`。
 

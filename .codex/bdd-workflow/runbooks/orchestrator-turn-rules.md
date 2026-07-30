@@ -8,7 +8,7 @@
 每次 `runSubagent` 前檢查：
 
 - prompt 只描述**一個** operation mode、**一個**目標產物群、**一個**下一步；不得跨 Gate。
-- prompt ≤ 1,200 字元。超過時先委派 `living-doc` 編譯 context pack，或改以更小切片委派。
+- prompt ≤ 1,200 字元。超過時改以更小切片委派；`t3` 且跨階段時可委派 `living-doc` 編譯 context pack。
 - 必須傳入 `mode`（如 `new-run`、`checkpoint`、`inventory`、`impact`、`review`、`fix`）。
 - 使用 `templates/handoff-{mode}.md` 固定模板；同 mode 不得改段落順序與欄位名稱。
 - 有 artifact digest 或 project-profile cache 時，優先傳 digest/cache path 與 hash；不得要求子代理重掃 solution / test toolchain。
@@ -19,10 +19,10 @@
 
 - `flow` 一次只允許 1 輪 flow alignment；不得在同一 handoff 要求 analyst 等待使用者回應或直接進入 `example-map`。
 - `example-map` 一次只允許 1 個 story；handoff 不得出現「涵蓋所有 stories」「完成整份 example map」或等價要求。
-- 同 turn 最多自動續跑 2 個 story；仍有 pending 時先委派 `living-doc` checkpoint，回傳 `partial-completed` 與 resume 指引。
+- 同 turn 最多自動續跑 2 個 story；仍有 pending 時**自行**寫 checkpoint，回傳 `partial-completed` 與 resume 指引。
 - handoff 優先傳 artifact path/version 與 pending-items，不貼 requirements / schema / context pack 全文。
 - 若 analyst work 已跨越 6 分鐘，或前一輪曾發生 transport failure，下一次 handoff 必須縮到最小可恢復切片。
-- 若目標產物目錄不存在，先委派 `living-doc` 補目錄或 checkpoint；不要要求 analyst 同輪自行處理目錄修復與內容探索。
+- 目標產物目錄不存在時由該 doer 於寫入時一併建立；**不得為了建目錄開一次 spawn**。
 
 > standard：`analyst`（`mode: example-map`）一次處理整張 example map，不套用上述切片守門。lite 不委派 `analyst`。
 
@@ -42,7 +42,7 @@
 
 - `decision-recorded` + `pending-artifact-sync` 只代表「已取得裁定，待同步內容 artifact」。下一個動作必須是同步受影響 artifact，之後立即重跑受影響 reviewer 或繼續目前 stage 的最小切片。
 - `partial-completed` 在 blocker 已清空後也不是終止狀態。若 reviewer PASS、blocking questions = 0，且同 stage 仍有未完成 stories 或未完成 artifact sync，必須自動續跑下一個最小切片。
-- `atdd-skeleton` / `resume` 回傳 `partial-completed` 時，同 turn 不得重複委派同一切片；必須先委派 `living-doc` 寫 checkpoint，再依 `next-step` 續跑。
+- `atdd-skeleton` / `resume` 回傳 `partial-completed` 時，同 turn 不得重複委派同一切片；必須先**自行**寫 checkpoint，再依 `next-step` 續跑。
 
 在任何 summary / final text 之前，先檢查 active run `resume-hint`、checkpoint `next-step`、`pending-items` 與 `quality-loop`。若顯示仍有本輪可繼續的最小切片 —— **先委派，後摘要**。
 
@@ -60,7 +60,7 @@
 本節只處理**兩個 Gate 之間**就已經膨脹的情況：
 
 - 判斷訊號：同一 stage 內累積多輪大型 tool output、上次子代理輸入接近上限、或 `subagent-calls.count` − `count-at-last-reset` 已 ≥ 6 而下一個 Gate 還很遠。
-- 處理：先寫 checkpoint（`t3` 委派 `living-doc`；其餘由 orchestrator 自行寫），再以 `Codex user confirmation` 請使用者開新對話 resume。**不在膨脹的 context 中繼續大型委派。**
+- 處理：先**自行**寫 checkpoint（所有 tier），再以 `Codex user confirmation` 請使用者開新對話 resume。**不在膨脹的 context 中繼續大型委派。**
 - resume 後更新 `count-at-last-reset = count`。
 
 兩者的差別只在時機：Gate reset 是計畫內的、隨核准一起發生；本節是計畫外的、需要額外一次確認。能等到下一個 Gate 就等。

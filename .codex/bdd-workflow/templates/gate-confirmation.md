@@ -28,5 +28,5 @@ Use this template whenever `bdd-orchestrator` asks the user to approve a Gate. D
 > `subagent-calls.count` − `count-at-last-reset` ≥ 4 時，將其排為第一項並標示「建議」。
 
 ## 記錄要求
-- If approved, delegate `living-doc` to write gate id, reviewed document refs, verification checklist, user decision, and next stage to `decision-log.md` and the stage checkpoint.
+- If approved, the orchestrator itself writes gate id, reviewed document refs, verification checklist, user decision, and next stage to `decision-log.md` and the stage checkpoint (all tiers; fields in `runbooks/checkpoint-schema.md`). Do not spawn an agent for this — the facts are already in hand.
 - Keep only path/version/digest/evidence refs. Do not paste full artifacts, secrets, DLP mapping tables, or long logs.

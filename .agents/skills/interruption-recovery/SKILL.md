@@ -23,7 +23,7 @@ user-invocable: false
 4. `bdd-docs/runs/{run-id}/index.md` 與 `log.md` 最近 entries 或 delta。
 5. 實際產物存在性與 metadata。
 
-若狀態矛盾，以實際產物存在性與最新 log entry 為準，並委派 `living-doc` 在 checkpoint mode 回寫索引。
+若狀態矛盾，以實際產物存在性與最新 log entry 為準，由 orchestrator 自行回寫狀態；索引本身若也失準，`t3` 可委派 `living-doc`（`mode: lint`）修復。
 
 ## Transport Failure Circuit Breaker
 
@@ -48,14 +48,14 @@ user-invocable: false
 - 指示 `VERDICT` 必須第一行輸出。
 - 跳過 MINOR 級檢查。
 
-第二次仍中斷時，orchestrator 執行 BLOCKER 級最小審核，降級 PASS 前必須以 `Codex user confirmation` 取得使用者同意，並委派 `living-doc` 記錄 decision。
+第二次仍中斷時，orchestrator 執行 BLOCKER 級最小審核，降級 PASS 前必須以 `Codex user confirmation` 取得使用者同意，並自行記錄 decision。
 
 ## Doer 部分完成
 
 當 doer 回傳 `partial-completed`：
 
 1. 讀取 completion-summary。
-2. 委派 `living-doc` checkpoint mode 寫入部分完成 checkpoint、更新 index/log。
+2. orchestrator 自行寫入部分完成 checkpoint 與 log。
 3. 以 `Codex user confirmation` 提供：繼續、先審核已完成部分、暫停流程、或自行輸入。
 4. 若繼續，以 resume mode 呼叫 doer，傳入 completed-items 與 pending-items。
 

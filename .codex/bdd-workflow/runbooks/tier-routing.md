@@ -125,7 +125,7 @@
 - `integration-tester`：單次 `mode: all`（contract／integration／smoke 共用同一次 build，分開呼叫會 build 3 次）。
 - `analyst`：`example-map` 一次處理整張 map（不切 story）。
 
-**reviewer**：`spec-reviewer`(`design`) 於 `gate-contract` 前 + `code-reviewer`(`tdd`)。契約必須由人審 —— 「契約設計得不好」是測試抓不到的缺陷類別。
+**reviewer**：`spec-reviewer`(`design`) 於 `gate-contract` 前 + `code-reviewer`(`tdd`)，共 2 個審核點。契約必須由人審 —— 「契約設計得不好」是測試抓不到的缺陷類別。**不跑 `code-reviewer`(`atdd`)**：walking skeleton 有最乾淨的機械 oracle（acceptance test 必須先紅後綠，`integration-tester`(`mode: all`) 另會再驗一次契約），與 `t1` 不審 code 同一條判準 —— 有 oracle 就不設 reviewer。省下的 1 次留給修正輪。
 
 **升級條件**：相容性判定為 `breaking`（移除欄位／改型別／改簽章）｜會動到既有資料、在跑的流量或認證授權｜消費者無法協調同步升級 → 全部升 `t3`。
 
@@ -160,7 +160,7 @@
 - **向上升級**：任何時候發現原判定過低（實際不可逆性超出、消費者範圍超出、委派次數逼近上限），**立即停止當前委派**，以 `Codex user confirmation` 告知並升級。已產出的產物保留，補做新 tier required 的前置產物。
 - **發現未知度問題時不要升級 —— 開探索 run。** 現況不明、可行性不明、需求無可驗證完成定義 → 停止交付、`checkpoint`、開 `probe`／`spike`。抬高交付 tier 不會讓你知道得更多，只會讓不知道變得更貴。
 - **向下降級**：不允許自動降級。使用者明確要求時才可降，並記錄到 decision-log。
-- 升降級後 orchestrator 更新 `runtime-metadata.tier`；`t3` 委派 `living-doc` 寫 `decision-log.md`，其餘自行寫入。
+- 升降級後 orchestrator 更新 `runtime-metadata.tier` 並**自行**寫 `decision-log.md`（所有 tier）。
 
 ## 掃描成本（各 tier）
 

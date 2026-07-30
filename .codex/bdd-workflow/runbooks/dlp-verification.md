@@ -1,6 +1,6 @@
 # Runbook: DLP Verification（P0-2）
 
-> 供 orchestrator 與 `living-doc` 於委派前 DLP 驗證使用。細節放此，agent mode 檔只留摘要。
+> 供 orchestrator 於委派前 DLP 驗證使用。細節放此，agent mode 檔只留摘要。
 > 政策：`.codex/bdd-workflow/policies/dlp-verification-policy.md`
 > 腳本：`.codex/scripts/dlp-residual-scan.ps1`
 
@@ -12,7 +12,7 @@
 
 ## 掃描呼叫方式
 
-掃描屬只讀驗證操作，由 `living-doc`（checkpoint mode）或指定驗證步驟執行：
+掃描屬唯讀驗證操作，由 orchestrator 直接執行（同 `impact-scope.ps1` 的唯讀腳本例外，不委派）：
 
 ```powershell
 # 掃描檔案
@@ -48,7 +48,7 @@ pwsh -NoProfile -File .codex/scripts/dlp-residual-scan.ps1 -Path <file> -Categor
 - 暫停 workflow
 - ✏️ 自行輸入…
 
-## mask-audit 更新（委派 living-doc）
+## mask-audit 更新（orchestrator 自行寫入）
 
 每次掃描後於 `bdd-docs/runs/{run-id}/artifacts/mask-audit.md` 追加：
 

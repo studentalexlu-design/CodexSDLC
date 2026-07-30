@@ -23,7 +23,7 @@
 
 - 模板：`bdd-docs/artifacts/legacy-sql-analysis/template.md`
 - 實例：`bdd-docs/runs/{run-id}/artifacts/legacy-sql-analysis/{feature-id}.md`
-- 目錄若不存在，由 orchestrator 委派 `living-doc` 先建立，再委派內容產出。
+- 目錄若不存在，由 `analyst` 於寫入產物時一併建立；不為此單獨開一次 spawn。
 
 ## 兩類來源偵測法
 
@@ -73,7 +73,7 @@
 
 - 邏輯訊號 > 20 條：`analyst` 回 `partial-completed`，附 `completed-items` / `pending-items` / `next-step`。
 - `db-introspection-scanner` / `project-scanner` 依各自 scan budget 切片；超量回 `partial-completed`。
-- orchestrator 收到 partial 後先委派 `living-doc` checkpoint，再依 next-step 續跑。
+- orchestrator 收到 partial 後**自行**寫 checkpoint，再依 next-step 續跑。
 
 ## Gate 對齊
 

@@ -22,7 +22,7 @@ source materials 登錄完成後、首次委派子代理前，以 `Codex user co
 - 不需要脫敏（使用者確認無敏感資料風險）
 - ✏️ 自行輸入…
 
-選「不需要脫敏」→ 跳過本 runbook 其餘段落，並委派 `living-doc`（`mode: checkpoint`）執行**兩件事**：
+選「不需要脫敏」→ 跳過本 runbook 其餘段落，orchestrator **自行**執行兩件事（所有 tier 皆然；這是它剛從使用者拿到的決策，委派只多付一次 spawn）：
 
 1. 於 `mask-audit.md` 記錄該決策（不含敏感值）。
 2. 建立標記檔 `bdd-docs/runs/{run-id}/.dlp-disabled`，內容為一行決策摘要（時間 + 使用者決策，**不得含敏感值**）。
@@ -48,8 +48,8 @@ source materials 登錄完成後、首次委派子代理前，以 `Codex user co
    > ⚠️ mapping table 含原始敏感資料。**僅保存於 session memory**；禁止寫入 `bdd-docs/`、artifact、log、decision-log 或任何 handoff prompt。
 3. **以脫敏版本委派**：所有 handoff 使用脫敏後內容，不得夾帶原始值。
    委派前的殘留掃描依 `policies/dlp-verification-policy.md` 第 2–4 節執行。
-4. **還原 Mapping**：子代理回傳後、委派 `living-doc` 寫入 artifact 前，以 mapping table 還原識別符。mapping 指示以 session context 傳遞，不貼入 prompt 全文。
-5. **還原後語法驗證**：若產出為程式碼（`.cs`、`.feature`、`.json` 等），委派對應 doer 或 `living-doc` 執行基本語法檢查（如 `dotnet build` 或格式 lint）。若語法因替換而破壞，標記問題行並以**最小修正**修復，不重跑整個子代理切片。
+4. **還原 Mapping**：子代理回傳後、artifact 落地前，以 mapping table 還原識別符。mapping 指示以 session context 傳遞，不貼入 prompt 全文。
+5. **還原後語法驗證**：若產出為程式碼（`.cs`、`.feature`、`.json` 等），委派對應 doer 執行基本語法檢查（如 `dotnet build` 或格式 lint）。若語法因替換而破壞，標記問題行並以**最小修正**修復，不重跑整個子代理切片。
 6. **例外處理**：若脫敏後語意嚴重喪失（無法進行 domain 分析），以 `Codex user confirmation` 詢問後續策略（見下方「DLP 攔截確認」）。
 
 ## Handoff 佔位符保留
@@ -83,6 +83,6 @@ handoff 內容含 `{{...}}` 佔位符時，prompt 必須加入：
    - 暫停 run，等待 DLP 政策解除後 resume
    - ✏️ 自行輸入…
 3. 未取得使用者明確選擇前，**不得繼續委派任何子代理**。
-4. 委派 `living-doc` 在 `decision-log.md` 與 `source-materials-register.md` 標記 `dlp-blocked`（不記錄被攔截的原始內容）。
+4. orchestrator 自行在 `decision-log.md` 標記 `dlp-blocked`（不記錄被攔截的原始內容）；`source-materials-register.md` 的對應標記在下一次 `living-doc` 委派時一併帶入，不為此單獨開一次 spawn。
 5. 使用者選擇脫敏後繼續 → 更新 session memory mapping，從最近 checkpoint 重新委派。
    選擇暫停 → 寫入 checkpoint 並回傳 resume 指引。

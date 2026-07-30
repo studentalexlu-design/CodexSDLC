@@ -14,8 +14,9 @@
 - 每次委派子代理**之前**，若該來源需脫敏（使用者未於 intake 宣告免脫敏），
   必須先對「脫敏後、即將送出的 handoff 內容」執行殘留掃描。
 - 掃描透過 `.codex/scripts/dlp-residual-scan.ps1` 執行（stdin 或 `-Path`）。
-- orchestrator 本身不執行命令：掃描由委派 `living-doc`（checkpoint mode）或
-  指定的驗證步驟執行，orchestrator 只讀回傳的 JSON 摘要判斷放行。
+- 掃描由 orchestrator **直接執行**：`dlp-residual-scan.ps1` 是唯讀、不產出 artifact 的腳本，
+  適用與 `impact-scope.ps1` 相同的唯讀腳本例外。orchestrator 只讀它輸出的 JSON 摘要判斷放行。
+  **不得為了跑一次掃描而委派子代理** —— 那會讓每一次委派都變成兩次 spawn。
 
 ## 3. 掃描腳本輸出契約
 
@@ -33,7 +34,7 @@
 
 ## 5. 稽核 artifact：`mask-audit.md`
 
-- 路徑：`bdd-docs/runs/{run-id}/artifacts/mask-audit.md`，owner：`living-doc`。
+- 路徑：`bdd-docs/runs/{run-id}/artifacts/mask-audit.md`，owner：`bdd-orchestrator`（所有 tier）。
 - 每次委派前掃描後追加一列，記錄：
   - 時間、handoff 目標 stage/agent
   - 殘留類別與計數、coverage%（遮蔽 entity 數 / 偵測敏感 token 數）

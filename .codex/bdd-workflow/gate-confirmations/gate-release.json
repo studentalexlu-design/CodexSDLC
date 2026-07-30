@@ -55,7 +55,7 @@
         },
         {
             "id": "living-doc-refs",
-            "name": "活文件更新（decision-log、context pack、traceability；t3 由 living-doc 維護）",
+            "name": "活文件更新（decision-log 與 checklist 由 orchestrator 維護；context pack 與 traceability 於 t3 由 living-doc 維護）",
             "path": "bdd-docs/runs/{run-id}/artifacts/",
             "required": true
         },

@@ -1,8 +1,9 @@
 {
-  "contract-version": "2.0.0",
+  "contract-version": "2.1.0",
   "min-compatible-version": "2.0.0",
-  "released": "2026-07-30",
+  "released": "2026-07-31",
   "breaking-change-note": "v2.0.0 改用兩軸 tier 模型。`tier` 值由 lite/standard/full 改為 probe/spike/t0/t1/t2/t3；不可逆性決定交付深度，未知度改由獨立的探索 run 吸收而非抬高交付 tier。舊 run 的 runtime-metadata.profile 無法對應，因此 min-compatible-version 同步升至 2.0.0。",
+  "change-note-2.1.0": "living-doc 收斂為只做需要彙整多份上游的產物（new-run／context-pack／lint／archive／migration），移除 checkpoint mode。checkpoint、Gate confirmation、decision-log、checklist 列狀態、mask-audit／.dlp-disabled／db-select-authorization 與委派前 DLP 殘留掃描一律由 orchestrator 自行處理；產物 sidecar digest 與輸出目錄建立由產出它的 doer 負責。行為向後相容，min-compatible-version 不變。",
   "stages": [
     "init",
     "intake",
@@ -270,14 +271,38 @@
       "trigger": "domain-user-confirmed"
     },
     "update-runtime-metadata": {
-      "owner": "living-doc",
+      "owner": "bdd-orchestrator",
       "output": "bdd-docs/runs/{run-id}/workflow-state.json.runtime-metadata",
-      "trigger": "checkpoint-or-stage-change"
+      "trigger": "checkpoint-or-stage-change",
+      "owner-note": "v2.1.0：改由 orchestrator 自行寫入（所有 tier）。living-doc 只在回傳中附建議值。"
+    },
+    "write-run-state": {
+      "owner": "bdd-orchestrator",
+      "output": [
+        "bdd-docs/runs/{run-id}/log.md",
+        "bdd-docs/runs/{run-id}/checkpoints/{stage}",
+        "bdd-docs/runs/{run-id}/artifacts/decision-log.md",
+        "bdd-docs/runs/{run-id}/artifacts/mask-audit.md",
+        "bdd-docs/runs/{run-id}/.dlp-disabled",
+        "bdd-docs/runs/{run-id}/artifacts/db-select-authorization.md"
+      ],
+      "trigger": "user-decision-or-doer-return",
+      "spec-path": ".codex/bdd-workflow/runbooks/checkpoint-schema.md",
+      "note": "單點紀錄：事實在使用者確認或子代理回傳時已在 orchestrator 手上，委派省不到讀取只多付一次 spawn。所有 tier 皆然。"
     },
     "update-lean-sdlc-checklist": {
-      "owner": "living-doc",
+      "owner": "bdd-orchestrator",
+      "structure-owner": "living-doc",
+      "structure-owner-note": "living-doc 於 new-run 建立、lint 校驗全表結構；既有列的狀態流轉由 orchestrator 寫入。",
       "output": "bdd-docs/runs/{run-id}/artifacts/lean-sdlc-checklist.md",
       "trigger": "new-run-or-stage-boundary"
+    },
+    "maintain-artifact-digest": {
+      "owner": "producing-doer",
+      "output": "{artifact}.digest.json",
+      "trigger": "artifact-created-or-changed",
+      "policy-path": ".codex/bdd-workflow/policies/artifact-versioning-policy.md",
+      "note": "living-doc 只維護自己產出的 artifact（context pack、run 骨架）的 digest。"
     }
   },
   "skill-loading-policy": {

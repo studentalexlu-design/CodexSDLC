@@ -48,7 +48,7 @@ evidence-refs: {paths only}
 
 ## Handoff Preflight（本地）
 
-- 若目標目錄 `bdd-docs/runs/{run-id}/artifacts/design/` 不存在，回報 orchestrator 由 `living-doc` 先建立；不要在同一輪自行處理目錄修復與內容產出。
+- 若目標目錄 `bdd-docs/runs/{run-id}/artifacts/design/` 不存在，於寫入第一份產物時一併建立（`apply_patch` 會建立父目錄），不為此回 `blocked`。
 
 ## Mode Router
 

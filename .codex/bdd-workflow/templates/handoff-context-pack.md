@@ -1,4 +1,4 @@
-# Handoff Template: checkpoint
+# Handoff Template: context-pack
 
 > 段落順序：靜態在前、易變在後。`constraints` 與 `output-contract` 同 mode 完全固定，
 > 排在最前面才可能進入共用前綴；`meta` 每次都變，排最後。**不得調換。**
@@ -13,7 +13,7 @@
 - updated-digest: {{UPDATED_DIGEST_OR_SAME}}
 
 ## meta
-- mode: checkpoint
+- mode: context-pack
 - tier: {{TIER}}
 - run-id: {{RUN_ID}}
 - feature-id: {{FEATURE_ID}}

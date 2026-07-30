@@ -67,7 +67,7 @@ Get-ChildItem .codex\agents\*.toml | ForEach-Object {
 
 ## 偵錯優先序
 
-1. **`spawns-per-run` 超標** —— 依序檢查：(a) 是否其實是**未知度**問題而被誤當成深度問題（該開 `probe` 卻升了 tier，這是最常見也最貴的一種）；(b) 是否有純狀態更新被誤委派給 `living-doc`（`t0`–`t2` 根本不啟用它，`t3` 也只該用於大產物）；(c) 合併模式（`mode: all`、`design-modeler` 的 `contract`）是否被正確使用。
+1. **`spawns-per-run` 超標** —— 依序檢查：(a) 是否其實是**未知度**問題而被誤當成深度問題（該開 `probe` 卻升了 tier，這是最常見也最貴的一種）；(b) 是否有單點紀錄（checkpoint、Gate confirmation、decision-log、DLP／DB 授權、建目錄、殘留掃描）被誤委派給 `living-doc`（`t0`–`t2` 根本不啟用它，`t3` 也只該用於 `new-run` 與跨階段 `context-pack`）；(c) 合併模式（`mode: all`、`design-modeler` 的 `contract`）是否被正確使用。
 2. **`fixed-cost-per-spawn` 超標** —— 檢查 agent 是否讀了非 active mode 的 runbook、
    是否內嵌了應該只傳路徑的 policy 全文。
 3. `handoff` 是否使用 `templates/` 模板且段落順序為靜態在前。

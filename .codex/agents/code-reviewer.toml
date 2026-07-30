@@ -46,10 +46,12 @@ evidence-refs: {paths only}
 
 `mode` 為必填。缺 `mode` 時回傳 `blocked` 並列出可用 mode。
 
-| mode | 審核對象 | 上游代理 | 讀檔上限 |
-|---|---|---|---|
-| `atdd` | acceptance tests、step definitions、walking skeleton、測試環境穩定性 | `atdd-automator` | 8 檔 |
-| `tdd` | unit tests、production code、變更邊界、DoD、acceptance 完成度 | `tdd-implementer` | 10 檔 |
+| mode | 審核對象 | 上游代理 | 讀檔上限 | 啟用 tier |
+|---|---|---|---|---|
+| `atdd` | acceptance tests、step definitions、walking skeleton、測試環境穩定性 | `atdd-automator` | 8 檔 | **僅 `t3`** |
+| `tdd` | unit tests、production code、變更邊界、DoD、acceptance 完成度 | `tdd-implementer` | 10 檔 | `t2`／`t3` |
+
+收到未在該 tier 啟用的 mode（例如 `t2` + `mode: atdd`）→ 回 `blocked` + `disabled for this tier`。`t1` 不啟用本代理。
 
 **只跑當前 mode 的專屬檢查項。** `mode: atdd` 不得要求全量 acceptance 驗收；`mode: tdd` 不得要求 step binding 覆蓋。
 

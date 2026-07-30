@@ -17,7 +17,7 @@ This repository contains a Codex-native migration of the BDD workflow that was o
 - For full workflow coordination, explicitly use the `bdd-orchestrator` custom agent.
 - The orchestrator delegates to 11 project-scoped custom agents:
   - **doers**: `project-scanner`, `db-introspection-scanner`, `analyst`, `formulator`, `design-modeler`, `atdd-automator`, `tdd-implementer`, `integration-tester`, `living-doc`
-  - **reviewers**: `spec-reviewer` (modes: `domain` / `example-map` / `gherkin` / `design`), `code-reviewer` (modes: `atdd` / `tdd`)
+  - **reviewers**: `spec-reviewer` (modes: `domain` / `example-map` / `gherkin` / `design`), `code-reviewer` (modes: `atdd` — `t3` only / `tdd` — `t2`+)
 - Three consolidations happened, each for a specific reason — **not** because "fewer agents is cheaper" (it isn't; see "Why multi-agent"):
   - `spec-reviewer` replaced four near-identical spec reviewers (~80% shared ceremony).
   - `code-reviewer` replaced `atdd-reviewer` + `tdd-reviewer` (~60% shared ceremony).
@@ -119,7 +119,7 @@ The BDD orchestrator aligns only these SDLC stages with explicit artifacts and e
 - 設計橋接 (draft): API contract draft, ER model + data dictionary, sequence diagrams, module/transaction-boundary/error-code draft, design traceability, design review findings.
 - 整合驗證 (evidence): contract test evidence, integration test evidence, smoke test evidence, delivery-gate review findings.
 
-`living-doc` owns `bdd-docs/runs/{run-id}/artifacts/lean-sdlc-checklist.md`. Every stage boundary should update checklist rows with path, status, owner agent, last updated, evidence refs, and not-applicable reason when needed.
+`living-doc` owns the *structure* of `bdd-docs/runs/{run-id}/artifacts/lean-sdlc-checklist.md` (creation at `new-run`, full-table validation at `lint`); day-to-day row status transitions are orchestrator-written at every tier. Every stage boundary should update checklist rows with path, status, owner agent, last updated, evidence refs, and not-applicable reason when needed.
 
 Design-bridge artifacts are drafts and integration-verification artifacts are evidence; both are lean-scoped and do NOT equal formal API/ER Model review or formal integration/E2E test reports.
 
@@ -167,7 +167,7 @@ Everything else is read on demand only: per-gate confirmation files, `lean-sdlc-
 
 - Source `agent` delegation maps to Codex custom subagent spawning.
 - Source `edit` / `editFiles` maps to `apply_patch`.
-- `bdd-orchestrator` may write three run-state files directly — `log.md` (append only), `workflow-state.json` `runtime-metadata`, and existing rows in `lean-sdlc-checklist.md`. Everything else it produces still goes through `living-doc`. This scoped allowance replaced a round-trip-per-state-update pattern that dominated the token cost; it does not weaken auditability, because decision-log, checkpoints, and all artifacts remain `living-doc`-owned.
+- `bdd-orchestrator` writes run state and single-fact records directly, at every tier — `log.md` (append only), `workflow-state.json`, `checkpoints/{stage}`, existing rows in `lean-sdlc-checklist.md`, `decision-log.md`, gate confirmation records, `mask-audit.md`, `.dlp-disabled`, and `db-select-authorization.md`. These are facts it already holds when the user confirms or a doer returns, so delegating them saves no reading and costs one spawn. Content artifacts are written by the doer that produced them, together with that artifact's sidecar digest. What still goes through `living-doc` is only what requires reading several upstream artifacts to produce: the run skeleton, cross-stage context packs, and doc lint/archive. Auditability is unaffected — the same records are still written, just by the agent that already has them.
 - Source `execute` / `runInTerminal` maps to Codex shell commands under the current sandbox and approval policy.
 - Source `vscode_askQuestions` / `vscode/askQuestions` maps to explicit user confirmation in the parent Codex conversation.
 - Source tool lists are behavior guidance, not a strict permission boundary. Use Codex sandbox, approval, hooks, and MCP settings as the actual enforcement layer.

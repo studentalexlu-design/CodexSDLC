@@ -8,6 +8,8 @@
 #   3. 必填 meta 欄位：mode、tier（tier ∈ probe|spike|t0|t1|t2|t3）
 #   3a. t0 不得 spawn（上限 0）—— 需要 spawn 即代表判定過低，應升 t1
 #   3b. 探索 tier（probe/spike）不得掛交付型 mode —— 探索只產事實，不碰 production code
+#   3c. 單點紀錄型 mode 不得委派（checkpoint 等）—— 事實已在 orchestrator 手上，
+#       委派省不到讀取只多付一次 spawn
 #   4. 禁用 payload：完整 log、完整 source register、長測試輸出、secrets
 #   5. quality-loop 迭代上限（讀 workflow-state.json，超限即阻斷）
 #   6. tier 的 max-subagent-calls 上限（spawn 次數是成本主導變數，
@@ -76,6 +78,19 @@ if ($tier -eq 't0') {
         rule = 't0-must-not-spawn'
         detail = 'tier: t0 的委派上限為 0'
         fix = 't0 由 orchestrator 自行實作。需要 spawn 代表判定過低 —— 升 t1，不要加 spawn'
+    }
+}
+
+# 單點紀錄不得委派：checkpoint／Gate confirmation／decision-log／DLP 標記／DB 授權紀錄
+# 的事實在使用者確認或 doer 回傳時已在 orchestrator 手上，委派買不到任何讀取節省。
+# 這些 mode 自 contract v2.1.0 起不存在於任何子代理。
+$stateOnlyModes = @('checkpoint', 'decision-log', 'gate-record', 'runtime-metadata')
+$stateHit = @($modes | Where-Object { $_ -in $stateOnlyModes })
+if ($stateHit.Count -gt 0) {
+    $violations += [pscustomobject]@{
+        rule = 'state-only-mode-delegated'
+        detail = "mode=$($stateHit -join ',')"
+        fix = 'orchestrator 自行寫入（所有 tier），欄位見 runbooks/checkpoint-schema.md。需要跨階段彙整才委派 living-doc mode: context-pack'
     }
 }
 

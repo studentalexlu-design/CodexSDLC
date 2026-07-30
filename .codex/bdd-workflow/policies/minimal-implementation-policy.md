@@ -12,7 +12,7 @@ Applies to:
 
 Does not apply to:
 
-- `living-doc` checklist, context-pack, checkpoint, evidence, or lint maintenance
+- `living-doc` run-skeleton, context-pack, or lint maintenance, and orchestrator-written run state (checkpoint, decision-log, checklist rows)
 - required Gate evidence
 - DLP, secret-safety, safe-change, accessibility, validation, error handling, or security controls
 

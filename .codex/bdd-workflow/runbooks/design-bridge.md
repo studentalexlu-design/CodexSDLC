@@ -35,12 +35,12 @@ FSM：`formulate-done → design → design-done → data-model-p2-5 → atdd`�
 
 ## 目錄前置
 
-若 `bdd-docs/runs/{run-id}/artifacts/design/` 不存在，先由 orchestrator 委派 `living-doc` 建立目錄或 checkpoint，再委派 design-modeler 產出內容（不在同一輪混合目錄修復與內容探索）。
+若 `bdd-docs/runs/{run-id}/artifacts/design/` 不存在，由 design-modeler 於寫入第一份產物時一併建立（`apply_patch` 會建立父目錄）。**不得為了建目錄委派 `living-doc`** —— 一次 spawn 4-8k tokens 換一個 mkdir 是最差的交換。
 
 ## 切片與 partial-completed
 
 - endpoint > 15 或 entity > 12：回 `partial-completed`，附 `completed-items`/`pending-items`/`next-step`。
-- orchestrator 收到 partial 後先委派 `living-doc` checkpoint，再依 next-step 續跑下一最小切片。
+- orchestrator 收到 partial 後**自行**寫 checkpoint，再依 next-step 續跑下一最小切片。
 
 ## DLP 交叉檢查
 
@@ -52,7 +52,7 @@ FSM：`formulate-done → design → design-done → data-model-p2-5 → atdd`�
 - spec-reviewer (mode: design) `VERDICT: PASS|FAIL`，最多 3 輪，超過升級 user arbitration。
 - PASS 後 orchestrator 將 design draft 併入 `gate-contract` `documents-to-review`，
   `gate-contract` `requires` 檢查 `spec-reviewer.verdict == PASS (mode: design)`。
-- living-doc 於 checklist「設計橋接（draft）」區段更新 path/status/evidence refs。
+- orchestrator 於 checklist「設計橋接（draft）」區段更新 path/status/evidence refs。
 
 ## 適用性（N/A 準則）
 
