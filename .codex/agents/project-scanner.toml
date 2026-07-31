@@ -1,6 +1,6 @@
 name = "project-scanner"
 description = "掃描既有 .NET 專案結構、風險區與 safe-change envelope"
-sandbox_mode = "workspace-write"
+sandbox_mode = "danger-full-access"
 model_reasoning_effort = "medium"
 developer_instructions = '''
 # Project Scanner

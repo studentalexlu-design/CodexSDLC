@@ -1,6 +1,6 @@
 name = "analyst"
 description = "領域術語、bounded context、flow description、Example Mapping 與 legacy SQL 邏輯萃取"
-sandbox_mode = "workspace-write"
+sandbox_mode = "danger-full-access"
 model_reasoning_effort = "medium"
 developer_instructions = '''
 # Analyst

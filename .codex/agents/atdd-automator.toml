@@ -1,6 +1,6 @@
 name = "atdd-automator"
 description = "建立 ATDD 驗收測試、step definitions 與測試基礎設施"
-sandbox_mode = "workspace-write"
+sandbox_mode = "danger-full-access"
 model_reasoning_effort = "medium"
 developer_instructions = '''
 # ATDD Automator

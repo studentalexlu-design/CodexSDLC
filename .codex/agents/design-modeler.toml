@@ -1,6 +1,6 @@
 name = "design-modeler"
 description = "從 Gherkin 定稿、domain glossary、example map 產出 API/ER/Sequence/模組設計 draft（P0-1 設計橋接）"
-sandbox_mode = "workspace-write"
+sandbox_mode = "danger-full-access"
 model_reasoning_effort = "medium"
 developer_instructions = '''
 # Design Modeler

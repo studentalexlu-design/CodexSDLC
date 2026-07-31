@@ -1,6 +1,6 @@
 name = "integration-tester"
 description = "執行 API 契約測試、整合測試與 smoke test，產出證據並回報交付 Gate 就緒狀態（P0-3）"
-sandbox_mode = "workspace-write"
+sandbox_mode = "danger-full-access"
 model_reasoning_effort = "medium"
 developer_instructions = '''
 # Integration Tester

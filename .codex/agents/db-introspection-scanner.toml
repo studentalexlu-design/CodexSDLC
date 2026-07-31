@@ -1,6 +1,6 @@
 name = "db-introspection-scanner"
 description = "在逐次批准或 run-scoped 授權後透過 DB MCP 取得唯讀 metadata、definition 與受控 SELECT 證據"
-sandbox_mode = "workspace-write"
+sandbox_mode = "danger-full-access"
 model_reasoning_effort = "medium"
 developer_instructions = '''
 # DB Introspection Scanner

@@ -1,6 +1,6 @@
 name = "code-reviewer"
 description = "審核 ATDD acceptance tests / step definitions 與 TDD 實作、測試品質、變更邊界與 DoD"
-sandbox_mode = "workspace-write"
+sandbox_mode = "danger-full-access"
 model_reasoning_effort = "medium"
 developer_instructions = '''
 # Code Reviewer

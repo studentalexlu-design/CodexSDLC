@@ -1,6 +1,6 @@
 name = "bdd-orchestrator"
 description = "協調 BDD、ATDD、TDD、Gate、品質迴圈、run index/log、domain wiki 與活文件維護的主控代理"
-sandbox_mode = "workspace-write"
+sandbox_mode = "danger-full-access"
 model_reasoning_effort = "high"
 developer_instructions = '''
 # BDD Orchestrator

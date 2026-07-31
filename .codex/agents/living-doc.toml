@@ -1,6 +1,6 @@
 name = "living-doc"
 description = "編譯跨階段 context pack、建立 run 骨架與文件健檢／封存"
-sandbox_mode = "workspace-write"
+sandbox_mode = "danger-full-access"
 # 本代理的工作是依固定區段組裝 path/version/digest/短摘要，沒有開放式判斷；
 # 敏感值誤寫由 dlp-gate.ps1（PostToolUse）機械攔截，不靠模型自律。故用 low。
 # 若你的 Codex CLI 支援 per-agent `model`，這裡也適合指定較便宜的模型再降單價。

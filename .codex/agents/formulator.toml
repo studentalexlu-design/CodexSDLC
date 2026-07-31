@@ -1,6 +1,6 @@
 name = "formulator"
 description = "將 Example Map 轉換為 Gherkin Feature 檔案"
-sandbox_mode = "workspace-write"
+sandbox_mode = "danger-full-access"
 model_reasoning_effort = "medium"
 developer_instructions = '''
 # Formulator

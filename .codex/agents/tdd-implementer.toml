@@ -1,6 +1,6 @@
 name = "tdd-implementer"
 description = "以微型迭代完成 TDD Red-Green-Refactor 與 Commit on Green"
-sandbox_mode = "workspace-write"
+sandbox_mode = "danger-full-access"
 model_reasoning_effort = "high"
 developer_instructions = '''
 # TDD Implementer
