@@ -9,11 +9,24 @@
     "requires": [
         "probe-findings.exists",
         "probe-findings.chars <= 2000",
+        "probe-findings.probe-questions each-marked-resolved-or-blocking",
+        "probe-findings.blocking-questions == 0",
+        "source-materials-register.every-row analysis != pending",
         "probe-findings.tier-verdict present",
         "probe-findings.behaviour-count present",
         "probe-findings.open-risks enumerated-or-none",
         "spike-code.discarded OR spike.not-applicable",
         "no-production-code-touched"
+    ],
+    "requires-note": "前三條是 v2.1.1 新增。舊的 requires 全是形式檢查 —— 一份什麼都沒查證的 findings 只要格式正確就能通過 gate，而觸發 probe 的核心未知（權威規格未被讀取）既不在風險清單也沒有阻塞旗標。`blocking-questions == 0` 是硬條件：仍有阻塞問題就走 `extend-probe-scope` 或 `return-for-fix`，不得核准結案。",
+    "findings-required-sections": [
+        "探索問題",
+        "事實",
+        "Tier 判定",
+        "行為數（N）",
+        "修正因子",
+        "未解決風險",
+        "交付 run 起跑指令"
     ],
     "documents-to-review": [
         {
@@ -36,7 +49,8 @@
         }
     ],
     "user-verification-checklist": [
-        "探索問題是否已被回答 —— 現況／schema／相依／重現步驟／可行性，是否已從『不知道』變成『事實』",
+        "探索問題是否已被回答 —— 現況／schema／相依／重現步驟／可行性，是否已從『不知道』變成『事實』。**逐題對照 `## 探索問題` 的狀態標記**，不是看整體感覺",
+        "來源登錄表中是否還有 `analysis: pending` 的列 —— 特別是權威規格（`.xlsx`／需求文件）。**登錄了但沒讀，等同沒有規格**",
         "probe-findings 是否只含結論。**含探索過程即為不合格** —— 交付 run 會全文讀入它，過程敘述會變成整個交付 run 的常駐成本",
         "tier 判定（t0/t1/t2/t3）與理由是否可接受",
         "行為數（N）估計是否合理 —— >10 應規劃拆成多個交付 run",
@@ -48,6 +62,7 @@
     "escalate-instead-of-approve-when": [
         "探索後仍無法判定 tier —— 代表探索問題問錯了，重新界定探索範圍而非硬判",
         "已用滿該 tier 的 spawn 上限仍未收斂",
+        "本 run 是前一個探索 run 的 linked 延續，且**累計**委派次數（含 parent）已達該 tier 上限 —— 開 linked run 不重置額度，累計用滿代表探索範圍問錯了，交回使用者重新界定而非再開一個",
         "探索過程中已實質修改 production code（流程違規：探索不得碰 production code）"
     ],
     "decision-options": [

@@ -23,6 +23,8 @@ Allowed scopes:
 - `definition`: view, function, and stored procedure definitions for approved objects.
 - `approved-select`: narrow read-only SELECT queries approved either by an explicit per-query approval or by a valid run-scoped bounded SELECT authorization.
 
+Approval evidence is carried by artifacts and handoff fields, never by conversation transcript — subagents are cold-started and cannot see the approving conversation. `metadata` and `definition` are satisfied by the recorded approval summary plus the decision-log ref alone; requiring an `approved-select` authorization-ref for them is over-blocking.
+
 `run-scoped-default-select` authorization lets a run approve a bounded SELECT envelope once, then reuse it inside that same run without asking the user again for every matching query.
 
 Default bounds:
@@ -68,6 +70,7 @@ Without a valid run-scoped authorization, the handoff must also include row limi
 - Do not use shell, `sqlcmd`, ad hoc scripts, app connection strings, or direct driver code for live DB access.
 - Do not request, receive, print, or persist credentials, connection strings, API keys, or secrets.
 - Do not broaden scope after connecting. If more objects or data are needed, return `blocked` for orchestrator approval.
+- **An adapter that returns no result set is not evidence of zero rows, and one failed call is not evidence of a missing capability.** `Rows affected: -1`, an empty response, or a response with no column headers means the result set is unavailable — report that literally. Never read it as "no matching rows", and never generalize it into "this tool cannot return rows": a call that returned rows earlier in the same run already refutes that. Report the distinguishing facts (parameter differences from the last successful call, whether the data could genuinely be empty, whether an error was swallowed) and let the orchestrator decide. Closing off the whole DB path on a single failure costs every fact still unreached on it.
 
 ## Query Safety
 

@@ -16,7 +16,9 @@ if (-not $Payload) { $Payload = [Console]::In.ReadToEnd() }
 if (-not $Payload) { exit 0 }
 if (-not (Test-Path $ScanScript)) { exit 0 }
 
-$targets = [regex]::Matches($Payload, '[""](bdd-docs[^""\r\n]*)[""]') |
+# 引號類別含單引號：PowerShell heredoc／shell 寫入路徑慣用單引號，
+# 只認雙引號會讓經 shell 寫入的 artifact 完全躲過本 gate。
+$targets = [regex]::Matches($Payload, '["''](bdd-docs[^"''\r\n]*)["'']') |
     ForEach-Object { $_.Groups[1].Value } |
     Sort-Object -Unique
 
@@ -30,7 +32,7 @@ foreach ($p in $targets) {
         if (Test-Path (Join-Path $Matches[1] '.dlp-disabled')) { continue }
     }
 
-    $out = & pwsh -NoProfile -File $ScanScript -Path $p
+    $out = & pwsh -NoProfile -ExecutionPolicy Bypass -File $ScanScript -Path $p
     if ($LASTEXITCODE -eq 2) {
         [Console]::Error.WriteLine("[Hook][DLP] Residual sensitive pattern in ${p}: $out")
         exit 2

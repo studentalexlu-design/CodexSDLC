@@ -1,7 +1,7 @@
 ---
 name: interruption-recovery
-version: 1.0.1
-description: "Use when: recovering interrupted BDD workflow stages, subagent cancellations, reviewer timeouts, partial-completed doer results, resume checkpoints, stale workflow-state, or transport failures such as net::ERR_EMPTY_RESPONSE."
+version: 1.1.0
+description: "Use when: recovering interrupted BDD workflow stages, subagent cancellations, blocked subagent returns, reviewer timeouts, partial-completed doer results, resume checkpoints, stale workflow-state, or transport failures such as net::ERR_EMPTY_RESPONSE."
 user-invocable: false
 ---
 
@@ -38,6 +38,18 @@ user-invocable: false
 5. 壓縮重試必須只要求最小可恢復切片，且比原 prompt 短；第二次仍 transport failure 則停止委派。
 
 在嚴格委派模式下，orchestrator 不得以自身工具直接寫文件作為 fallback。
+
+## 子代理回傳 `blocked`
+
+`blocked` 是**業務或授權判定**，不是 transport failure，處理方向相反：transport failure 可以壓縮後重試同一個 prompt，`blocked` 不可以。
+
+1. 讀 `blocked` 的 reason 與 evidence refs，先判定阻塞在哪一側：
+   - **子代理側**（scope 不清、參數錯、缺 authorization ref、handoff 漏欄位）→ 可由修正 handoff 復原。
+   - **外部側**（harness gate、工具不存在、來源不在 workspace、規格為二進位未轉錄）→ 子代理再跑幾次結果都一樣，先解決外部原因。
+2. **不得續跑同一個子代理實例。** 它的 context 已含自己上一輪的拒絕結論，續跑會直接複誦同一個判定 —— 零產出，但額度照計。復原一律是**新 spawn + 修正過的 handoff**。
+3. 新 handoff 必須明列「這次和上次差在哪」。差異寫不出來就不要重試，那是註定重複的一次額度消耗。
+4. 同一個 `blocked` 原因連續兩次未解 → 停止委派，以 `Codex user confirmation` 交回使用者。
+5. 每一次 `blocked` 都要寫進 checkpoint 與 `subagent-calls.count`。被擋下的委派仍然是委派，不記等於讓上限失效。
 
 ## Reviewer 中斷降級
 

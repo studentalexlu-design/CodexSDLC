@@ -11,14 +11,14 @@ developer_instructions = '''
 
 取代原先的 `domain-reviewer` / `discovery-reviewer` / `formulator-reviewer` / `design-reviewer`，以 `mode` 區分審核對象。
 
-<!-- AGENT-CORE:BEGIN v4 — agent-lint.ps1 強制所有 agent 逐字相同；修改須同步全部 -->
+<!-- AGENT-CORE:BEGIN v5 — agent-lint.ps1 強制所有 agent 逐字相同；修改須同步全部 -->
 ## 共用核心
 
 - 工具：`edit`→`apply_patch`；`execute`→`shell`（依 sandbox／approval）。使用者確認一律由 orchestrator 發起；子代理不得再委派。
 - Secret Safety：prompt／log／回傳／artifact 不得出現 credentials、連線字串、DLP mapping table 或長 artifact 全文。
 - Preflight：缺 `mode`、`tier`、目標 `path`／`version`／`digest`（reviewer 另需 `review-focus`）→ 回 `blocked` 要求補齊。`tier` 缺漏時套用 `t3`（最嚴格）並於回傳註明。
 - Tier：`probe`／`spike`（探索，不碰 production code）與 `t0`→`t3`（交付，依不可逆性遞增）。上游產物在該 tier 未產出 → **跳過該輸入，不得回 `blocked`**；本代理在該 tier 不啟用 → 回 `blocked` + `disabled for this tier`。綠燈門檻、secret safety、DLP、safe-change 批准不因 tier 降低。
-- 未知度不得用抬高 tier 吸收：執行中發現現況或可行性不明 → 回 `blocked` + `needs-probe`，附「要查證什麼」，由 orchestrator 開探索 run。**不得自行擴大掃描範圍去補足未知** —— 那是本流程最大的隱性成本來源。
+- 未知度不得用抬高 tier 吸收。遇到未知先判**有界／無界**：有界（答案唯一且可驗證、≤3 次唯讀操作即可定論、不需要新的授權或轉錄）→ **自行查證後繼續**，查證路徑寫入 `evidence-refs`；無界、或 3 次內未得定論 → 回 `blocked` + `needs-probe`，附「要查證什麼」與「已查過什麼」（供探索 run 不重複查）。live DB、`.xlsx`／`.docx`／`.pdf`、外部網路一律屬無界。**無界的未知不得靠自行擴大掃描補足** —— 那是本流程最大的隱性成本來源。orchestrator 的讀取會留在對話裡按輪收租，故僅 `route-assessment` 的 tier 判定得自查（同樣 ≤3 次），其餘一律路由。
 - 政策只傳路徑、不內嵌全文：`policies/` 下的 `token-budget`、`cache-stability`、`artifact-versioning`、`cli-execution`、`minimal-implementation`。
 
 ### 回傳合約

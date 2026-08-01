@@ -1,9 +1,10 @@
 {
-  "contract-version": "2.1.0",
+  "contract-version": "2.2.0",
   "min-compatible-version": "2.0.0",
   "released": "2026-07-31",
   "breaking-change-note": "v2.0.0 改用兩軸 tier 模型。`tier` 值由 lite/standard/full 改為 probe/spike/t0/t1/t2/t3；不可逆性決定交付深度，未知度改由獨立的探索 run 吸收而非抬高交付 tier。舊 run 的 runtime-metadata.profile 無法對應，因此 min-compatible-version 同步升至 2.0.0。",
   "change-note-2.1.0": "living-doc 收斂為只做需要彙整多份上游的產物（new-run／context-pack／lint／archive／migration），移除 checkpoint mode。checkpoint、Gate confirmation、decision-log、checklist 列狀態、mask-audit／.dlp-disabled／db-select-authorization 與委派前 DLP 殘留掃描一律由 orchestrator 自行處理；產物 sidecar digest 與輸出目錄建立由產出它的 doer 負責。行為向後相容，min-compatible-version 不變。",
+  "change-note-2.2.0": "未知度處理改為有界／無界二分（AGENT-CORE v5）。有界未知（答案唯一且可驗證、≤3 次唯讀操作即可定論、不需要新的授權或轉錄）由代理自行查證後繼續，查證路徑寫入 evidence-refs；無界未知才回 blocked + needs-probe，且回傳須另附『已查過什麼』供探索 run 不重複查。live DB／二進位來源／外部網路一律屬無界。orchestrator 僅在 route-assessment 的 tier 判定得自查（同樣 ≤3 次），其餘一律路由 —— 它的讀取留在對話裡按輪收租，doer 的 transcript 則在回傳時即丟棄。route-assessment Step 1 第 2 問改走同一分流，消除『為了一件查一次就有答案的事開完整探索 run』的路徑；第 1 問改判為決策未定而非事實不明，直接走 user confirmation。tier 值、handoff 欄位與狀態 schema 均未變更，行為向後相容，min-compatible-version 不變。",
   "stages": [
     "init",
     "intake",

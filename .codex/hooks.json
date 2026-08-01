@@ -6,18 +6,18 @@
         "hooks": [
           {
             "type": "command",
-            "command": "pwsh -NoProfile -Command \"$raw = [Console]::In.ReadToEnd(); if ($raw -match '\\.github[/\\\\](hooks|agents|skills|instructions)') { [Console]::Error.WriteLine('[Hook] Editing .github source workflow files requires explicit intent.'); exit 2 }\"",
+            "command": "pwsh -NoProfile -ExecutionPolicy Bypass -Command \"$raw = [Console]::In.ReadToEnd(); if ($raw -match '\\.github[/\\\\](hooks|agents|skills|instructions)') { [Console]::Error.WriteLine('[Hook] Editing .github source workflow files requires explicit intent.'); exit 2 }\"",
             "timeout": 10,
             "statusMessage": "Checking BDD source-file guardrail"
           }
         ]
       },
       {
-        "matcher": "^(runSubagent|Agent|Task)$",
+        "matcher": "(?i)(subagent|spawn|^agent$|^task$)",
         "hooks": [
           {
             "type": "command",
-            "command": "pwsh -NoProfile -File .codex/scripts/handoff-lint.ps1",
+            "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .codex/scripts/handoff-lint.ps1",
             "timeout": 15,
             "statusMessage": "Enforcing handoff contract before subagent spawn"
           }
@@ -26,17 +26,22 @@
     ],
     "PostToolUse": [
       {
+        "matcher": "Edit|Write|^apply_patch$|^shell$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .codex/scripts/dlp-gate.ps1",
+            "timeout": 30,
+            "statusMessage": "DLP residual scan on written artifacts"
+          }
+        ]
+      },
+      {
         "matcher": "Edit|Write|^apply_patch$",
         "hooks": [
           {
             "type": "command",
-            "command": "pwsh -NoProfile -File .codex/scripts/dlp-gate.ps1",
-            "timeout": 30,
-            "statusMessage": "DLP residual scan on written artifacts"
-          },
-          {
-            "type": "command",
-            "command": "pwsh -NoProfile -File .codex/scripts/build-check.ps1",
+            "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .codex/scripts/build-check.ps1",
             "timeout": 120,
             "statusMessage": "Build check (production code changes only)"
           }

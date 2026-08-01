@@ -14,6 +14,8 @@
 #   5. quality-loop 迭代上限（讀 workflow-state.json，超限即阻斷）
 #   6. tier 的 max-subagent-calls 上限（spawn 次數是成本主導變數，
 #      上限值一律從 route-profiles.json 讀取，不在本檔重複宣告）
+#   7. successor／linked run 必須繼承 parent 的 subagent-calls.count
+#      （額度用滿就開下一個 run 是繞過上限最省力的路徑）
 #
 # Exit: 0 = 通過；2 = 違規（阻斷 spawn）。
 
@@ -151,9 +153,22 @@ if ($runId) {
                 $cap = $null
                 try {
                     $rp = (Get-Content $RouteProfilesPath -Raw | ConvertFrom-Json).profiles
-                    if ($effTier) { $cap = $rp.$effTier.'max-subagent-calls' }
+                    $rawCap = $null
+                    if ($effTier) { $rawCap = $rp.$effTier.'max-subagent-calls' }
                     # tier 不明時退回 t3 的上限當天花板，不 hard-block 合法流程。
-                    if ($null -eq $cap) { $cap = $rp.t3.'max-subagent-calls' }
+                    if ($null -eq $rawCap) { $rawCap = $rp.t3.'max-subagent-calls' }
+
+                    # 上限可為數字，或 {base, per-behaviour}（只有按行為切片的 tier 用後者）。
+                    # 物件形式：base + per-behaviour × min(N, 10)。N > 10 一律拆 run，故以 10 封頂。
+                    # N 缺漏時以 10 計 —— 寬鬆側，寧可不擋也不要擋下合法流程。
+                    if ($rawCap -is [System.Management.Automation.PSCustomObject]) {
+                        $n = $state.'runtime-metadata'.'behaviour-count'
+                        if ($null -eq $n -or $n -lt 1) { $n = 10 }
+                        if ($n -gt 10) { $n = 10 }
+                        $cap = [int]$rawCap.base + ([int]$rawCap.'per-behaviour' * [int]$n)
+                    } else {
+                        $cap = $rawCap
+                    }
                 } catch { }
                 if ($null -ne $cap -and $used -ge $cap) {
                     $violations += [pscustomobject]@{
@@ -161,6 +176,28 @@ if ($runId) {
                         detail = "used=$used cap=$cap tier=$(if ($effTier) { $effTier } else { 'unknown(套用 t3 上限)' })"
                         fix = '停止委派；以 Codex user confirmation 讓使用者選擇升級 tier、拆成多個 run 或放寬切片。若原因是現況不明 → 開 probe run，不要升 tier'
                     }
+                }
+            }
+
+            # --- 7. successor／linked run 的額度繼承 ---
+            # 用滿額度就開下一個 run，是繞過上限最省力也最不留痕跡的路徑：
+            # 新 run 的 count 從 0 起算，檢查 6 便永遠不會命中。唯一機械可查的
+            # 錨點是 runtime-metadata.linked-from —— 宣告了 parent，就必須把
+            # parent 的累計值帶過來（bdd-orchestrator 不變原則 5）。
+            $linkedFrom = $state.'runtime-metadata'.'linked-from'
+            if ($linkedFrom -and $null -ne $used) {
+                $parentStatePath = "bdd-docs/runs/$linkedFrom/workflow-state.json"
+                if (Test-Path $parentStatePath) {
+                    try {
+                        $parentUsed = (Get-Content $parentStatePath -Raw | ConvertFrom-Json).'subagent-calls'.count
+                        if ($null -ne $parentUsed -and $used -lt $parentUsed) {
+                            $violations += [pscustomobject]@{
+                                rule = 'successor-budget-not-inherited'
+                                detail = "count=$used parent($linkedFrom)=$parentUsed"
+                                fix = '把 parent 的累計值寫入本 run 的 subagent-calls.count。額度上限的用意是逼你停下來重新界定範圍，不是逼你換一個 run 繼續'
+                            }
+                        }
+                    } catch { }
                 }
             }
         } catch { }

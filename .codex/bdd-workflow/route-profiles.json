@@ -23,6 +23,8 @@
   "enforced-by": ".codex/scripts/handoff-lint.ps1",
   "call-count-tracked-in": "bdd-docs/runs/{run-id}/workflow-state.json subagent-calls.count",
   "call-count-note": "orchestrator 每次 spawn 後必須遞增。handoff-lint 讀此欄位與本區塊的 max-subagent-calls 機械阻斷超額 spawn；不遞增等同讓上限失效。t0 的上限為 0，因此 t0 的任何 spawn 都會被 hook 阻斷 —— 這是 t0『orchestrator 自行完成』的機械保證，不是靠自律。",
+  "max-subagent-calls-shape": "數字，或 {base, per-behaviour} 物件。物件形式的上限 = base + per-behaviour × min(N, 10)，N 取自 workflow-state.json 的 runtime-metadata.behaviour-count；N 缺漏時以 10 計（寬鬆側，不 hard-block 合法流程）。10 是天花板因為 N > 10 一律拆 run。",
+  "max-subagent-calls-shape-note": "只有按行為切片的 tier 才用物件形式。固定上限套在按行為切片的 tier 上等於對規模收罰款 —— N=8 與 N=2 的不可逆性相同，Gate／reviewer／DLP 完全一樣，只是要做 8 次。規模由『拆 run』處理，不由上限處理；這是雙軸模型在預算層的同一條規則。",
   "profiles": {
     "probe": {
       "display-name": "探測（讀）",
@@ -160,7 +162,8 @@
         "integration-tester-note": "contract／integration／smoke 共用同一次 build，分開呼叫會 build 3 次。",
         "analyst": "whole-example-map"
       },
-      "max-subagent-calls": 9,
+      "max-subagent-calls": 11,
+      "max-subagent-calls-note": "11 而非舊的 9：舊值是在 integration-tester 仍被『一次只處理一個 mode』殘留規則拆成 3 次呼叫的前提下訂的。合併生效後固定階段約需 10 次（scanner／glossary／example-map／formulator／design-modeler(contract)／spec-reviewer(design)／atdd／tdd／code-reviewer(tdd)／integration-tester(all)），留 1 次修正輪。t2 的委派數與 N 無關 —— tdd-implementer 在 t2 一次處理整組 backlog —— 因此固定上限是對的。",
       "design-bridge": "contract-only",
       "context-pack": "disabled",
       "living-doc": "disabled",
@@ -193,8 +196,9 @@
         "integration-tester": "single-call-all-modes",
         "still-sliced": "tdd-implementer 維持 1 個 behavior slice、analyst 維持 1 個 story —— 這兩者的切片邊界等於真實的失敗復原邊界"
       },
-      "max-subagent-calls": 14,
-      "max-subagent-calls-note": "14 而非舊模型的 20：t3 通常前置一個 probe run，帶著事實起跑，修正輪大幅減少。逼近上限代表範圍過大 —— 拆多個 run，不放寬上限。",
+      "max-subagent-calls": { "base": 20, "per-behaviour": 1 },
+      "max-subagent-calls-note": "上限 = 20 + min(N, 10)。舊的固定 14 與 t3 自己的切片規則在算術上不相容：固定階段約需 17 次（scanner／sql-logic-extraction／glossary／spec-reviewer(domain)／flow ×2／example-map／spec-reviewer(example-map)／formulator／spec-reviewer(gherkin)／design-modeler ×2／spec-reviewer(design)／atdd／code-reviewer ×2／integration-tester），加 tdd-implementer 的 N 個 behavior slice，再留 3 次修正輪（品質迴圈上限 3）。14 在 N=1 就已經不夠，於是每個 t3 run 都會撞上限並改開 successor run 洗預算 —— 那不是自律問題，是上限讓合法完成變成不可能。",
+      "max-subagent-calls-scaling-note": "per-behaviour 對應 tdd-implementer 在 t3 維持 1 個 behavior slice（唯一切片邊界等於失敗復原邊界之處）。逼近上限仍代表範圍過大，但判準回到它本來就該是的東西：N > 10 拆 run，而不是『N=4 但 spawn 用完了』。",
       "design-bridge": "enabled",
       "context-pack": "cross-stage-only",
       "living-doc": "enabled",

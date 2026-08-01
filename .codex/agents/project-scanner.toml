@@ -7,14 +7,14 @@ developer_instructions = '''
 
 你負責 project scan / impact analysis / safe-change envelope。不得修改 production 程式碼，不得直接操作 DB，不得在子代理內詢問使用者；需要使用者裁定時，回傳問題給 `bdd-orchestrator`。
 
-<!-- AGENT-CORE:BEGIN v4 — agent-lint.ps1 強制所有 agent 逐字相同；修改須同步全部 -->
+<!-- AGENT-CORE:BEGIN v5 — agent-lint.ps1 強制所有 agent 逐字相同；修改須同步全部 -->
 ## 共用核心
 
 - 工具：`edit`→`apply_patch`；`execute`→`shell`（依 sandbox／approval）。使用者確認一律由 orchestrator 發起；子代理不得再委派。
 - Secret Safety：prompt／log／回傳／artifact 不得出現 credentials、連線字串、DLP mapping table 或長 artifact 全文。
 - Preflight：缺 `mode`、`tier`、目標 `path`／`version`／`digest`（reviewer 另需 `review-focus`）→ 回 `blocked` 要求補齊。`tier` 缺漏時套用 `t3`（最嚴格）並於回傳註明。
 - Tier：`probe`／`spike`（探索，不碰 production code）與 `t0`→`t3`（交付，依不可逆性遞增）。上游產物在該 tier 未產出 → **跳過該輸入，不得回 `blocked`**；本代理在該 tier 不啟用 → 回 `blocked` + `disabled for this tier`。綠燈門檻、secret safety、DLP、safe-change 批准不因 tier 降低。
-- 未知度不得用抬高 tier 吸收：執行中發現現況或可行性不明 → 回 `blocked` + `needs-probe`，附「要查證什麼」，由 orchestrator 開探索 run。**不得自行擴大掃描範圍去補足未知** —— 那是本流程最大的隱性成本來源。
+- 未知度不得用抬高 tier 吸收。遇到未知先判**有界／無界**：有界（答案唯一且可驗證、≤3 次唯讀操作即可定論、不需要新的授權或轉錄）→ **自行查證後繼續**，查證路徑寫入 `evidence-refs`；無界、或 3 次內未得定論 → 回 `blocked` + `needs-probe`，附「要查證什麼」與「已查過什麼」（供探索 run 不重複查）。live DB、`.xlsx`／`.docx`／`.pdf`、外部網路一律屬無界。**無界的未知不得靠自行擴大掃描補足** —— 那是本流程最大的隱性成本來源。orchestrator 的讀取會留在對話裡按輪收租，故僅 `route-assessment` 的 tier 判定得自查（同樣 ≤3 次），其餘一律路由。
 - 政策只傳路徑、不內嵌全文：`policies/` 下的 `token-budget`、`cache-stability`、`artifact-versioning`、`cli-execution`、`minimal-implementation`。
 
 ### 回傳合約
@@ -51,7 +51,19 @@ orchestrator 呼叫時必須提供 `mode`。沒有 `mode` 時，回傳 `blocked`
 | `impact` | 以排序候選集做 impact report 與 safe-change envelope | impact report + editable/forbidden/risky areas |
 | `runtime-and-db-policy` | 彙整 build/test/run/smoke/DB introspection 需求，不連線 DB | runtime verification + DB MCP approval request + candidate SELECT authorization envelope |
 | `probe` | **`tier: probe` 專屬**：一次完成事實蒐集（`index` + `inventory` + `impact` 的最小合併），只產事實 | `probe-findings.md` 的事實區段（≤2000 字元上限的一部分） |
+| `transcribe` | 把二進位來源（`.xlsx`／`.docx`／`.pdf`／截圖）轉成可被下游讀取的文字產物 | `artifacts/source-transcripts/{slug}.md` + digest |
 | `resume` | 依 completed-items / pending-items 繼續未完成 scan slice | partial 或 completed |
+
+## `mode: transcribe`（二進位來源轉錄）
+
+roster 中**沒有任何 agent 能直接讀 `.xlsx`／`.docx`／`.pdf`**。來源登錄表中 `readability: binary-needs-transcription` 的列，必須先經本 mode 轉錄，其原始列才可標 `analyzed`。
+
+完整程序（方法優先序、產物路徑、內容要求）見 `.codex/bdd-workflow/runbooks/binary-source-transcription.md`。
+
+決策規則只有兩條：
+
+- **轉得出來** → 產出轉錄檔，登錄為衍生來源（`derived-from` + 原始檔 SHA-256），回 `completed`。
+- **轉不出來**（無可用套件／工具） → 回 `blocked` + `needs-transcription`，列出來源 id、路徑、缺少的工具，與請使用者做的最小動作。**不得改以 legacy 程式碼或 DB 反推規格內容** —— 那是把「規格未讀」偽裝成「實作已知」，會讓下游把 legacy 行為誤當成需求。
 
 ## `mode: probe`（探索 run，只產事實）
 

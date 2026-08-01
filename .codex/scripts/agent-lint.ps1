@@ -18,6 +18,10 @@
 #   9. bdd-orchestrator 內嵌的 tier 表與 route-profiles.json 的 tier／預算一致
 #      （orchestrator 依內嵌表決策、handoff-lint 依 JSON 阻斷 —— 漂移會讓 hook
 #       在模型認為合法時擋下 spawn，那是最難診斷的失敗模式）
+#  10. gate 宣告的 findings-required-sections 在對應 template 中都存在
+#      （gate 依段落驗證、template 是產出端規格 —— 漂移會讓 gate 通過卻什麼都沒驗到）
+#  11. 定義了合併 mode 的代理不得保留「一次只處理一個 mode」的裸切片守門句
+#      （合併前的殘留規則會讓代理挑保守讀法，把合併靜默作廢、退回逐一 mode 呼叫）
 #
 # Exit: 0 = 全部通過；2 = 有違規。
 
@@ -215,10 +219,13 @@ if ($cores.Count -gt 0 -and (Test-Path $ReturnPolicy)) {
 $orch = Join-Path $AgentDir 'bdd-orchestrator.toml'
 if ($profiles -and (Test-Path $orch)) {
     $ot = Get-Content $orch -Raw
-    # 表列格式： | `tier` | ≤N 或 **N** | `gate-x` | ... |
+    # 表列格式： | `tier` | ≤N 或 **N** 或 **≤ B + N** | `gate-x` | ... |
+    # 第一段數字即該 tier 的上限（物件形式則為 base）；整格文字另存供 N 相關性檢查。
     $embedded = @{}
-    foreach ($row in [regex]::Matches($ot, '(?m)^\|\s*`([a-z][a-z0-9]*)`\s*\|[^|]*?(\d+)[^|]*\|')) {
-        $embedded[$row.Groups[1].Value] = [int]$row.Groups[2].Value
+    $embeddedCell = @{}
+    foreach ($row in [regex]::Matches($ot, '(?m)^\|\s*`([a-z][a-z0-9]*)`\s*\|([^|]*?(\d+)[^|]*)\|')) {
+        $embedded[$row.Groups[1].Value] = [int]$row.Groups[3].Value
+        $embeddedCell[$row.Groups[1].Value] = $row.Groups[2].Value
     }
     $declared = @($profiles.PSObject.Properties.Name)
 
@@ -230,10 +237,22 @@ if ($profiles -and (Test-Path $orch)) {
             if (-not $embedded.ContainsKey($t)) {
                 Add-V 'tier-table-missing-row' "$t（route-profiles 有，內嵌表沒有）" `
                       'bdd-orchestrator 的 tier 表補上該列 —— 缺列的 tier 在執行期無法路由'
-            } elseif ($embedded[$t] -ne $profiles.$t.'max-subagent-calls') {
-                Add-V 'tier-budget-drift' `
-                      "${t}: 內嵌=$($embedded[$t]) route-profiles=$($profiles.$t.'max-subagent-calls')" `
-                      'orchestrator 依內嵌表決策、handoff-lint 依 JSON 阻斷；不一致會讓 hook 在模型認為合法時擋下 spawn'
+            } else {
+                # 上限可為數字，或 {base, per-behaviour}（按行為切片的 tier）。
+                $rawCap = $profiles.$t.'max-subagent-calls'
+                $isScaled = $rawCap -is [System.Management.Automation.PSCustomObject]
+                $expected = if ($isScaled) { [int]$rawCap.base } else { [int]$rawCap }
+                if ($embedded[$t] -ne $expected) {
+                    Add-V 'tier-budget-drift' `
+                          "${t}: 內嵌=$($embedded[$t]) route-profiles=$(if ($isScaled) { "base=$expected" } else { $expected })" `
+                          'orchestrator 依內嵌表決策、handoff-lint 依 JSON 阻斷；不一致會讓 hook 在模型認為合法時擋下 spawn'
+                }
+                # 隨 N 變動的上限，內嵌表必須看得出來是變動的 —— 否則模型會以為是固定值而過早停手。
+                if ($isScaled -and $embeddedCell[$t] -notmatch 'N') {
+                    Add-V 'tier-budget-scaling-undeclared' `
+                          "${t}: route-profiles 為 {base, per-behaviour}，內嵌表卻寫成固定值「$($embeddedCell[$t].Trim())」" `
+                          '內嵌表該列須標明隨 N 變動（例如「≤ 20 + N」），否則 orchestrator 會照固定值決策'
+                }
             }
         }
         foreach ($e in $embedded.Keys) {
@@ -241,6 +260,60 @@ if ($profiles -and (Test-Path $orch)) {
                 Add-V 'tier-table-orphan-row' "$e（內嵌表有，route-profiles 沒有）" `
                       '移除該列或在 route-profiles.json 補上定義'
             }
+        }
+    }
+}
+
+# ---- 10. gate 宣告的 findings 段落必須在對應 template 中存在 ----
+# Gate 依 findings 的段落做驗證，template 是產出端的唯一規格。
+# 兩者漂移的後果：gate 檢查一個沒有人會寫出來的段落，或 template 有段落而 gate 從不看 ——
+# 兩種都是「通過了但什麼都沒驗到」，正是形式檢查最危險的失敗模式。
+$sectionSources = @{
+    'gate-probe' = '.codex/bdd-workflow/templates/probe-findings.md'
+}
+foreach ($gid in $sectionSources.Keys) {
+    $gf = Join-Path $GateDir "$gid.json"
+    $tpl = $sectionSources[$gid]
+    if (-not (Test-Path $gf)) { continue }
+    if (-not (Test-Path $tpl)) {
+        Add-V 'findings-template-missing' "$gid -> $tpl" '建立該 template 或修正 gate 的段落來源對應'
+        continue
+    }
+    try {
+        $gj = Get-Content $gf -Raw | ConvertFrom-Json
+        $need = @($gj.'findings-required-sections')
+        if ($need.Count -eq 0) {
+            Add-V 'findings-sections-undeclared' $gid `
+                  "在 $gid.json 加入 findings-required-sections —— 沒有它，gate 與 template 之間沒有任何機械綁定"
+        } else {
+            $tplText = Get-Content $tpl -Raw
+            foreach ($s in $need) {
+                if ($tplText -notmatch [regex]::Escape("## $s")) {
+                    Add-V 'findings-section-drift' "$gid 要求 '## $s'，$tpl 沒有" `
+                          'template 補上該段落，或從 gate 的 findings-required-sections 移除'
+                }
+            }
+        }
+    } catch { Add-V 'gate-confirmation-unparsable' $gf '修正 JSON 格式' }
+}
+
+# ---- 11. 定義了合併 mode 的代理，不得同時保留「一次只處理一個 mode」的切片守門 ----
+# 這是已經發生過兩次的缺陷類型：v2.0.0 的 consolidation 加了 foundation/elaboration
+# 與 mode: all，卻沒刪掉合併前那句切片守門，於是同一份 prompt 裡隔數十行講反話。
+# AGENT-CORE 的預設方向是往嚴格側倒（tier 缺漏套 t3），衝突時代理會挑保守讀法 ——
+# 也就是把合併整個作廢，退回逐一 mode 呼叫。症狀是靜默的：流程照跑，只是每次多花幾次 spawn。
+foreach ($a in $agents) {
+    $txt = Get-Content $a.FullName -Raw
+    # 合併 mode 的宣告特徵：mode 表中出現「同一 invocation」「一次完成」，或有「合併模式」段。
+    $hasMerged = $txt -match '(?m)^###?\s*合併模式' -or
+                 $txt -match '同一 invocation (內)?(依序)?完成' -or
+                 $txt -match '一次完成 \w'
+    if (-not $hasMerged) { continue }
+    # 未加豁免說明的裸切片守門句。允許帶「但」的修訂版（明確排除合併 mode 本身）。
+    foreach ($m in [regex]::Matches($txt, '(?m)^\s*[-*]\s*一次只處理一個 mode[^\r\n]*')) {
+        if ($m.Value -notmatch '但') {
+            Add-V 'merged-mode-contradiction' "$($a.Name): 「$($m.Value.Trim())」與同檔的合併模式宣告互相矛盾" `
+                  '刪除該句，或改寫成明確排除合併 mode 本身（例如「但 `all` 本身就是 mode，其內含項須在同一 invocation 完成」）'
         }
     }
 }

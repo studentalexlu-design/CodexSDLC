@@ -3,6 +3,7 @@
 Use this template whenever `bdd-orchestrator` asks the user to approve a Gate. Do not ask a generic "continue?" question.
 
 ## 現在確認的 Gate
+- run-id: {{RUN_ID}}（**本次核准只覆蓋這一個 run**；其他 run 不因此結案）
 - gate-id: {{GATE_ID}}
 - display-name: {{GATE_DISPLAY_NAME}}
 - current-boundary: {{CURRENT_BOUNDARY}}
