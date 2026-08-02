@@ -11,7 +11,7 @@
 param(
     [Parameter(Mandatory)][string[]]$Keywords,
     [string]$Root = '.',
-    [string]$IndexPath = 'bdd-docs/artifacts/repo-index/index.json',
+    [string]$IndexPath = 'bdd-docs/.cache/index.json',
     [int]$TopN = 12
 )
 

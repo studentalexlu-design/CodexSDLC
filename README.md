@@ -1,261 +1,243 @@
-# CodexSDLC — BDD → ATDD → TDD 工作流
+# CodexSDLC — 使用說明
 
-給 **Codex CLI** 用的一套 SDLC 工作流設定：1 個主控代理（`bdd-orchestrator`）+ 11 個子代理，把需求帶過 Example Mapping → Gherkin → ATDD walking skeleton → TDD 內圈 → 整合驗證。
+一套給 **Codex CLI** 的 agent 設定。你只要說「我要做什麼」，它會：
 
-本 repo **只有設定，沒有產品程式碼**。每個檔案都是 prompt、policy、schema 或 template。
+**幫你把需求的漏洞問出來 → 查你的專案給你幾個做法 → 你選 → 寫測試寫程式 → 獨立審一遍 → 交付。**
 
----
-
-## 快速開始
-
-### 1. 前置條件
-
-- **Codex CLI**，且已載入本 repo 的 `.codex/` 設定
-- 目標專案是 **.NET/C#** 或 **Java**（測試工具鏈會自動偵測）
-- 把 `.codex/`、`.agents/`、`AGENTS.md` 放進你的專案根目錄
-
-### 2. 啟動
-
-在你的專案根目錄開 Codex CLI，然後明確指名主控代理：
-
-```
-使用 bdd-orchestrator：我要在現有訂單模組加一個「取消訂單」功能
-```
-
-> **一定要指名 `bdd-orchestrator`。** 不指名會由一般代理直接動手，跳過整套分流、Gate 與預算控制。
-
-`bdd-docs/` 會在第一次 run 時自動建立，是所有產出與狀態的落地位置。它在本 repo 裡不存在，那是正常的。
-
-### 3. 它會先問你三件事
-
-第一個動作一定是使用者確認，不會直接開工：
-
-1. **目標**：要交付什麼、完成的樣子是什麼
-2. **來源**：需求文件、API 規格、DDL、截圖、既有程式碼 —— 有什麼給什麼
-3. **新 run 還是 resume**
-
-來源不足時它會停在這裡問，不會猜。這是刻意的：猜出來的假設會以「事實」的形式進入後面每一個階段。
+本 repo 只有設定，沒有產品程式碼。
 
 ---
 
-## 核心：兩軸分流
+## 安裝
 
-流程深度**每個 run 現場決定**，不是固定的。判定分兩個獨立的軸，因為它們要的東西不一樣：
-
-| 軸 | 問的是 | 高的時候要的是 | 用什麼吸收 |
-|---|---|---|---|
-| **不可逆性** | 錯了要付多少代價才能回頭 | 閘門與批准 | 交付 tier `t0`→`t3` |
-| **未知度** | 開工前我不知道什麼 | 探索與澄清 | 獨立的 `probe`／`spike` run |
-
-這兩件事會各自獨立出現：有完整 DDL 的 DB migration 是「高不可逆 + 低未知」（要一堆閘門，幾乎不用探索）；在 sandbox 摸清一個黑箱套件是「低不可逆 + 高未知」（剛好相反）。
-
-**所以「不確定」不會讓你走最貴的路。** 它讓你先走一段很便宜的探索。
-
-### 它會怎麼問你
-
-**Step 1 — 未知度**（任一答不出來就先開探索 run）
-
-1. 能不能寫出可驗證的「完成的樣子」？
-2. 知不知道要改的東西**現在**長什麼樣（現況／schema／相依／bug 重現步驟）？
-3. 這個技術路徑確定做得出來嗎？
-
-**Step 2 — 不可逆性**（由重到輕問，第一個 yes 就是答案）
-
-1. 會動到**已存在的資料**或**已在跑的流量**嗎？（migration／backfill／線上加索引／破壞性契約／**認證授權變更**）→ `t3`
-2. 有**我控制不了的消費者**會看到差異嗎？（對外 API／事件 schema／共用 library／CLI／給外部查的 view）→ `t2`
-3. 有**行為變更**需要被驗收嗎？ → `t1`
-4. 皆否 → `t0`
-
-> **方向性很重要**：**消費**別人的 API 是 `t1`（改錯只有自己壞）；**提供** API 給別人才是 `t2`（改錯是別人壞）。
-
-**Step 3 — 修正因子**（改計畫，不改 tier）
-
-- **N（行為數，不是檔案數）**：1–3 單次交付｜4–10 切片｜**>10 拆成多個 run**
-- **V**：`auto` 綠燈即證據｜`manual` 要人工 checklist + 截圖｜`prod-only` 交付必須分階段
-- **P**（個資／金流／憑證）：全程脫敏 + 殘留掃描，**不抬高 tier**
-
-### 六種 tier
-
-| tier | 什麼時候 | 委派次數 | Gate |
-|---|---|---|---|
-| `probe` | 現況不明 —— 要先查清事實 | ≤2 | `gate-probe` |
-| `spike` | 可行性不明 —— 要先寫個會丟掉的驗證 | ≤3 | `gate-probe` |
-| `t0` | 行為等價、單一 commit 可 revert | **0** | `gate-close` |
-| `t1` | 有行為變更，消費者在我控制範圍內 | ≤5 | `gate-close` |
-| `t2` | 有我控制不了的消費者會看到差異 | ≤9 | `gate-contract` → `gate-close` |
-| `t3` | 碰既有資料／在跑的流量 | ≤14 | `gate-contract` → `gate-migration` → `gate-release` |
-
-**未確認時預設 `t1`。** 不會預設 `t0`（那會放棄 doer／reviewer 分離），也不會預設 `t3`（沒確認不等於不可逆）。
-
-**所有交付 tier 都保留 Gherkin 與 Outside-In TDD 骨幹。** `t0` 用一行 DoD 取代 —— 對「改一個字串」寫 Given-When-Then 是純儀式。
-
----
-
-## 各 tier 實際跑起來的樣子
-
-### `t0` — 0 次委派
+把兩個目錄複製到**你的專案根目錄**：
 
 ```
-intake → route-assessment → 實作 → gate-close
+你的專案/
+├── .codex/          ← 從這裡複製
+├── .agents/         ← 從這裡複製
+├── src/
+└── tests/
 ```
 
-orchestrator **自己做完**：讀索引取專案輪廓 → `impact-scope.ps1` 產變更邊界 → 改 code → 跑相關測試 → 收尾。
+需要：
 
-一次 spawn 的固定成本是 4–8k tokens，通常比 `t0` 的整個 diff 還大，所以不 spawn。這是機械強制的：`t0` 的上限是 0，任何 spawn 都會被 hook 擋下。
+- Codex CLI（`.codex/config.toml` 裡的 hooks 已經開好）
+- **PowerShell 7+（`pwsh`）** —— 強制層的腳本靠它，沒有的話 hook 會全部靜默失效
+- 只有要查 live DB 才需要：設定好的唯讀 DB MCP server
 
-**diff 一旦超出單一 commit 可 revert 的範圍，或出現需驗收的行為變更 → 它會停下來請你升 `t1`**，不會硬做完。
-
-### `t1` — ≤5 次委派
-
-```
-scan → formulator(Gherkin) → spec-reviewer(gherkin) → atdd-automator → tdd-implementer → gate-close
-```
-
-只審**驗收條件**，不審 code。理由：code 品質由測試綠燈把關，但**驗收條件寫錯，測試會忠實地驗證錯的東西** —— 那是測試抓不到的缺陷。所以 `gate-close` 會請你看 diff 範圍與測試覆蓋。
-
-4 次是骨幹，第 5 次留給修正輪。
-
-### `t2` — ≤9 次委派
-
-```
-scan → analyst → formulator → design-modeler(contract) → spec-reviewer(design)
-   → 【gate-contract】← 實作前必須通過
-   → atdd-automator → tdd-implementer → code-reviewer → integration-tester(all) → gate-close
-```
-
-**`gate-contract` 在任何實作之前，這是硬規則。** 這是整條流程唯一能省下重工的位置：契約定案後才寫的實作，錯了只要改實作；實作後才定案的契約，錯了要同時改實作、測試、和所有已經看過它的下游。
-
-到那個 Gate 時，契約測試必須**已經寫好且是紅燈**。紅燈是「契約可測」的證據；如果是綠燈，代表契約已經被實作了 —— 那是違規，不是進度。
-
-`t2` 只出契約產物，不出 sequence／module／traceability（那些是設計文件，在 `t2` 換不到驗證價值）。
-
-### `t3` — ≤14 次委派
-
-```
-… → 【gate-contract】 → tdd → 【gate-migration】 → 執行遷移 → 【gate-release】
-```
-
-`gate-migration` 與 `gate-release` **不是品質閘門，是不可逆性閘門**。你批准的是「我接受這件事可能回不去」，不是「我覺得程式寫得不錯」。
-
-所以它們要求：
-
-- **rollback 計畫，且已經演練過。** 未演練的 rollback 計畫等於沒有計畫。
-- **不得標 not-applicable。** 如果某部分真的無法回復，計畫要明說「不可回復」，並改成要求前置備份 —— 「回不去」是一個你必須明確接受的結論，不是可以跳過的欄位。
-- **不得一次全量上線。** 分階段是不可逆變更唯一的實質保險。`gate-release` 會要你定出**具體可觀測的中止標準**（「看起來怪怪的」不算）。
-
-### `probe` / `spike` — 探索
-
-```
-intake → route-assessment → 查證 → gate-probe → 【結案，另開交付 run】
-```
-
-- `probe` 讀既有的東西（程式碼、schema、文件、抓包）→ 產出**事實**
-- `spike` 寫會被丟掉的程式（在 `bdd-docs/runs/{run-id}/spike/`）→ 產出**結論**
-- 兩者都**不碰 production code**
-
-**唯一的交接產物是 `probe-findings.md`，硬上限 2000 字元**，只寫結論與 evidence ref，不寫探索過程。
-
----
-
-## 為什麼探索結束時它會叫你「換一個新對話」
-
-**請接受這個選項。** 它不是在偷懶，是這套設計最大的省錢機制。
-
-orchestrator 是一段會一直變長的對話，它讀進來的每個 token 都會在**之後每一輪重送**。一段 30k 的探索歷史，在後面 30 輪交付裡就是 30k × 30 的重複帳單。
-
-而探索 run 的價值**全部**已經在 `probe-findings.md` 裡了 —— transcript 沒有殘餘價值。所以：探索 run 結案、transcript 丟掉、交付 run 從乾淨的 context 帶著事實起跑。
-
-`gate-contract` 與 `gate-migration` 也會提供同樣的選項（非強制，委派數累積到 3 次以上時它會建議）。收尾的 Gate 不提供 —— 剩下的工作太短，換對話不值得。
-
-**這不是暫停。** 狀態是「已核准 + 已進入下一階段」，新對話直接接著跑，不會重問 Gate、不會重跑已通過的階段。
-
----
-
-## 常見情境對照
-
-| 你的需求 | 先探索？ | 交付 tier |
-|---|---|---|
-| 改文案、log level、既有 API 補回既有欄位 | – | `t0` |
-| 修 bug，有明確重現步驟 | – | `t0`／`t1` |
-| 修 bug，**無法重現** | **`probe`** | 之後再判 |
-| 新增內部 service method、只給自家前端的 endpoint | – | `t1` |
-| 既有 flow 加一條業務規則（折扣、審核條件） | – | `t1` |
-| 重構，行為不變，**測試覆蓋不足** | **`probe`**（先補特徵測試） | `t1` |
-| 串接第三方 API，有 OpenAPI 規格 | – | `t1`（我是消費端） |
-| 串接第三方，**只有 sample 或沒規格** | **`probe`** | `t1` |
-| 新增 v2 對外 endpoint，v1 保留 | – | `t2` |
-| 我方首次對外提供 API／新增 MQ 事件 | – | `t2` |
-| 新增 table（尚無寫入者）、新增 nullable 欄位 | – | `t2` |
-| **移除**對外欄位、改型別、改共用 library 簽章 | – | `t3` |
-| 加 NOT NULL 欄位（要 backfill）、改型別、刪欄位 | – | `t3` |
-| 線上大表加索引、資料修正 script | – | `t3` |
-| **認證／授權邏輯變更** | – | `t3` |
-| 既有 table 但 repo 內沒有 schema 定義 | **`probe`** | 之後再判 |
-| 邏輯藏在 stored procedure，要搬進程式 | **`probe`** | `t2`／`t3` |
-| 資料來源**只有一部分** | **`probe`** | 之後再判 |
-| 相依在 repo 裡但沒人指出來 | **`probe`**（很快） | `t1`／`t2` |
-| 相依是無原始碼的 DLL／黑箱 | **`spike`** | `t1` |
-| 新技術／新框架首次採用 | **`spike`** | 看交付內容 |
-| 需求只有一句話 | **`probe`**（澄清） | 之後再判 |
-| 在 log 遮罩信用卡號 | – | `t0`／`t1` **+ P** |
-| 新增儲存個資的欄位 | – | `t3` **+ P** |
-| 20 個一模一樣的 CRUD endpoint | – | `t1`，**N>10 → 拆多個 run** |
-
----
-
-## 什麼不會因為 tier 而放寬
-
-不管走哪一條路，觸發條件成立就一定執行：
-
-- **Secret safety** —— prompt／log／artifact 不得出現 credentials、連線字串
-- **DLP 脫敏與殘留掃描** —— 來源含個資／金流／憑證時
-- **safe-change envelope 使用者批准**
-- **smoke test／Web·API 啟動／DB introspection 使用者批准**
-- **綠燈門檻** —— `t0` 沒有 acceptance suite，等效要求是相關既有測試 `failed == 0` 且 `skipped == 0`
-
-DB introspection 一定會先問來源策略四選一：你提供 schema／DDL／截圖、由程式碼與文件推斷、已設定的唯讀 DB MCP、暫不做。**只有選 DB MCP 才需要 `probe` run**；前兩者可以直接進交付 tier。它不會要求也不會保存任何 credentials。
-
----
-
-## 被擋下來的時候
-
-`handoff-lint.ps1` 會在每次 spawn 前機械阻斷。看到這些訊息時：
-
-| 訊息 | 意思 | 該怎麼做 |
-|---|---|---|
-| `t0-must-not-spawn` | `t0` 想委派 | tier 判低了 → 升 `t1`，不要加 spawn |
-| `subagent-budget-exceeded` | 委派次數用完 | 先看是不是**未知度**問題被當成深度問題（該開 `probe` 卻升了 tier）；否則拆多個 run |
-| `discovery-tier-delivery-mode` | 探索 run 想寫交付產物 | 先結束探索 run，再開交付 run |
-| `missing-tier` | handoff 沒帶 tier | 缺 tier 會退回 `t3`（最貴）；補上 |
-| `quality-loop-exceeded` | 同一份產物審核 FAIL 3 輪 | 它會請你裁定：接受現版本／指定重點跑最後一輪／暫停 |
-| `handoff-too-long` | handoff 超過 1200 字元 | 只該傳 path／version／digest，不傳全文 |
-
-**不要叫它改寫 handoff 硬闖。** 這些上限存在是因為超標通常代表判定錯了，不是預算太小。
-
----
-
-## 給維護者：改設定之後
+驗證裝好了：
 
 ```powershell
-pwsh -NoProfile -File .codex\scripts\agent-lint.ps1   # exit 0 = clean
+pwsh -NoProfile -File .codex/scripts/agent-lint.ps1
 ```
 
-這是主要的檢查，涵蓋：`AGENT-CORE` 在 12 個 agent 間逐字相同、`.toml` 結構、skill matrix 雙向覆蓋、dangling policy/runbook/script 引用、過期的 tier／gate 詞彙、版本檔↔contract 一致、每個 tier 用到的 gate 都有確認檔、**以及 orchestrator 內嵌的 tier 表與 `route-profiles.json` 一致**（檢查 9）。
+---
 
-補充掃描：
+## 啟動
+
+以 **top-level** 呼叫 `bdd-orchestrator` 這個 custom agent，然後直接說你要什麼：
+
+> 我要讓客戶可以取消訂單
+
+**一句話就夠。** 把需求想清楚再來，正是它要幫你省掉的事。
+
+> ⚠️ **一定要 top-level。** 從別的 agent 裡叫起來的 orchestrator 沒有 spawn 權限、也不會觸發 hook —— 整套強制層會靜默失效。它偵測到自己不是 top-level 會直接停下來告訴你。
+
+---
+
+## 一次完整的例子
+
+### ① 它先問你需求的漏洞
+
+```
+你 ▸ 我要讓客戶可以取消訂單
+
+▸ 我看了一下，有 3 個地方你還沒說：
+
+  1. 已出貨的訂單能不能取消？
+     a) 不能，直接擋 —— 最簡單，多數電商這樣做
+     b) 能，但轉成退貨流程 —— 前提是系統已經有退貨流程
+     c) 能，但要客服核准 —— 需要一個審核介面
+
+  2. 取消之後付款怎麼處理？
+     a) 自動退款
+     b) 產生待退款單，財務手動處理
+     c) 這一版先不處理退款
+
+  3. 庫存要回補嗎？
+     a) 要，立即回補
+     b) 不用，這版先不管
+
+你 ▸ 1a 2b 3a
+```
+
+**這一步不查你的專案**，用的是一般業務流程的常識。所以它問的是「你沒說、而它不能替你決定」的事 —— 猜得到的（取消後狀態要變）不會拿來問你。
+
+最多問 5 個。沒發現漏洞會直接說一句「沒發現需求缺口」跳過。
+
+### ② 它去查你的專案，給你幾個做法
+
+```
+▸ （查了 OrderService、Order.cs、退款相關的 12 個檔）
+
+  現況
+  訂單狀態在 Order.Status，狀態轉換集中在 OrderService.ChangeStatus()，
+  已經有 IOrderStateRule 介面可以掛新規則。庫存在 InventoryService.Restock()。
+  沒有現成的退款單 entity。
+
+  做法
+  A) 在 IOrderStateRule 加一條取消規則 ＋ 新增 RefundRequest
+     動到：OrderService.cs、CancelOrderRule.cs(新)、RefundRequest.cs(新)、一支 migration
+     風險：RefundRequest 是新表，要 migration
+     工　：約 5 個檔 + 1 migration
+     影響：資料=動既有資料（Order 多一個狀態值）　消費者=無
+
+  B) 直接在 OrderService.ChangeStatus() 裡加判斷，不做退款單
+     ...
+
+  我建議 A —— IOrderStateRule 已經在那裡，不用動 ChangeStatus 的核心。
+```
+
+**每個做法的「影響」兩欄一定會填**，那是它判斷「要不要在交付前停下來問你」的唯一依據。查不出來它會停下來問，不會猜。
+
+### ③ 你選做法，同時確認驗收條件
+
+```
+▸ 選 A 的話，驗收條件長這樣（★ 這幾條會原封不動變成 QA 的自動化測試）：
+
+  Feature: 取消訂單
+    Scenario: 已出貨的訂單不可取消
+      Given 訂單 #1001 狀態為「已出貨」
+      When 客戶送出取消要求
+      Then 系統拒絕並回覆「已出貨無法取消」
+      And 訂單狀態維持「已出貨」
+
+    Scenario: 未出貨的訂單可以取消並產生待退款單
+      ...
+
+  ⚠️ 這個做法會動到既有資料（Order 多一個狀態值）
+
+  1. 確認，開始實作   2. 我要改驗收條件   3. 換做法 B   4. ✏️ 自行輸入…
+```
+
+**這是唯一不能省的確認點。** 你在這裡批准的 Given/When/Then，就是 QA 之後拿到的字 —— 所以措辭值得多看一眼。
+
+### ④⑤⑥ 實作、審核、交付
+
+之後它自己跑：寫 `.feature` → 寫 step definitions → 看紅 → 寫程式 → 綠 → 換一個乾淨的 context 獨立審一遍 → 沒過就回去修（最多 3 輪）。
+
+交付時回報**改了什麼、怎麼驗的、殘留風險**。
+
+---
+
+## 你只會被問三個地方
+
+| | 什麼時候出現 | 你要做什麼 |
+|---|---|---|
+| **① 需求漏洞** | 有找到漏洞才出現 | 選項答一答，或直接說「都照最簡單的」 |
+| **③ 定案** | **一定出現** | 選做法＋看一眼驗收條件 |
+| **⑥ 交付前** | **只有**動到既有資料／正在跑的流量，或改到 QA 綁住的 step 措辭 | 決定要不要放行 |
+
+跑 smoke test、啟動 Web／API、碰外部 DB 之前也會另外問你 —— 那不因改動大小放寬。
+
+**它不會為了「讓你有參與感」多問一輪。** 覺得問太多，直接說「後面不用問我了，照建議做」。
+
+### ① 什麼時候該不信它
+
+需求漏洞是靠**一般業務常識**推的。**保險、醫療、法規、特定產業慣例這類，它可能講得很有把握但是錯的。**
+
+所以它的措辭一律是「我認為這裡可能還沒定」，碰到專門領域也會主動說自己不準。看到不對的直接打斷。
+
+---
+
+## 常見情境
+
+| 你想做的事 | 怎麼說 | 它會怎麼跑 |
+|---|---|---|
+| **改個字、改設定、修 typo** | 直接說 | 自己改完，不跑流程 |
+| **加一個新功能** | 一句話說目的 | ①→⑥ 全跑 |
+| **需求我已經想清楚了** | 「需求已定，直接看怎麼做」 | 跳過 ①，從 ② 開始 |
+| **我只想知道有哪些做法** | 「先不要做，只給我選項」 | 跑到 ② 停 |
+| **改到資料庫 schema** | 直接說 | ⑥ 一定會停下來問你 |
+| **舊系統，邏輯藏在 SP／View 裡** | 「這塊邏輯在 DB 裡，要逆推」 | 先問你 schema 從哪來（你給／從程式推／連 DB），連 DB 要你批准 |
+| **一次要做 5 個行為** | 直接說 | ④ 會拆成一次一個可獨立驗收的行為 |
+
+---
+
+## 你會拿到什麼檔
+
+| 檔 | 什麼時候 |
+|---|---|
+| `bdd-docs/{feature-id}/spec.md` | ③ 之後一律有。需求決議＋選定做法＋驗收條件 |
+| `.feature` ＋ step definitions | ④。**跟你專案的單元測試放在一起**，不在 `bdd-docs/` 底下 |
+| 程式碼與測試 | ④ |
+| `bdd-docs/{feature-id}/contract/` | 只在真的有外部消費者或真的動 schema |
+| `bdd-docs/artifacts/legacy-schema/*.sql` | 只在舊系統逆推 SQL 時 |
+
+**其餘一律不產出** —— 沒有狀態檔、沒有進度紀錄、沒有階段交接文件。（`bdd-docs/.cache/` 是唯讀腳本的索引快取，隨時可刪。）
+
+### `.feature` 是交付給 QA 的，不是文件
+
+C# 用 **Reqnroll**，Java 用 **Cucumber**；你的專案已經在用別的就沿用。
+
+由此推出一條你會遇到的規則：**改掉既有 step 的措辭是破壞性變更。** QA 的自動化綁在那些文字上，改了會靜默斷掉、而且斷在他們的 repo。所以它跟「改對外 API」走同一條確認 —— 交付前會停下來，把「哪些 step、舊措辭、新措辭」列給你，你拿去轉達 QA。**加新 step、加 scenario、改實作都不算。**
+
+沒有可驗收行為變更的改動（純重構、升套件、改設定）不套這個格式，寫一行 DoD 就好。
+
+### 中斷了怎麼辦
+
+狀態活在對話裡，所以**對話沒了就重跑** —— `spec.md` 還在，① 是純推理幾乎免費，只有 ② 要重付一次。
+
+`spec.md` 不在就從 ① 重來。不要叫它猜你上次決定了什麼。
+
+---
+
+## 卡住的時候
+
+每次委派前會擋下這些，訊息裡附了怎麼修：
+
+| 訊息 | 意思 | 通常怎麼辦 |
+|---|---|---|
+| `missing-spec-ref` | 要實作或審核，但沒帶 `spec.md` 的**路徑** | 還沒走完 ③，先定案 |
+| `review-loop-exceeded` | 已經第 4 輪修正 | 它會交回你裁定：接受現版本／指定重點跑最後一輪／暫停 |
+| `handoff-too-long` | 委派超過 1200 字元 | 通常是它想貼全文；讓它改傳路徑 |
+| `connection-string`／`secret-literal` | prompt 裡有連線字串或密鑰 | **不要繞過**，把敏感值從來源拿掉 |
+| `must-run-top-level` | 它不是 top-level | 直接叫 `bdd-orchestrator`，不要從別的 agent 裡叫 |
+
+寫入 `bdd-docs/**` 之後還會掃一次敏感資料殘留。確定整個專案沒有敏感資料的話，建一個 `bdd-docs/.dlp-disabled` 可以整個關掉。
+
+**子代理回 `blocked` 的時候不會硬重試** —— 它會帶著修正過的委派重開一次，或直接交回你。
+
+---
+
+## 想插手的時候
+
+- **「不要問了，照建議做」** —— 後面的選擇它自己決定
+- **「用做法 B」** —— 直接指定，不用等它建議
+- **「這條驗收條件改成…」** —— 在 ③ 直接改，改完再確認
+- **「停」** —— 隨時停，`spec.md` 已經寫的會留著
+- **「這塊我的專案不是這樣，是…」** —— 它的現況判斷來自靜態分析，你比它清楚
+
+---
+
+## 給維護者
+
+改完設定跑這兩個，都要綠：
 
 ```powershell
-# 所有 JSON 可解析
-Get-ChildItem -Recurse -Filter *.json | ForEach-Object { try { Get-Content $_.FullName -Raw | ConvertFrom-Json | Out-Null } catch { "FAIL $($_.Name)" } }
-
-# 每個 agent .toml 的 ''' 成對
-Get-ChildItem .codex\agents\*.toml | ForEach-Object { $t = Get-Content $_.FullName -Raw; if (([regex]::Matches($t, "'''")).Count -ne 2) { "FAIL $($_.Name)" } }
+pwsh -NoProfile -File .codex/scripts/agent-lint.ps1        # 設定一致性
+pwsh -NoProfile -File .codex/scripts/tests/run-tests.ps1   # 強制層的 fixture 測試
 ```
 
-### 三條容易踩的規則
+三條容易踩的規則：
 
-1. **改預算或 handoff 規則時，prose 與 script 都要改。** 只改 prose 不是強制。`route-profiles.json` 是 hook 的機械來源，orchestrator 內嵌的 tier 表是模型的決策來源 —— 兩者漂移會讓 hook 在模型認為合法時擋下 spawn，那是最難診斷的失敗模式（`agent-lint` 檢查 9 就是為此存在）。
-2. **不要在 run 進行中改 agent `.toml`。** 那會讓該 agent 的 prompt cache 失效。
-3. **`AGENT-CORE` 區塊要 12 個 agent 逐字相同。** 改一個就要全改，改完跑 `agent-lint`。
+1. **`AGENT-CORE` 區塊必須在 5 個 agent 之間逐字相同。** 重複是刻意的 —— prompt cache 只認逐字相同的前綴，跨 agent 不共用。改一個要改全部，`agent-lint` 檢查 1 會擋。
+2. **加了 agent 就要加進 orchestrator 的「## 委派」表**，反之亦然。檢查 3 雙向比對。
+3. **每個檢查都要有一個「刻意弄壞後必須紅燈」的測試。** 抓不到東西的檢查比沒有檢查更糟。
 
-更多設計理由見 `AGENTS.md`、`CLAUDE.md` 與 `.codex/bdd-workflow/runbooks/tier-routing.md`。
+**為什麼是這樣設計**（五個 agent 的判準、為什麼無狀態、v4 砍掉了什麼、砍掉的代價）見 `docs/design-rationale.md`。那份只給人看，執行期不讀。
+
+### 從 v3.x 升上來
+
+v4.0.0 是乾淨斷代，**沒有 resume 相容路徑**。移除了整層 tier（`discover`／`t0`–`t3`）、5 道 gate、run 骨架與所有 run 狀態檔，agent 由 12 併為 5。v3 寫出來的 `bdd-docs/runs/` 目錄 v4 讀不懂 —— 升級前先把手上的 run 跑完或放掉。

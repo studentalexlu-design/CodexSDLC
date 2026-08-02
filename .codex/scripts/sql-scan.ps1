@@ -11,7 +11,7 @@
 [CmdletBinding()]
 param(
     [string]$Root = '.',
-    [string]$OutFile = 'bdd-docs/artifacts/repo-index/sql-signals.json',
+    [string]$OutFile = 'bdd-docs/.cache/sql-signals.json',
     [int]$MaxSignals = 300,
     [switch]$NoWrite      # 只輸出到 stdout，不落檔（測試用）
 )

@@ -1,21 +1,18 @@
 # handoff-lint.ps1
-# 在 subagent spawn 前機械強制 handoff contract。把 prompt 裡的「規則」
-# 變成「保證」—— 這是 token 預算唯一不依賴模型自律的環節。
+# 在 subagent spawn 前機械強制 handoff contract。把 prompt 裡的「規則」變成「保證」。
 #
 # 檢查項：
 #   1. handoff 長度 <= MaxChars（預設 1200）
 #   2. 單一 operation mode（不得同時出現多個 mode 宣告）
-#   3. 必填 meta 欄位：mode、tier（tier ∈ probe|spike|t0|t1|t2|t3）
-#   3a. t0 不得 spawn（上限 0）—— 需要 spawn 即代表判定過低，應升 t1
-#   3b. 探索 tier（probe/spike）不得掛交付型 mode —— 探索只產事實，不碰 production code
-#   3c. 單點紀錄型 mode 不得委派（checkpoint 等）—— 事實已在 orchestrator 手上，
-#       委派省不到讀取只多付一次 spawn
-#   4. 禁用 payload：完整 log、完整 source register、長測試輸出、secrets
-#   5. quality-loop 迭代上限（讀 workflow-state.json，超限即阻斷）
-#   6. tier 的 max-subagent-calls 上限（spawn 次數是成本主導變數，
-#      上限值一律從 route-profiles.json 讀取，不在本檔重複宣告）
-#   7. successor／linked run 必須繼承 parent 的 subagent-calls.count
-#      （額度用滿就開下一個 run 是繞過上限最省力的路徑）
+#   3. 必填 meta：mode、feature-id
+#   3a. 交付型 mode（build／fix／code）必須帶 spec.md 路徑 —— 沒有驗收條件就開工是最常見的返工來源
+#   3b. 修正輪（mode: fix）必須帶 round；round > MaxReviewRounds 即阻斷
+#   4. 禁用 payload：完整 log、長測試輸出、connection string、secret、DLP mapping table
+#
+# 自 v4.0.0 起移除：tier 相關檢查、t0 零 spawn、discover 交付型 mode、
+# 單點紀錄 mode、subagent 預算上限、successor 額度繼承。
+# 那些檢查全部服務於 12-agent 的扇出控制；agent 收斂到 5 個、流程改為線性之後
+# 它們沒有防守對象了。細節見 docs/design-rationale.md。
 #
 # Exit: 0 = 通過；2 = 違規（阻斷 spawn）。
 
@@ -23,8 +20,7 @@
 param(
     [string]$Payload,
     [int]$MaxChars = 1200,
-    [int]$MaxQualityLoopIterations = 3,
-    [string]$RouteProfilesPath = '.codex/bdd-workflow/route-profiles.json',
+    [int]$MaxReviewRounds = 3,
     [switch]$Json
 )
 
@@ -34,17 +30,53 @@ if (-not $Payload) { exit 0 }
 $violations = @()
 
 # --- 抽出 handoff prompt 本體 ---
-# hook payload 是 JSON；prompt 通常在 "prompt" 欄位。抓不到就退回整包長度。
-$prompt = $Payload
-$m = [regex]::Match($Payload, '"prompt"\s*:\s*"((?:[^"\\]|\\.)*)"')
-if ($m.Success) { $prompt = $m.Groups[1].Value -replace '\\n', "`n" -replace '\\"', '"' }
+# hook payload 的形狀由 harness 決定，可能是 {"prompt":...}、{"tool_input":{"prompt":...}}
+# 或更深的巢狀。抽錯的後果是雙向的且都很嚴重：抽到整包 JSON 會讓 `^mode:` 這類
+# 行首正則全部落空 —— 每一次 spawn 都被 missing-mode 擋死；反之若完全抽不到，
+# 長度檢查會量到錯的對象。因此改為「先解析 JSON、遞迴找已知欄位名、取最長者」，
+# 解析失敗才退回舊的 regex，最後才退回整包。
+function Get-HandoffPrompt {
+    param([string]$Raw)
+
+    $fieldNames = @('prompt', 'instructions', 'input', 'text', 'message', 'content', 'arguments', 'description')
+
+    try {
+        $root = $Raw | ConvertFrom-Json -ErrorAction Stop   # ConvertFrom-Json 會一併解掉 \n 與 \"
+        $best = ''
+        $queue = [System.Collections.Generic.Queue[object]]::new()
+        $queue.Enqueue($root)
+        while ($queue.Count -gt 0) {
+            $cur = $queue.Dequeue()
+            if ($null -eq $cur -or $cur -is [string] -or $cur -is [ValueType]) { continue }
+            if ($cur -is [System.Collections.IEnumerable]) {
+                foreach ($item in $cur) { $queue.Enqueue($item) }
+                continue
+            }
+            foreach ($p in $cur.PSObject.Properties) {
+                if ($p.Value -is [string]) {
+                    if ($p.Name -in $fieldNames -and $p.Value.Length -gt $best.Length) { $best = $p.Value }
+                } else {
+                    $queue.Enqueue($p.Value)
+                }
+            }
+        }
+        if ($best) { return $best }
+    } catch { }
+
+    $m = [regex]::Match($Raw, '"prompt"\s*:\s*"((?:[^"\\]|\\.)*)"')
+    if ($m.Success) { return ($m.Groups[1].Value -replace '\\n', "`n" -replace '\\"', '"') }
+
+    return $Raw
+}
+
+$prompt = Get-HandoffPrompt -Raw $Payload
 
 # --- 1. 長度 ---
 if ($prompt.Length -gt $MaxChars) {
     $violations += [pscustomobject]@{
         rule = 'handoff-too-long'
         detail = "$($prompt.Length) chars > $MaxChars"
-        fix = '先委派 living-doc 編譯 context pack，或改以更小切片委派'
+        fix = '只傳 feature-id、mode、spec.md path 與 <=300 字決策摘要。產物內容由子代理自己讀 path'
     }
 }
 
@@ -64,47 +96,46 @@ if ($modes.Count -gt 1) {
 if ($modes.Count -eq 0) {
     $violations += [pscustomobject]@{ rule='missing-mode'; detail='no mode: field'; fix='meta 區塊補 mode' }
 }
-$tier = if ($prompt -match '(?im)^\s*[-*]?\s*tier\s*:\s*(probe|spike|t0|t1|t2|t3)\b') { $Matches[1].ToLower() } else { $null }
-if (-not $tier) {
+if ($prompt -notmatch '(?im)^\s*[-*]?\s*feature-id\s*:\s*\S') {
     $violations += [pscustomobject]@{
-        rule = 'missing-tier'
-        detail = 'no tier: probe|spike|t0|t1|t2|t3'
-        fix = 'meta 區塊補 tier；缺 tier 時子代理會退回 t3（最嚴格），成本最高'
+        rule = 'missing-feature-id'
+        detail = 'no feature-id: field'
+        fix = 'meta 區塊補 feature-id —— 子代理靠它定位 bdd-docs/{feature-id}/ 底下的產物'
     }
 }
 
-# t0 的 max-subagent-calls 是 0 —— 任何 spawn 都是判定過低的證據。
-# 這裡明確擋下並給出正確處置，而不是讓它落到下方的通用預算檢查（那時 run 狀態檔可能還不存在）。
-if ($tier -eq 't0') {
+# --- 3a. 交付型 mode 必須有驗收依據 ---
+# implementer 與 reviewer 的工作全部錨定在 spec.md 的驗收條件上。
+# 沒帶就開工 = 靠子代理猜使用者要什麼，那是最貴的一種返工。
+#
+# 必須是**路徑**（含 `/`），不能只是散文裡提到「依 spec.md 的驗收條件」——
+# 後者是子代理讀不到的東西，放行等於這個檢查形同虛設。
+$specAnchoredModes = @('build', 'fix', 'code')
+$anchorHit = @($modes | Where-Object { $_ -in $specAnchoredModes })
+if ($anchorHit.Count -gt 0 -and $prompt -notmatch '(?i)[\w.-]+/spec\.md') {
     $violations += [pscustomobject]@{
-        rule = 't0-must-not-spawn'
-        detail = 'tier: t0 的委派上限為 0'
-        fix = 't0 由 orchestrator 自行實作。需要 spawn 代表判定過低 —— 升 t1，不要加 spawn'
+        rule = 'missing-spec-ref'
+        detail = "mode=$($anchorHit -join ',') 但 handoff 沒有 spec.md 路徑"
+        fix = '先完成流程 ③ 定案並寫出 bdd-docs/{feature-id}/spec.md，再委派。不要讓子代理自己猜驗收條件'
     }
 }
 
-# 單點紀錄不得委派：checkpoint／Gate confirmation／decision-log／DLP 標記／DB 授權紀錄
-# 的事實在使用者確認或 doer 回傳時已在 orchestrator 手上，委派買不到任何讀取節省。
-# 這些 mode 自 contract v2.1.0 起不存在於任何子代理。
-$stateOnlyModes = @('checkpoint', 'decision-log', 'gate-record', 'runtime-metadata')
-$stateHit = @($modes | Where-Object { $_ -in $stateOnlyModes })
-if ($stateHit.Count -gt 0) {
-    $violations += [pscustomobject]@{
-        rule = 'state-only-mode-delegated'
-        detail = "mode=$($stateHit -join ',')"
-        fix = 'orchestrator 自行寫入（所有 tier），欄位見 runbooks/checkpoint-schema.md。需要跨階段彙整才委派 living-doc mode: context-pack'
-    }
-}
-
-# 探索 run 不得碰 production code：交付型 mode 不得掛在探索 tier 下。
-if ($tier -in @('probe', 'spike')) {
-    $deliveryModes = @('slice', 'skeleton', 'feature', 'contract', 'foundation', 'elaboration', 'migration', 'all', 'review')
-    $hit = @($modes | Where-Object { $_ -in $deliveryModes })
-    if ($hit.Count -gt 0) {
+# --- 3b. 修正輪上限 ---
+# doer↔reviewer 的 ping-pong 是沒有自然終點的迴圈。輪次由 orchestrator 自報，
+# 但機械檢查讓「第 4 輪」變成一個會被擋下的事件，而不是一個沒人注意到的數字。
+if ($modes -contains 'fix') {
+    $round = if ($prompt -match '(?im)^\s*[-*]?\s*round\s*:\s*(\d+)') { [int]$Matches[1] } else { $null }
+    if ($null -eq $round) {
         $violations += [pscustomobject]@{
-            rule = 'discovery-tier-delivery-mode'
-            detail = "tier=$tier mode=$($hit -join ',')"
-            fix = '探索 run 只產事實，不產 production code。改用 probe/metadata/definition/glossary/sql-logic-extraction/spike，或先結束探索 run 再開交付 run'
+            rule = 'missing-round'
+            detail = 'mode: fix 未帶 round'
+            fix = 'meta 區塊補 round（第幾次修正輪，從 1 起算）'
+        }
+    } elseif ($round -gt $MaxReviewRounds) {
+        $violations += [pscustomobject]@{
+            rule = 'review-loop-exceeded'
+            detail = "round=$round > $MaxReviewRounds"
+            fix = '停止修正迴圈，以 Codex user confirmation 交回使用者裁定（接受現版本／指定重點跑最後一輪／暫停）'
         }
     }
 }
@@ -119,88 +150,7 @@ $forbidden = @(
 )
 foreach ($f in $forbidden) {
     if ($prompt -match $f.pattern) {
-        $violations += [pscustomobject]@{ rule=$f.rule; detail='禁用 payload 命中'; fix='只傳 path/version/digest 與 <=500 字摘要' }
-    }
-}
-
-# --- 5 & 6. run 狀態相關檢查（一次讀取，兩項檢查）---
-$runId = if ($prompt -match '(?im)^\s*[-*]?\s*run-id\s*:\s*(\S+)') { $Matches[1] } else { $null }
-if ($runId) {
-    $statePath = "bdd-docs/runs/$runId/workflow-state.json"
-    if (Test-Path $statePath) {
-        try {
-            $state = Get-Content $statePath -Raw | ConvertFrom-Json
-
-            # --- 5. quality-loop 上限 ---
-            $iter = $state.'quality-loop'.iteration
-            $last = $state.'quality-loop'.'last-verdict'
-            if ($null -ne $iter -and $iter -ge $MaxQualityLoopIterations -and $last -eq 'FAIL') {
-                $violations += [pscustomobject]@{
-                    rule = 'quality-loop-exceeded'
-                    detail = "iteration=$iter last-verdict=FAIL"
-                    fix = '禁止再呼叫 doer+reviewer；必須以 Codex user confirmation 升級使用者裁定'
-                }
-            }
-
-            # --- 6. max-subagent-calls 上限 ---
-            # 已用次數由 orchestrator 於每次 spawn 後遞增（比照 quality-loop）。
-            # 上限值從 contract 讀取，避免本檔成為第二份會走鐘的預算宣告。
-            $used = $state.'subagent-calls'.count
-            if ($null -ne $used) {
-                # tier 以 handoff 宣告優先，退回 run 狀態檔（resume 時 handoff 仍應帶 tier）。
-                $stateTier = $state.'runtime-metadata'.tier
-                $effTier = if ($tier) { $tier } else { $stateTier }
-                $cap = $null
-                try {
-                    $rp = (Get-Content $RouteProfilesPath -Raw | ConvertFrom-Json).profiles
-                    $rawCap = $null
-                    if ($effTier) { $rawCap = $rp.$effTier.'max-subagent-calls' }
-                    # tier 不明時退回 t3 的上限當天花板，不 hard-block 合法流程。
-                    if ($null -eq $rawCap) { $rawCap = $rp.t3.'max-subagent-calls' }
-
-                    # 上限可為數字，或 {base, per-behaviour}（只有按行為切片的 tier 用後者）。
-                    # 物件形式：base + per-behaviour × min(N, 10)。N > 10 一律拆 run，故以 10 封頂。
-                    # N 缺漏時以 10 計 —— 寬鬆側，寧可不擋也不要擋下合法流程。
-                    if ($rawCap -is [System.Management.Automation.PSCustomObject]) {
-                        $n = $state.'runtime-metadata'.'behaviour-count'
-                        if ($null -eq $n -or $n -lt 1) { $n = 10 }
-                        if ($n -gt 10) { $n = 10 }
-                        $cap = [int]$rawCap.base + ([int]$rawCap.'per-behaviour' * [int]$n)
-                    } else {
-                        $cap = $rawCap
-                    }
-                } catch { }
-                if ($null -ne $cap -and $used -ge $cap) {
-                    $violations += [pscustomobject]@{
-                        rule = 'subagent-budget-exceeded'
-                        detail = "used=$used cap=$cap tier=$(if ($effTier) { $effTier } else { 'unknown(套用 t3 上限)' })"
-                        fix = '停止委派；以 Codex user confirmation 讓使用者選擇升級 tier、拆成多個 run 或放寬切片。若原因是現況不明 → 開 probe run，不要升 tier'
-                    }
-                }
-            }
-
-            # --- 7. successor／linked run 的額度繼承 ---
-            # 用滿額度就開下一個 run，是繞過上限最省力也最不留痕跡的路徑：
-            # 新 run 的 count 從 0 起算，檢查 6 便永遠不會命中。唯一機械可查的
-            # 錨點是 runtime-metadata.linked-from —— 宣告了 parent，就必須把
-            # parent 的累計值帶過來（bdd-orchestrator 不變原則 5）。
-            $linkedFrom = $state.'runtime-metadata'.'linked-from'
-            if ($linkedFrom -and $null -ne $used) {
-                $parentStatePath = "bdd-docs/runs/$linkedFrom/workflow-state.json"
-                if (Test-Path $parentStatePath) {
-                    try {
-                        $parentUsed = (Get-Content $parentStatePath -Raw | ConvertFrom-Json).'subagent-calls'.count
-                        if ($null -ne $parentUsed -and $used -lt $parentUsed) {
-                            $violations += [pscustomobject]@{
-                                rule = 'successor-budget-not-inherited'
-                                detail = "count=$used parent($linkedFrom)=$parentUsed"
-                                fix = '把 parent 的累計值寫入本 run 的 subagent-calls.count。額度上限的用意是逼你停下來重新界定範圍，不是逼你換一個 run 繼續'
-                            }
-                        }
-                    } catch { }
-                }
-            }
-        } catch { }
+        $violations += [pscustomobject]@{ rule=$f.rule; detail='禁用 payload 命中'; fix='只傳 path 與 <=300 字摘要' }
     }
 }
 

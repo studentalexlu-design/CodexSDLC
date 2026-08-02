@@ -1,5 +1,4 @@
-# Project-scoped Codex configuration for the migrated BDD workflow.
-# `.github` remains the GitHub Copilot source version; Codex uses `.codex/` and `.agents/`.
+# Project-scoped Codex configuration for the SDLC workflow (v4.0.0).
 
 personality = "friendly"
 
@@ -7,7 +6,8 @@ personality = "friendly"
 hooks = true
 
 [agents]
-# `bdd-orchestrator` can be spawned as a custom agent and then delegate to one
-# direct workflow subagent. Roster subagents must not fan out further.
-max_threads = 6
+# `bdd-orchestrator` runs top-level and delegates one level down.
+# max_depth = 2 keeps roster subagents from fanning out further — the hooks that
+# enforce the handoff contract only fire on spawns the orchestrator itself makes.
+max_threads = 5
 max_depth = 2

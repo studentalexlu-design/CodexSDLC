@@ -1,7 +1,7 @@
 ---
 name: interruption-recovery
-version: 1.1.0
-description: "Use when: recovering interrupted BDD workflow stages, subagent cancellations, blocked subagent returns, reviewer timeouts, partial-completed doer results, resume checkpoints, stale workflow-state, or transport failures such as net::ERR_EMPTY_RESPONSE."
+version: 2.0.0
+description: "Use when: a subagent returns blocked, is cancelled, times out, returns partial, or the conversation resumes after an interruption."
 user-invocable: false
 ---
 
@@ -10,69 +10,54 @@ user-invocable: false
 ## 使用時機
 
 - 子代理回傳 `Canceled`、`Timeout`、`error`、`network error`、`net::ERR_EMPTY_RESPONSE` 或無回應。
-- doer 回傳 `partial-completed`，或產物只有部分寫入。
-- reviewer 連續中斷或 token 預算不足。
-- resume 時發現 session memory、checkpoint、`workflow-state.json` 與實際產物狀態不一致。
-- Gate 檢查前發現 stale checkpoint 或下游產物版本不一致。
+- 子代理回傳 `partial`，或產物只寫了一半。
+- reviewer 連續中斷。
+- 中斷後續跑，不確定做到哪裡。
 
-## Resume 判斷優先序
+## 先分清楚：傳輸失敗 vs `blocked`
 
-1. `/memories/session/active-run.md`（若存在）。
-2. `bdd-docs/runs/{run-id}/checkpoints/`。
-3. `bdd-docs/runs/{run-id}/workflow-state.json.runtime-metadata`。
-4. `bdd-docs/runs/{run-id}/index.md` 與 `log.md` 最近 entries 或 delta。
-5. 實際產物存在性與 metadata。
+**這兩者的處理方向相反，分錯會白花一次 spawn。**
 
-若狀態矛盾，以實際產物存在性與最新 log entry 為準，由 orchestrator 自行回寫狀態；索引本身若也失準，`t3` 可委派 `living-doc`（`mode: lint`）修復。
+| | 傳輸失敗 | `blocked` |
+|---|---|---|
+| 長什麼樣 | `net::ERR_EMPTY_RESPONSE`、`ECONNRESET`、timeout、Canceled | 子代理明確回 `blocked` 並給了理由 |
+| 意義 | 子代理**沒有做出判定** | 子代理**做出了判定**：需要裁定、批准，或撞到無界未知 |
+| 能不能用同一個 prompt 重試 | 可以（但要壓縮） | **不行** —— 它的 context 已含自己上一輪的拒絕結論，重試只會複誦同一句 |
 
-## Transport Failure Circuit Breaker
+### 傳輸失敗
 
-`net::ERR_EMPTY_RESPONSE`、`network error`、`ECONNRESET`、timeout、Canceled 屬 transport failure，不代表子代理已完成或業務判定失敗。
+1. **不得靜默停止**，也**不得**用同一個 prompt 立即重試。
+2. 先看目標產物存不存在、寫到什麼程度 —— 判斷有沒有部分成果。
+3. 以 `Codex user confirmation` 讓使用者選：壓縮後重試一次／暫停／✏️ 自行輸入。
+4. 壓縮重試只要求**最小可恢復的那一片**，而且必須比原 prompt 短。第二次仍失敗則停止委派。
 
-處理規則：
+### `blocked`
 
-1. 不得靜默停止。
-2. 不得自動用同一 prompt 立即重試。
-3. 先讀 runtime metadata、checkpoint 與目標產物存在性，判斷是否有部分成果。
-4. 用 `Codex user confirmation` 讓使用者選擇：壓縮重試一次、開新對話 resume、暫停、或自行輸入。
-5. 壓縮重試必須只要求最小可恢復切片，且比原 prompt 短；第二次仍 transport failure 則停止委派。
+1. 先判阻塞在哪一側：
+   - **子代理側**（範圍不清、參數錯、缺 `spec.md` 路徑、handoff 漏欄位）→ 修正 handoff 就能解。
+   - **外部側**（harness 閘門、工具不存在、來源是二進位、需要使用者批准）→ 再跑幾次結果都一樣，先解決外部原因。
+2. **不得續跑同一個子代理實例。** 復原一律是**新 spawn ＋ 修正過的 handoff**。
+3. 新 handoff 必須明列**「這次和上次差在哪」**：補上的批准、收斂後的範圍、更正的參數。**差異寫不出來就不要重試** —— 那是註定重複的一次消耗。
+4. 同一個 `blocked` 理由連續兩次沒解決 → 停止委派，以 `Codex user confirmation` 交回使用者。
 
-在嚴格委派模式下，orchestrator 不得以自身工具直接寫文件作為 fallback。
+## Reviewer 中斷
 
-## 子代理回傳 `blocked`
+第一次中斷後重呼叫時縮小 prompt：只給檔案路徑、審核焦點最多 3 項、要求 `VERDICT` 第一行輸出。
 
-`blocked` 是**業務或授權判定**，不是 transport failure，處理方向相反：transport failure 可以壓縮後重試同一個 prompt，`blocked` 不可以。
+第二次仍中斷 → orchestrator 自己做一次最小審核（只看「測試有沒有真的測到東西」），降級 PASS 前必須以 `Codex user confirmation` 取得使用者同意。
 
-1. 讀 `blocked` 的 reason 與 evidence refs，先判定阻塞在哪一側：
-   - **子代理側**（scope 不清、參數錯、缺 authorization ref、handoff 漏欄位）→ 可由修正 handoff 復原。
-   - **外部側**（harness gate、工具不存在、來源不在 workspace、規格為二進位未轉錄）→ 子代理再跑幾次結果都一樣，先解決外部原因。
-2. **不得續跑同一個子代理實例。** 它的 context 已含自己上一輪的拒絕結論，續跑會直接複誦同一個判定 —— 零產出，但額度照計。復原一律是**新 spawn + 修正過的 handoff**。
-3. 新 handoff 必須明列「這次和上次差在哪」。差異寫不出來就不要重試，那是註定重複的一次額度消耗。
-4. 同一個 `blocked` 原因連續兩次未解 → 停止委派，以 `Codex user confirmation` 交回使用者。
-5. 每一次 `blocked` 都要寫進 checkpoint 與 `subagent-calls.count`。被擋下的委派仍然是委派，不記等於讓上限失效。
+## 子代理回 `partial`
 
-## Reviewer 中斷降級
+1. 讀它寫的「做完了／沒做完」。
+2. 以 `Codex user confirmation` 提供：繼續下一片／先審核已完成的部分／暫停／✏️ 自行輸入。
+3. 若繼續，新 spawn 帶上「已完成的部分」與「下一件最小的事」。
 
-第一次中斷後，重呼叫 reviewer 時必須縮小 prompt：
+## 中斷後續跑
 
-- 只傳產物路徑與版本號。
-- 審核焦點最多 3 項。
-- 指示 `VERDICT` 必須第一行輸出。
-- 跳過 MINOR 級檢查。
+這套流程是無狀態的，所以續跑不靠狀態檔，靠這三樣，依序：
 
-第二次仍中斷時，orchestrator 執行 BLOCKER 級最小審核，降級 PASS 前必須以 `Codex user confirmation` 取得使用者同意，並自行記錄 decision。
+1. **`bdd-docs/{feature-id}/spec.md`** —— 需求與驗收條件都在裡面，這是唯一必須存在的東西。
+2. **實際的程式碼與測試** —— 跑一次測試就知道做到哪了。
+3. 使用者。
 
-## Doer 部分完成
-
-當 doer 回傳 `partial-completed`：
-
-1. 讀取 completion-summary。
-2. orchestrator 自行寫入部分完成 checkpoint 與 log。
-3. 以 `Codex user confirmation` 提供：繼續、先審核已完成部分、暫停流程、或自行輸入。
-4. 若繼續，以 resume mode 呼叫 doer，傳入 completed-items 與 pending-items。
-
-## 交付要求
-
-- 恢復後的下一個子代理只收到 stage、mode、產物路徑/版本、上一個 action、未完成項目摘要。
-- 任何降級審核、暫停或重試決策都必須記錄到 run 文件。
-- 產物狀態與 `workflow-state.json`、`index.md` 不一致時，不得通過 Gate。
+**`spec.md` 不在就從 ① 重跑。** BA 是純推理，幾乎免費；只有 SA 要重付一次 spawn。不要為了省那一次而猜使用者原本決定了什麼。

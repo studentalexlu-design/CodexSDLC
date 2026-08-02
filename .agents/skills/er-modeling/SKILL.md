@@ -8,13 +8,13 @@ description: 從 domain rules、examples、schema 或 API DTO 產出 Mermaid ER 
 
 > 用途：設計橋接階段（design）產出 **logical/specification-level ER model draft**，供 ATDD/TDD 對齊。
 > 產出不是 migration script，也不是正式 ER Model 審查治理產物。
-> 若既有 `data-modeling` skill 已涵蓋 ER 產出，可優先沿用；本 skill 聚焦 draft ER 契約輸出格式。
+
 
 ## 使用時機
 
 - Gherkin 定稿、domain glossary、candidate entities、rules、examples 已就緒，功能涉及資料持久化。
 - 使用者已提供脫敏後 DDL / schema 摘要 / ER 圖 / migration 片段需要詮釋時可提前使用。
-- 無資料持久化時，於 lean-sdlc-checklist 標記 `not-applicable` + reason。
+- 無資料持久化時**不要產出 ER 圖** —— 在回傳裡說一句「無持久化，不需資料模型」即可。
 
 ## 輸入
 
@@ -66,7 +66,7 @@ erDiagram
 - ...
 
 ## Next Skill
-建議下一步：spec-reviewer (mode: design) 審核 → contract-testing（P0-3）
+建議下一步：交回 orchestrator 走 ③ 定案；契約有破壞性變更時，`reviewer`（`mode: spec`）必審
 ````
 
 ## Quality Gate

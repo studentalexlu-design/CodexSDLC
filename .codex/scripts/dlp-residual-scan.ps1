@@ -8,7 +8,7 @@
 
     安全契約：
     - 絕不輸出命中的原始值；只回類別、計數、行號參照。
-    - 不寫入任何檔案；結果由呼叫端（orchestrator/living-doc）決定如何記錄 mask-audit。
+    - 不寫入任何檔案；結果由呼叫端決定怎麼處置。
     - mapping table 永不經過此腳本。
 
 .PARAMETER Path
@@ -61,7 +61,11 @@ function Get-InputContent {
         }
         return [System.IO.File]::ReadAllText((Resolve-Path -LiteralPath $Path))
     }
-    if ($PSBoundParameters.ContainsKey('InputText') -and $null -ne $InputText) {
+    # 不可用 $PSBoundParameters 判斷 —— 在函式內它指的是**該函式自己**的繫結參數
+    # （Get-InputContent 沒有參數，所以永遠是空的），於是 -InputText 這條路徑
+    # 從來不會成立，一律落到 stdin。呼叫端以 -InputText 傳入時 stdin 是空的，
+    # 掃描結果會是 scanned_chars=0 / passed=true —— 一次**假的全綠 DLP 放行**。
+    if (-not [string]::IsNullOrEmpty($InputText)) {
         return $InputText
     }
     return [Console]::In.ReadToEnd()

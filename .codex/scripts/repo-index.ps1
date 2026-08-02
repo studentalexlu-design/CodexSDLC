@@ -13,7 +13,7 @@
 [CmdletBinding()]
 param(
     [string]$Root = '.',
-    [string]$OutDir = 'bdd-docs/artifacts/repo-index',
+    [string]$OutDir = 'bdd-docs/.cache',
     [switch]$Force,          # 忽略快取，完整重建
     [switch]$StatusOnly,     # 只回報 staleness，不寫檔
     [int]$MaxSymbolFiles = 1500
@@ -180,7 +180,7 @@ foreach ($p in (@($poms) + @($gradles))) {
     }
 }
 
-# ---------- test toolchain（依語言偵測；原本寫在 project-scanner.toml） ----------
+# ---------- test toolchain（依語言偵測） ----------
 $allPkgs = @($projects.'package-refs' | Where-Object { $_ })
 function Find-Pkg([string[]]$names) {
     foreach ($n in $names) { if ($allPkgs -match "^$n") { return $n } }

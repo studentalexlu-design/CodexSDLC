@@ -2,17 +2,6 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Edit|Write|^apply_patch$",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "pwsh -NoProfile -ExecutionPolicy Bypass -Command \"$raw = [Console]::In.ReadToEnd(); if ($raw -match '\\.github[/\\\\](hooks|agents|skills|instructions)') { [Console]::Error.WriteLine('[Hook] Editing .github source workflow files requires explicit intent.'); exit 2 }\"",
-            "timeout": 10,
-            "statusMessage": "Checking BDD source-file guardrail"
-          }
-        ]
-      },
-      {
         "matcher": "(?i)(subagent|spawn|^agent$|^task$)",
         "hooks": [
           {

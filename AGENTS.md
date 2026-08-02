@@ -1,187 +1,108 @@
-# Codex Instructions - BDD + ATDD + TDD Workflow
+# Codex Instructions — SDLC Workflow (v4.0.0)
 
-This repository contains a Codex-native migration of the BDD workflow that was originally defined under `.github`.
+This repo is configuration only. Every file here is a prompt, policy, or script that configures the Codex CLI. There is no product code.
 
-## Always-On Principles
+**What this workflow is for:** help the user make correct decisions faster at each SDLC stage, then produce the code correctly. Everything below is an instrument kept only while it buys correctness or speed.
 
-1. Source-First: do not advance a feature workflow until the active run has a completed `artifacts/source-materials-register.md`.
-2. Outside-In: run Example Mapping and Gherkin before ATDD walking skeleton work, then use TDD for implementation.
-3. Run Isolation: default to a new `bdd-docs/runs/{run-id}/` unless the user explicitly asks to resume an existing run.
-4. Docs as Source of Truth: runtime state lives in `bdd-docs/`; agents and skills do not store dynamic workflow data.
-5. Safe Change: public contracts, migrations, DB access, smoke tests, shared DTOs, and high-risk changes require explicit user approval.
-6. Secret Safety: never write credentials, connection strings, API keys, or DLP mapping tables to `bdd-docs/`, artifacts, logs, or prompts.
-7. Context Budget: prefer index, metadata, digests, and context-pack summaries over full artifacts or long logs.
+## The flow
 
-## Codex Entry Points
+```
+① BA  requirement analysis   orchestrator, in-conversation — find gaps the user did not state
+② SA  system analysis        sa-analyst — read specs/repo/schema, return 2–4 approaches
+③ settle                     confirm approach + acceptance criteria → write spec.md
+④ build                      implementer — test-first, run to green
+⑤ review                     reviewer — independent context
+⑥ deliver                    report what changed, how it was verified, residual risk
+```
 
-- For full workflow coordination, explicitly use the `bdd-orchestrator` custom agent.
-- The orchestrator delegates to 11 project-scoped custom agents:
-  - **doers**: `project-scanner`, `db-introspection-scanner`, `analyst`, `formulator`, `design-modeler`, `atdd-automator`, `tdd-implementer`, `integration-tester`, `living-doc`
-  - **reviewers**: `spec-reviewer` (modes: `domain` / `example-map` / `gherkin` / `design`), `code-reviewer` (modes: `atdd` — `t3` only / `tdd` — `t2`+)
-- Three consolidations happened, each for a specific reason — **not** because "fewer agents is cheaper" (it isn't; see "Why multi-agent"):
-  - `spec-reviewer` replaced four near-identical spec reviewers (~80% shared ceremony).
-  - `code-reviewer` replaced `atdd-reviewer` + `tdd-reviewer` (~60% shared ceremony).
-  - `analyst` replaced `domain-analyst` + `discovery`. These two read the same sources **and had a round-trip protocol between them** (`domain-backflow` stage, two `paused-for-domain-check` states, an incremental-validation runbook). Merging deleted that entire mechanism: glossary terms and behaviour examples now evolve in one context.
-- Merging pays off only when it **deletes real duplication**, **removes a cross-agent coordination mechanism**, or **converts cross-agent switches into repeat invocations of one agent** (the only case where prompt cache can hit). Repackaging instructions without deleting anything makes things worse.
-- Each delegation must cover one mode, one target artifact group, and one next step. Do not ask a subagent to cross multiple gates in one handoff.
-- `bdd-router` was intentionally not migrated; its routing responsibility now lives in the `route-assessment` stage inside `bdd-orchestrator` (see Tier Routing below).
+**Two mandatory user confirmations only**: ① gaps (skipped when there are none) and ③ settle. A third appears at ⑥ only when the change is irreversible.
 
-## Tier Routing (v2.0.0 — two axes, not one scale)
+**BA before SA, never merged.** The BA answer determines what the SA has to look for. Asking "can a shipped order be cancelled?" and hearing "yes, via returns" is what makes the system search for a returns flow; hearing "no" means never searching. Merging the two forces exploring both branches.
 
-Workflow depth is chosen per run. `bdd-orchestrator` runs `route-assessment` once, right after `intake-done` and before `scan`, then confirms the tier with the user in a single confirmation.
+**BA is not delegated.** It reads almost nothing — its input is the user's request and its reference is general domain knowledge. Delegation buys the reads that would not fit in the orchestrator's context; BA has none, so a spawn would pay a 4–8k cold start for reasoning the orchestrator can already do, and lose the ability to converse about it.
 
-Routing splits along **two independent axes**, because they call for different medicine:
+## Agents
 
-| Axis | Question | What high means you need | Absorbed by |
-|---|---|---|---|
-| **Irreversibility** | What does it cost to get back? | Gates and approvals | delivery tier `t0`→`t3` |
-| **Uncertainty** | What don't I know yet? | Exploration and clarification | a separate `probe` / `spike` run |
+Five, all under `.codex/agents/`. `bdd-orchestrator` must run as a **top-level** agent — as a child it cannot spawn, and the hooks that enforce everything below never fire.
 
-These occur independently — a DB migration with complete DDL is high-irreversibility + *low* uncertainty (many gates, almost no exploration); probing a black-box package in a sandbox is *low*-irreversibility + high uncertainty (the reverse). **A single "complexity" scale forces you to buy both insurances at once.** That is the v1.x problem this replaces.
+| Agent | Why it gets its own context |
+|---|---|
+| `bdd-orchestrator` | Holds the conversation. Does BA itself, delegates the rest. |
+| `sa-analyst` | Reads specs, repo, and schema files — high read volume, small return. |
+| `implementer` | Test-first implementation, many read/write iterations. |
+| `reviewer` | **Independence is the point.** A reviewer sharing the implementer's context re-confirms the same assumptions. |
+| `db-introspection-scanner` | Sole exit for live DB. A **security** boundary, not a context one. |
 
-| Tier | Trigger (first yes wins) | Gates | Reviewers | Budget |
-|---|---|---|---|---|
-| `probe` | current state / requirement / repro steps unknown | `gate-probe` | none | ≤ 2 |
-| `spike` | technical feasibility unknown | `gate-probe` | none | ≤ 3 |
-| `t0` | behaviour-equivalent, revertible in one commit | `gate-close` | none | **0 — orchestrator implements** |
-| `t1` | behaviour change, consumers inside my control | `gate-close` | 1 (`spec-reviewer`) | ≤ 5 |
-| `t2` | consumers I do **not** control see a difference | `gate-contract` → `gate-close` | 2 | ≤ 9 |
-| `t3` | touches existing data or live traffic | `gate-contract` → `gate-migration` → `gate-release` | all | ≤ 14 |
+Delegation buys exactly one thing: reads that never enter the orchestrator's context. That is the only test for whether a step deserves a spawn.
 
-**Every delivery tier keeps Gherkin and the Outside-In TDD spine.** `t0` substitutes a one-line DoD — writing Given-When-Then for a behaviour-equivalent change is pure ceremony.
+## Artifacts
 
-### Three things deliberately excluded from the tier decision
-
-| Factor | Why it is not depth | Handled as |
+| Path | Written by | When |
 |---|---|---|
-| **Scale** | 20 identical CRUD endpoints are large but low-risk and low-uncertainty; a 500-file rename needs no design review | **N** = *behaviour count* (not file count). N > 10 → split into multiple runs |
-| **Sensitivity** | masking one card number in a log should not buy a full rewrite | cross-cutting **P**: DLP masking + residual scan, tier unchanged |
-| **Verifiability** | how you verify changes the evidence, not the cost of turning back | **V**: `prod-only` forces staged rollout at the delivery gate |
+| `bdd-docs/{feature-id}/spec.md` | orchestrator | after ③, always |
+| `.feature` + step definitions (**in the project's test tree**) | `implementer` | ④, landed verbatim from ③'s Gherkin block |
+| `bdd-docs/{feature-id}/contract/*` | `sa-analyst` | only with real external consumers or a real schema change |
+| `bdd-docs/artifacts/legacy-schema/*.sql` | `db-introspection-scanner` | only when reverse-engineering legacy SQL |
+| code and tests | `implementer` | ④ |
 
-File count is a bad measure: a rename touches 50 files, an algorithm rewrite touches 1.
+Nothing else is produced. The workflow is **stateless** — no state files, no progress records, no stage handoff documents, no evidence directories.
 
-### Two structural rules
+## Gherkin is a QA deliverable, not documentation
 
-**`t0` spawns nothing.** A spawn costs 4–8k tokens fixed; a `t0` diff is usually smaller than that framing overhead. `route-profiles.json` sets `t0.max-subagent-calls = 0`, so `handoff-lint.ps1` mechanically blocks any `t0` spawn — needing one means the tier was assessed too low. Escalate to `t1`; don't add spawns.
+Acceptance criteria are written as Gherkin inside `spec.md` at ③, then landed **verbatim** as `.feature` by `implementer` at ④ — alongside that project's unit tests, never under `bdd-docs/`. QA builds automation on those files.
 
-**`gate-contract` precedes all production implementation** (`t2`/`t3`). It is the only point where rework can still be avoided: a contract settled before implementation costs one implementation change when wrong; a contract settled after costs the implementation, the tests, and every downstream consumer that already read it.
+Everything follows from that: C# uses Reqnroll, Java uses Cucumber (an existing framework in the project always wins); step definitions are written for reuse because QA adds scenarios; and **changing an existing step's wording is a breaking change** — it silently breaks QA's automation in *their* repo, so it triggers the same confirmation as changing a public API. Adding steps or scenarios does not.
 
-## Why multi-agent
+The one exception: a change with no acceptance-testable behaviour (pure refactor, dependency bump, config) gets a one-line DoD instead. Don't apply the format for its own sake.
 
-Multi-agent costs *more* tokens per operation, not fewer: each spawn is a cold start paying 4–8k tokens of system prompt, policies, and runbook before doing any work. It is the right design anyway, for three reasons that have nothing to do with token count:
+State lives in the conversation. If the conversation is lost, re-run: `spec.md` survives, ① is pure reasoning (nearly free), and only ② costs another spawn. That is cheaper than maintaining a state machine.
 
-1. **Context window capacity** (decisive). A `t3` run touches source materials, project scans, glossary, example maps, Gherkin, design drafts, production code, tests, and evidence. A single thread would exhaust the window and trigger compaction — losing information unpredictably at the worst moment. Multi-agent loses information *by contract* instead (handoffs carry path/version/digest only).
-2. **Review independence.** A reviewer that never saw the doer's reasoning gives genuinely independent judgement.
-3. **Least privilege.** `spec-reviewer` is read-only; the orchestrator cannot touch the DB; `db-introspection-scanner` is the only MCP exit.
+## Always-on principles
 
-The cost crossover against a single long thread sits near **10 operations** (spawn fixed cost vs. quadratic context accumulation). `t2` (9) and `t3` (14) are at or above it; `t1` (5) and the discovery tiers sit below it and are deliberately thin; `t0` is at zero.
+1. **Irreversibility is confirmed, not inferred.** Two questions, asked at ⑥ and required in every `sa-analyst` option: does it touch **existing data or live traffic**? do **consumers I don't control** see a difference? Either yes → stop and get the user's answer. Providing a contract counts; consuming someone else's does not. QA's automation is such a consumer — see the Gherkin section.
+2. **Safe change.** Migrations, DB access, smoke tests, and starting a web/API surface require explicit user approval. This never relaxes with change size.
+3. **Secret safety.** Never write credentials, connection strings, API keys, or DLP mapping tables to `bdd-docs/`, artifacts, logs, or prompts.
+4. **Green means green.** `failed == 0` and `skipped == 0`. A skip is not a pass — it is reported as a risk.
+5. **Minimal implementation.** Build what the acceptance criteria ask for. Input validation, error handling, security, and necessary tests are not "extra" and are never cut in the name of minimalism.
+6. **Bounded vs unbounded unknowns.** Bounded (single verifiable answer, ≤3 read-only operations) → the agent resolves it itself. Unbounded (needs logic reconstruction, cross-system comparison, live DB, binary files, or no unique answer) → return `blocked` with what to look for and what was already checked. An unbounded unknown is never absorbed by scanning wider.
 
-- Routing facts live in `route-profiles.json`; the decision procedure and tier table are **embedded in `bdd-orchestrator`'s system prompt** and never read at runtime. Escalation procedure, per-tier detail, and scan cost live in `.codex/bdd-workflow/runbooks/tier-routing.md`, read only on a hit.
-- The chosen tier is stored in `bdd-docs/runs/{run-id}/workflow-state.json` `runtime-metadata.tier` and reused on resume — never re-assessed mid-run. Handoffs carry it in the `tier:` field.
-- **Uncertainty is never absorbed by raising the delivery tier.** Discovering that current state or feasibility is unknown stops delivery and opens a `probe`/`spike` run. Raising the tier does not make you know more; it only makes not-knowing more expensive.
-- If the tier is never confirmed, the default is **`t1`** — neither `t0` (which gives up doer/orchestrator separation) nor `t3` (an unconfirmed tier is not evidence of irreversibility).
-- Escalation is allowed at any time and stops the current delegation; downgrade requires an explicit user request.
-- **Every tier is capped, `t3` included.** Exceeding it means the slicing is too fine or the scope too large — checkpoint and split into multiple runs.
-- Tier selection never overrides secret safety, DLP masking, safe-change approvals, or smoke-test/DB approvals. Green-light thresholds do not drop with tier: `t0`'s equivalent is `failed == 0 && skipped == 0` on the relevant existing tests.
+## Enforcement
 
-### The discovery handoff is the largest single token lever
+Rules in prompts are honour-system; these are not.
 
-A `probe`/`spike` run's **only** carry-over is `bdd-docs/runs/{run-id}/artifacts/probe-findings.md`, capped at **2000 characters** (`templates/probe-findings.md`). Conclusions and evidence refs only — no exploration narrative.
+- **`.codex/scripts/handoff-lint.ps1`** (`PreToolUse`, before every spawn) blocks on: handoff > 1200 chars, multiple `mode:` declarations, missing `mode` or `feature-id`, `mode: build|fix|code` without a `spec.md` **path**, `mode: fix` without `round` or past round 3, and forbidden payloads (connection strings, secret literals, DLP mapping tables, long test output).
+- **`.codex/scripts/dlp-gate.ps1`** + **`dlp-residual-scan.ps1`** (`PostToolUse`) scan written artifacts. The residual scanner never emits matched values — only category, count, and line refs.
+- **`.codex/scripts/build-check.ps1`** (`PostToolUse`, debounced) catches broken production-code edits early.
+- **`.codex/scripts/agent-lint.ps1`** checks the config itself: AGENT-CORE identical across all agents, TOML structure, roster ↔ delegation table both directions, dangling policy/runbook/script/skill refs, and residue of v4-removed concepts.
+- **`.codex/scripts/tests/run-tests.ps1`** — fixture tests for all of the above. Every check has a "deliberately broken input must go red" case, because a check that catches nothing is worse than no check.
 
-`gate-probe` approval **ends the run**, and its recommended, first-listed option is "conclude and open the delivery run in a new conversation". The reason is arithmetic: the orchestrator's context is re-sent every turn, so 30k of exploration history riding along through 30 more delivery turns is 30k × 30 in token-turn rent. The exploration transcript has no residual value once the findings file exists — so it is discarded, and delivery starts from clean context.
+## Paths
 
-The old model absorbed uncertainty by inflating the delivery run, which paid that rent in full.
+- Agents: `.codex/agents/`
+- Scripts and hooks: `.codex/scripts/`, `.codex/hooks.json`
+- Version: `.codex/bdd-workflow/bdd-workflow-version.json`
+- DB policy: `.codex/bdd-workflow/policies/db-mcp-introspection-policy.md`
+- Skills: `.agents/skills/`
+- Runtime output (in the consuming project): `bdd-docs/`
 
-### Enforcement
+## Tool mapping
 
-Budgets and handoff rules are not honour-system. `.codex/scripts/handoff-lint.ps1` runs as a `PreToolUse` hook before every subagent spawn and blocks on: handoff > 1200 chars, multiple `mode:` declarations, missing `mode`/`tier`, `tier` outside `probe|spike|t0|t1|t2|t3`, **any spawn under `t0`**, **delivery-type modes under a discovery tier**, forbidden payloads (connection strings, secret literals, DLP mapping tables, long test output), `quality-loop.iteration >= 3` with `last-verdict: FAIL`, and `subagent-calls.count` at or above the tier's `max-subagent-calls`.
+- `agent` delegation → Codex custom subagent spawning
+- `edit` / `editFiles` → `apply_patch`
+- `execute` / `runInTerminal` → Codex shell under the current sandbox and approval policy
+- `vscode_askQuestions` → explicit user confirmation in the parent Codex conversation
 
-`.codex/scripts/agent-lint.ps1` check 9 binds the orchestrator's embedded tier table to `route-profiles.json`. Drift there would let the hook block a spawn the model believes is legal — the hardest failure mode to diagnose.
+Source tool lists are behaviour guidance, not a permission boundary. Codex sandbox, approval, hooks, and MCP settings are the actual enforcement layer.
 
-## Codex Paths
+## Skills (load on hit, never preload)
 
-- Workflow contract: `.codex/bdd-workflow/workflow-contract.json`
-- Policies: `.codex/bdd-workflow/policies/`
-- Runbooks: `.codex/bdd-workflow/runbooks/`
-- Handoff templates: `.codex/bdd-workflow/templates/`
-- Supporting instructions: `.codex/bdd-workflow/instructions/`
-- Repo skills: `.agents/skills/`
-- Runtime state and artifacts: `bdd-docs/`
+- `requirement-gap-analysis` — BA gap checklist, read once when entering ①
+- `gherkin-authoring` — writing acceptance criteria and step definitions QA can build on
+- `safe-change` — change boundaries, migrations, public contracts, DB risk
+- `test-reliability` — flaky tests, suspected false green
+- `impact-analysis` — unknown blast radius
+- `interruption-recovery` — timeouts, cancellations, partial returns
 
-## Lean SDLC Scope
+## Upgrading from v3.x
 
-The BDD orchestrator aligns only these SDLC stages with explicit artifacts and evidence:
-
-- 需求收集: requirement list, source-materials register, background summary, pain points, business goals, open questions.
-- 需求分析: requirement spec, user stories, acceptance criteria, example map, Gherkin draft, priority, domain glossary.
-- 系統分析: flow-description, system boundary summary, integration list, data requirements analysis, project profile, impact report, source conflicts.
-- 程式開發: Gherkin final, ATDD skeleton, step definitions, production code, unit tests, focused test evidence, build/test summary, code review findings.
-- 設計橋接 (draft): API contract draft, ER model + data dictionary, sequence diagrams, module/transaction-boundary/error-code draft, design traceability, design review findings.
-- 整合驗證 (evidence): contract test evidence, integration test evidence, smoke test evidence, delivery-gate review findings.
-
-`living-doc` owns the *structure* of `bdd-docs/runs/{run-id}/artifacts/lean-sdlc-checklist.md` (creation at `new-run`, full-table validation at `lint`); day-to-day row status transitions are orchestrator-written at every tier. Every stage boundary should update checklist rows with path, status, owner agent, last updated, evidence refs, and not-applicable reason when needed.
-
-Design-bridge artifacts are drafts and integration-verification artifacts are evidence; both are lean-scoped and do NOT equal formal API/ER Model review or formal integration/E2E test reports.
-
-Out of scope for this orchestrator: architecture design, program design review, formal functional/integration QA governance, release readiness, deployment guides, rollback plans, release notes, ADRs, formal E2E reports, and equivalent governance artifacts.
-
-## Minimal Implementation Guardrail
-
-Ponytail marketplace is optional. This repo uses local Codex instructions as the source of truth for coding minimalism, with `.codex/bdd-workflow/policies/minimal-implementation-policy.md` as the policy path.
-
-- Apply the guardrail to `tdd-implementer`, `code-reviewer`（`mode: tdd`）, and `project-scanner` when scanning for reuse candidates.
-- Before adding code, prefer existing behavior, existing helpers/patterns, standard-library/native features, then already-installed dependencies.
-- Do not add frameworks, dependencies, abstractions, broad refactors, boilerplate, or future-proofing unless explicitly approved through the orchestrator.
-- Minimalism never overrides Gate rules, lean SDLC checklist/evidence, DLP/secret safety, safe-change approvals, validation, error handling, security, accessibility, tests, or build evidence.
-- If Ponytail plugin is installed later, treat it as an auxiliary productivity layer; review and trust its hooks before applying it broadly, and avoid starting BDD workflows in ultra mode.
-
-## Loading Order
-
-When starting or resuming a BDD workflow, read only the minimum context in this order:
-
-1. `.codex/bdd-workflow/bdd-workflow-version.json` — version compatibility only.
-2. `bdd-docs/workflow-state.json`.
-3. Active run `workflow-state.json` runtime metadata (including `runtime-metadata.tier`, `quality-loop`, and `subagent-calls`), `index.md`, and recent or delta `log.md` entries. A delivery run handed off from a discovery run reads `probe-findings.md` instead of the discovery run's `log.md` or checkpoints.
-4. The relevant context pack path and short summary.
-5. Full artifacts only when needed for a gate, reviewer, repair, or digest mismatch.
-
-**Do not read `workflow-contract.json` at startup.** It is a pointer file: the version lives in the version file, gate conditions in each gate's own confirmation file. Reading it whole costs ~3k tokens that then stay resident for the entire run. Read it only on a version-check failure, or when `compiled-context` / `operations` / `repo-index` detail is actually needed.
-
-**`route-profiles.json` is never read by any agent** (`llm-read: false`). The tier table is embedded in `bdd-orchestrator`'s system prompt instead, because the real cost of a runtime read is not the file size — it is the extra turn, which in a long conversation means re-sending the whole history. The JSON file exists for two mechanical consumers only: `handoff-lint.ps1` (spawn budgets) and `agent-lint.ps1` check 9 (drift detection against the embedded copy).
-
-Everything else is read on demand only: per-gate confirmation files, `lean-sdlc-schema.json`, `agent-skill-matrix.json`, policies, and runbooks are all pointer-loaded, never preloaded.
-
-## User Confirmation
-
-- Use explicit user confirmation for workflow start, resume, gate passage, phase switching, conflict decisions, smoke tests, DB introspection, and high-risk changes.
-- Gate passage confirmation must name the Gate, the next stage, the document refs the user should review, and the concrete verification checklist. Read the single file `.codex/bdd-workflow/gate-confirmations/{gate-id}.json` — it carries that gate's `requires`, documents, and checklist — plus `.codex/bdd-workflow/templates/gate-confirmation.md`; never ask only a generic "continue/pass Gate?" question. The orchestrator also carries a compact gate matrix in its own prompt so it does not spend a turn just to learn what to ask.
-- Before asking for Gate passage, repair missing/stale artifact refs or incomplete lean SDLC checklist rows; Gate confirmations must reference path/version/digest/evidence refs, not full artifacts. (`living-doc` only exists at `t3`; below that the orchestrator repairs them itself.)
-- `gate-contract` must be reached **before any production implementation**, and `gate-migration`/`gate-release` approve irreversibility — "the code looks fine" is not an approval basis for those two. `rollback-plan` may never be marked `not-applicable`; if something genuinely cannot be reversed, that must be stated and explicitly accepted by the user.
-- Where the gate file offers `approve-and-resume-in-new-conversation`, present it alongside plain approval. Everything the orchestrator reads stays in the conversation and is re-sent every subsequent turn, so a long run pays for its own history; a Gate is the one point where the checkpoint is complete enough that starting a fresh conversation loses nothing. It is a variant of approval, not an extra question, and not a pause — the run is already approved into the next stage. Recommend it once `subagent-calls.count` − `count-at-last-reset` reaches 3. **At `gate-probe` the reset is mandatory, not optional.**
-- If confirmation is canceled, skipped, or incomplete, treat approval as not granted. Ask once more in a shorter form; if still unresolved, stop the high-risk step.
-- DB introspection must first confirm the schema source strategy: user-provided schema/DDL/screenshot, code/doc inference, approved read-only DB MCP, or no DB introspection.
-- Live DB access is MCP-only and must follow `.codex/bdd-workflow/policies/db-mcp-introspection-policy.md`. If no DB MCP tool is available in the current Codex session, `db-introspection-scanner` must return `blocked` and use manual schema/source alternatives.
-- Never store DB credentials, connection strings, MCP secrets, or row-level sensitive data in repo files, prompts, logs, or artifacts.
-
-## Tool Mapping
-
-- Source `agent` delegation maps to Codex custom subagent spawning.
-- Source `edit` / `editFiles` maps to `apply_patch`.
-- `bdd-orchestrator` writes run state and single-fact records directly, at every tier — `log.md` (append only), `workflow-state.json`, `checkpoints/{stage}`, existing rows in `lean-sdlc-checklist.md`, `decision-log.md`, gate confirmation records, `mask-audit.md`, `.dlp-disabled`, and `db-select-authorization.md`. These are facts it already holds when the user confirms or a doer returns, so delegating them saves no reading and costs one spawn. Content artifacts are written by the doer that produced them, together with that artifact's sidecar digest. What still goes through `living-doc` is only what requires reading several upstream artifacts to produce: the run skeleton, cross-stage context packs, and doc lint/archive. Auditability is unaffected — the same records are still written, just by the agent that already has them.
-- Source `execute` / `runInTerminal` maps to Codex shell commands under the current sandbox and approval policy.
-- Source `vscode_askQuestions` / `vscode/askQuestions` maps to explicit user confirmation in the parent Codex conversation.
-- Source tool lists are behavior guidance, not a strict permission boundary. Use Codex sandbox, approval, hooks, and MCP settings as the actual enforcement layer.
-
-## Lazy Skill Loading
-
-Use `.agents/skills` only when the active task matches the skill trigger. Do not preload downstream skills just because the user expects a full BDD workflow.
-
-- Quality loop and verdict parsing: `quality-loop`
-- Interrupted runs, timeouts, partial completions, and transport failures: `interruption-recovery`
-- Safe change boundaries, migrations, public contracts, DB risk: `safe-change`
-- Flaky tests and environment instability: `test-reliability`
-- Unknown blast radius or impact: `impact-analysis`
-
-## Keep `.github` Stable
-
-The `.github` agent, skill, hook, and instruction files remain as the GitHub Copilot source version. Do not edit them during Codex workflow runs unless the user explicitly asks to maintain the Copilot version.
+v4.0.0 is a clean break with no resume path. It removed the entire tier layer (`discover`/`t0`–`t3`), five gates, the run skeleton, and every run state file; it merged 12 agents into 5. A `bdd-docs/runs/` directory written by v3 is not readable by v4 — finish or abandon those runs before upgrading. Design reasoning lives in `docs/design-rationale.md` (for maintainers; never read at runtime).

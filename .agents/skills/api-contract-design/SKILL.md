@@ -12,7 +12,7 @@ description: 從 domain rules、examples、candidate models 產出 OpenAPI 3.1 d
 ## 使用時機
 
 - Gherkin 定稿、domain glossary、example map 已就緒，功能有對外 API 介面。
-- 無對外 API（純 UI / 純函式庫 / 純批次）時，於 lean-sdlc-checklist 標記 `not-applicable` + reason。
+- 無對外 API（純 UI／純函式庫／純批次）時**不要產出契約** —— 在回傳裡說一句「無對外介面，不需契約」即可。
 
 ## 輸入
 
@@ -67,7 +67,7 @@ components:
 - ...
 
 ## Next Skill
-建議下一步：spec-reviewer (mode: design) 審核 → contract-testing（P0-3）
+建議下一步：交回 orchestrator 走 ③ 定案；契約有破壞性變更時，`reviewer`（`mode: spec`）必審
 ````
 
 ## Quality Gate

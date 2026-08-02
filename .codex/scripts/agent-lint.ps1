@@ -6,34 +6,26 @@
 #
 # 檢查項：
 #   1. AGENT-CORE 區塊在所有 agent 中逐字相同
-#   2. TOML 結構：''' 配對、必要 key 齊全
-#   3. 每個 agent 都登錄於 agent-skill-matrix.json（且無多餘項）
-#   4. 引用的 policy / runbook / script 路徑真實存在
-#   5. 無已知的過時引用
-#   6. bdd-workflow-version.json 與 contract 的版本號一致
-#      （啟動只讀版本檔，兩者不一致等於啟動讀到錯的相容性資訊）
-#   7. route-profiles 用到的每個 gate 都有對應的 gate-confirmations 檔且帶 requires
-#      （缺檔會讓該 profile 的 Gate 變成即席拼裝 —— 使用者核准的驗證清單將不確定）
-#   8. AGENT-CORE 內嵌的回傳 shape 與 return-contract-policy.md 一致
-#   9. bdd-orchestrator 內嵌的 tier 表與 route-profiles.json 的 tier／預算一致
-#      （orchestrator 依內嵌表決策、handoff-lint 依 JSON 阻斷 —— 漂移會讓 hook
-#       在模型認為合法時擋下 spawn，那是最難診斷的失敗模式）
-#  10. gate 宣告的 findings-required-sections 在對應 template 中都存在
-#      （gate 依段落驗證、template 是產出端規格 —— 漂移會讓 gate 通過卻什麼都沒驗到）
-#  11. 定義了合併 mode 的代理不得保留「一次只處理一個 mode」的裸切片守門句
-#      （合併前的殘留規則會讓代理挑保守讀法，把合併靜默作廢、退回逐一 mode 呼叫）
+#   2. TOML 結構：''' 配對、必要 key 齊全、name 與檔名一致
+#   3. agent 名冊與 orchestrator 委派表雙向一致
+#      （沒被路由到的 agent 永遠不會被叫起來；路由到不存在的 agent 會在執行期才炸）
+#   4. 引用的 policy / runbook / script / skill 路徑真實存在
+#   5. 無 v4.0.0 已移除的概念殘留
+#      （這是本次重構最高價值的檢查：tier／gate／run 狀態／已刪除的 agent 名稱
+#        散落在十幾個檔裡，漏一處的症狀通常是「執行期被擋下，而訊息指向錯的原因」）
+#   6. bdd-workflow-version.json 可解析且帶版本號
+#
+# v4.0.0 移除的檢查：skill matrix 覆蓋、gate 定義完整性、回傳 shape 對 policy 檔、
+# tier 表對 route-profiles、findings 段落對 template、合併 mode 矛盾、文件 tier 預算。
+# 它們守的東西（gate 檔、tier 表、route-profiles、living-doc、design-modeler）都已不存在。
 #
 # Exit: 0 = 全部通過；2 = 有違規。
 
 [CmdletBinding()]
 param(
-    [string]$AgentDir    = '.codex/agents',
-    [string]$Matrix      = '.codex/bdd-workflow/agent-skill-matrix.json',
-    [string]$Contract      = '.codex/bdd-workflow/workflow-contract.json',
+    [string]$AgentDir      = '.codex/agents',
+    [string]$Orchestrator  = 'bdd-orchestrator',
     [string]$VersionFile   = '.codex/bdd-workflow/bdd-workflow-version.json',
-    [string]$RouteProfiles = '.codex/bdd-workflow/route-profiles.json',
-    [string]$GateDir       = '.codex/bdd-workflow/gate-confirmations',
-    [string]$ReturnPolicy  = '.codex/bdd-workflow/policies/return-contract-policy.md',
     [switch]$Json
 )
 
@@ -82,17 +74,36 @@ foreach ($a in $agents) {
     }
 }
 
-# ---- 3. skill matrix 覆蓋 ----
-if (Test-Path $Matrix) {
-    try {
-        $m = (Get-Content $Matrix -Raw | ConvertFrom-Json).'agent-skill-matrix'
-        $inMatrix = @($m.PSObject.Properties.Name)
-        $onDisk   = @($agents.BaseName)
-        foreach ($d in $onDisk)   { if ($d -notin $inMatrix) { Add-V 'matrix-missing' $d '加入 agent-skill-matrix.json' } }
-        foreach ($i in $inMatrix) { if ($i -notin $onDisk)   { Add-V 'matrix-orphan'  $i '該 agent 已不存在，從矩陣移除' } }
-    } catch { Add-V 'matrix-unparsable' $Matrix '修正 agent-skill-matrix.json 的 JSON 格式' }
+# ---- 3. agent 名冊 ↔ orchestrator 委派表 雙向一致 ----
+# 取代了舊的 agent-skill-matrix.json 覆蓋檢查。矩陣是第二份會走鐘的名冊；
+# orchestrator 的委派表本來就是唯一真正決定「誰會被叫起來」的地方，直接綁它。
+$orchPath = Join-Path $AgentDir "$Orchestrator.toml"
+if (-not (Test-Path $orchPath)) {
+    Add-V 'orchestrator-missing' $orchPath "orchestrator 是唯一的 top-level 入口，缺檔則整套流程無法啟動"
 } else {
-    Add-V 'matrix-missing-file' $Matrix '建立 agent-skill-matrix.json'
+    $orchText = Get-Content $orchPath -Raw
+    $onDisk = @($agents.BaseName | Where-Object { $_ -ne $Orchestrator })
+
+    foreach ($d in $onDisk) {
+        if ($orchText -notmatch [regex]::Escape("``$d``")) {
+            Add-V 'agent-not-routed' $d `
+                  "bdd-orchestrator 的委派表沒有提到它 —— 沒有路由的 agent 永遠不會被叫起來"
+        }
+    }
+
+    # 委派表列： | 要什麼 | `agent-name` | mode |
+    $routeSection = [regex]::Match($orchText, '(?s)##\s*委派.*?(?=\r?\n##\s|\Z)')
+    if ($routeSection.Success) {
+        foreach ($row in [regex]::Matches($routeSection.Value, '(?m)^\|[^|]*\|\s*`([a-z][a-z0-9-]*)`\s*\|')) {
+            $target = $row.Groups[1].Value
+            if ($target -notin $onDisk) {
+                Add-V 'route-to-unknown-agent' "委派表指向 ``$target``，但 $AgentDir 沒有這個 agent" `
+                      '修正 agent 名稱或建立該 agent —— 這個錯誤要到執行期 spawn 失敗才會出現'
+            }
+        }
+    } else {
+        Add-V 'route-table-missing' 'bdd-orchestrator.toml' '「## 委派」段落遺失；沒有它就沒有任何機械可查的路由來源'
+    }
 }
 
 # ---- 4. 引用路徑存在性 ----
@@ -115,207 +126,82 @@ foreach ($a in $agents) {
         }
     }
 }
-
-# ---- 5. 已知過時引用 ----
-$stale = @('agent-common\.md', 'bdd-orchestrator\.agent\.md', 'route-hints', 'gate-m1', 'gate-m2',
-           '(?<![`a-z-])(domain|discovery|formulator|design)-reviewer(?![`a-z-])',
-           # v2.0.0：tier 詞彙由 lite/standard/full 改為 probe/spike/t0..t3。
-           # 只比對 tier 值位置與已移除的 gate id，避免誤傷 "full-index"、"標準" 等合法用字。
-           'tier\s*[:：]\s*(lite|standard|full)\b',
-           '`(lite|standard|full)`',
-           'profile-(lite|standard|full)\b',
-           'gate-(lite|std-1|std-2)\b',
-           '(?<![a-z-])gate-[a-e](?![a-z0-9-])',
-           'complexity-assessment', 'complexity-routing',
-           'runtime-metadata\.profile')
+# skill 引用：skill `name` → .agents/skills/{name}/SKILL.md
 foreach ($a in $agents) {
     $t = Get-Content $a.FullName -Raw
-    foreach ($s in $stale) {
-        if ($t -match $s) { Add-V 'stale-ref' "$($a.Name): $s" '該檔／概念已移除，更新引用' }
+    foreach ($mm in [regex]::Matches($t, 'skill\s+`([a-z0-9-]+)`')) {
+        $skill = $mm.Groups[1].Value
+        if (-not (Test-Path ".agents/skills/$skill/SKILL.md")) {
+            Add-V 'dangling-skill-ref' "$($a.Name) -> skill ``$skill``" '修正 skill 名稱或建立 .agents/skills/{name}/SKILL.md'
+        }
     }
 }
 
-# ---- 6. 版本檔與 contract 一致 ----
-$contractJson = $null
-if ((Test-Path $Contract) -and (Test-Path $VersionFile)) {
+# ---- 5. v4.0.0 已移除的概念殘留 ----
+# 這一類缺陷的症狀特別惡劣：殘留的舊詞彙會讓 agent 在執行期發出已不合法的欄位，
+# 而 hook 的錯誤訊息通常指向「缺少 X」而不是「X 的值已過期」—— 最難診斷的那種。
+# 因此模式寫得寧可嚴一點，誤報成本遠低於漏報。
+$stale = @(
+    # tier 系統（v4.0.0 整層移除，改為「這件事可不可逆」單一提問）
+    '(?i)\btier\b',
+    '`t[0-3]`',
+    '`discover`',
+    # gate 系統（改為對話式確認點）
+    'gate-(probe|close|contract|migration|release)\b',
+    'gate-confirmations?/',
+    # run 狀態機（改為無狀態，狀態活在對話裡）
+    'run-id',
+    'workflow-state',
+    'checkpoints?/',
+    'probe-findings',
+    'context-pack',
+    'decision-log',
+    'lean-sdlc',
+    'source-materials-register',
+    'subagent-calls',
+    'quality-loop',
+    'route-profiles',
+    'workflow-contract',
+    'agent-skill-matrix',
+    # 已刪除的 agent。用反引號形式比對 —— agent 引用一律帶反引號，
+    # 而裸字比對會誤傷（`-match` 在 PowerShell 大小寫不敏感，`analyst` 會命中標題 "SA Analyst"）。
+    '`analyst`',
+    '`formulator`',
+    '`project-scanner`',
+    '`atdd-automator`',
+    '`tdd-implementer`',
+    '`spec-reviewer`',
+    '`code-reviewer`',
+    '`design-modeler`',
+    '`integration-tester`',
+    '`living-doc`',
+    # 已改名的回傳狀態
+    'partial-completed',
+    'needs-probe',
+    # 更早期已移除的詞彙
+    'agent-common\.md',
+    'bdd-orchestrator\.agent\.md',
+    'complexity-(assessment|routing)'
+)
+foreach ($a in $agents) {
+    $t = Get-Content $a.FullName -Raw
+    foreach ($s in $stale) {
+        if ($t -match $s) { Add-V 'stale-ref' "$($a.Name): /$s/" 'v4.0.0 已移除該概念，更新或刪除該處' }
+    }
+}
+
+# ---- 6. 版本檔 ----
+if (Test-Path $VersionFile) {
     try {
-        $contractJson = Get-Content $Contract -Raw | ConvertFrom-Json
         $ver = Get-Content $VersionFile -Raw | ConvertFrom-Json
         foreach ($k in @('contract-version', 'min-compatible-version')) {
-            if ($ver.$k -ne $contractJson.$k) {
-                Add-V 'version-file-drift' "$k : version-file=$($ver.$k) contract=$($contractJson.$k)" `
-                      "同步 $VersionFile —— 啟動只讀此檔，不一致會讀到錯的相容性資訊"
+            if ($ver.$k -notmatch '^\d+\.\d+\.\d+$') {
+                Add-V 'version-invalid' "${k}=$($ver.$k)" '須為 semver（例如 4.0.0）'
             }
         }
     } catch { Add-V 'version-file-unparsable' $VersionFile '修正 JSON 格式' }
 } else {
-    Add-V 'version-file-missing' $VersionFile '建立版本檔（啟動讀取來源）'
-}
-
-# ---- 7. gate 定義完整性 ----
-$profiles = $null
-if (Test-Path $RouteProfiles) {
-    try { $profiles = (Get-Content $RouteProfiles -Raw | ConvertFrom-Json).profiles }
-    catch { Add-V 'route-profiles-unparsable' $RouteProfiles '修正 JSON 格式' }
-} else {
-    Add-V 'route-profiles-missing' $RouteProfiles '建立 route-profiles.json（啟動路由讀取來源）'
-}
-if ($profiles) {
-    $needed = @()
-    foreach ($p in $profiles.PSObject.Properties) { $needed += @($p.Value.gates) }
-    $needed = @($needed | Where-Object { $_ } | Sort-Object -Unique)
-
-    foreach ($g in $needed) {
-        $gf = Join-Path $GateDir "$g.json"
-        if (-not (Test-Path $gf)) {
-            Add-V 'gate-confirmation-missing' "$g (由 route-profiles 啟用)" `
-                  "建立 $gf —— 缺檔會讓該 Gate 每次即席拼裝，使用者核准的驗證清單將不確定"
-            continue
-        }
-        try {
-            $gj = Get-Content $gf -Raw | ConvertFrom-Json
-            foreach ($k in @('gate-id', 'requires', 'documents-to-review', 'user-verification-checklist', 'next-stage-if-approved')) {
-                if (-not $gj.$k) { Add-V 'gate-confirmation-incomplete' "${g}: 缺 $k" "補上 $k" }
-            }
-            if ($gj.'gate-id' -and $gj.'gate-id' -ne $g) {
-                Add-V 'gate-id-mismatch' "${gf}: gate-id=$($gj.'gate-id')" 'gate-id 必須與檔名一致'
-            }
-            foreach ($src in @($gj.merges)) {
-                if ($src -and -not (Test-Path (Join-Path $GateDir "$src.json"))) {
-                    Add-V 'gate-merge-dangling' "$g merges $src（不存在）" '修正 merges 或建立來源 gate 檔'
-                }
-            }
-        } catch { Add-V 'gate-confirmation-unparsable' $gf '修正 JSON 格式' }
-    }
-}
-
-# ---- 8. AGENT-CORE 內嵌的回傳 shape 與 policy 檔一致 ----
-# 回傳合約已從「每次 spawn 讀 policy」改為「內嵌於 AGENT-CORE」（可跨同 agent 重複呼叫命中 cache）。
-# 內嵌就有漂移風險 —— 這裡把 policy 檔與內嵌區塊綁在一起。
-if ($cores.Count -gt 0 -and (Test-Path $ReturnPolicy)) {
-    $fence = '(?s)```text\s*(.*?)```'
-    $refCore = $cores[($cores.Keys | Sort-Object)[0]]
-    $inCore = [regex]::Match($refCore, $fence)
-    $inPol  = [regex]::Match(((Get-Content $ReturnPolicy -Raw) -replace "`r`n", "`n"), $fence)
-    if (-not $inCore.Success) {
-        Add-V 'core-return-shape-missing' 'AGENT-CORE' '內嵌回傳 shape 的 ```text 區塊遺失'
-    } elseif (-not $inPol.Success) {
-        Add-V 'return-policy-shape-missing' $ReturnPolicy '該檔的 ```text Minimal Shape 區塊遺失'
-    } else {
-        $a = ($inCore.Groups[1].Value -replace '\s+', ' ').Trim()
-        $b = ($inPol.Groups[1].Value  -replace '\s+', ' ').Trim()
-        if ($a -ne $b) {
-            Add-V 'return-shape-drift' 'AGENT-CORE vs return-contract-policy.md' `
-                  '兩處的回傳 shape 已不一致；以 policy 檔為準同步 AGENT-CORE 並重跑本腳本'
-        }
-    }
-}
-
-# ---- 9. bdd-orchestrator 內嵌的 tier 表與 route-profiles.json 一致 ----
-# tier 表已從「執行期讀 route-profiles.json」改為「內嵌於 orchestrator 系統提示」。
-# 理由：一次執行期讀取的真正成本是它多花的那一輪（在長對話裡等於重送整份歷史），
-# 不是檔案大小。內嵌就有漂移風險 —— 這裡把 JSON 與內嵌表綁在一起。
-# route-profiles.json 仍是 handoff-lint 的機械來源，兩者必須說同一件事。
-$orch = Join-Path $AgentDir 'bdd-orchestrator.toml'
-if ($profiles -and (Test-Path $orch)) {
-    $ot = Get-Content $orch -Raw
-    # 表列格式： | `tier` | ≤N 或 **N** 或 **≤ B + N** | `gate-x` | ... |
-    # 第一段數字即該 tier 的上限（物件形式則為 base）；整格文字另存供 N 相關性檢查。
-    $embedded = @{}
-    $embeddedCell = @{}
-    foreach ($row in [regex]::Matches($ot, '(?m)^\|\s*`([a-z][a-z0-9]*)`\s*\|([^|]*?(\d+)[^|]*)\|')) {
-        $embedded[$row.Groups[1].Value] = [int]$row.Groups[3].Value
-        $embeddedCell[$row.Groups[1].Value] = $row.Groups[2].Value
-    }
-    $declared = @($profiles.PSObject.Properties.Name)
-
-    if ($embedded.Count -eq 0) {
-        Add-V 'tier-table-missing' 'bdd-orchestrator.toml' `
-              '內嵌 tier 表遺失；沒有它 orchestrator 會退回執行期讀 route-profiles.json（每 run 多付一輪）'
-    } else {
-        foreach ($t in $declared) {
-            if (-not $embedded.ContainsKey($t)) {
-                Add-V 'tier-table-missing-row' "$t（route-profiles 有，內嵌表沒有）" `
-                      'bdd-orchestrator 的 tier 表補上該列 —— 缺列的 tier 在執行期無法路由'
-            } else {
-                # 上限可為數字，或 {base, per-behaviour}（按行為切片的 tier）。
-                $rawCap = $profiles.$t.'max-subagent-calls'
-                $isScaled = $rawCap -is [System.Management.Automation.PSCustomObject]
-                $expected = if ($isScaled) { [int]$rawCap.base } else { [int]$rawCap }
-                if ($embedded[$t] -ne $expected) {
-                    Add-V 'tier-budget-drift' `
-                          "${t}: 內嵌=$($embedded[$t]) route-profiles=$(if ($isScaled) { "base=$expected" } else { $expected })" `
-                          'orchestrator 依內嵌表決策、handoff-lint 依 JSON 阻斷；不一致會讓 hook 在模型認為合法時擋下 spawn'
-                }
-                # 隨 N 變動的上限，內嵌表必須看得出來是變動的 —— 否則模型會以為是固定值而過早停手。
-                if ($isScaled -and $embeddedCell[$t] -notmatch 'N') {
-                    Add-V 'tier-budget-scaling-undeclared' `
-                          "${t}: route-profiles 為 {base, per-behaviour}，內嵌表卻寫成固定值「$($embeddedCell[$t].Trim())」" `
-                          '內嵌表該列須標明隨 N 變動（例如「≤ 20 + N」），否則 orchestrator 會照固定值決策'
-                }
-            }
-        }
-        foreach ($e in $embedded.Keys) {
-            if ($e -notin $declared) {
-                Add-V 'tier-table-orphan-row' "$e（內嵌表有，route-profiles 沒有）" `
-                      '移除該列或在 route-profiles.json 補上定義'
-            }
-        }
-    }
-}
-
-# ---- 10. gate 宣告的 findings 段落必須在對應 template 中存在 ----
-# Gate 依 findings 的段落做驗證，template 是產出端的唯一規格。
-# 兩者漂移的後果：gate 檢查一個沒有人會寫出來的段落，或 template 有段落而 gate 從不看 ——
-# 兩種都是「通過了但什麼都沒驗到」，正是形式檢查最危險的失敗模式。
-$sectionSources = @{
-    'gate-probe' = '.codex/bdd-workflow/templates/probe-findings.md'
-}
-foreach ($gid in $sectionSources.Keys) {
-    $gf = Join-Path $GateDir "$gid.json"
-    $tpl = $sectionSources[$gid]
-    if (-not (Test-Path $gf)) { continue }
-    if (-not (Test-Path $tpl)) {
-        Add-V 'findings-template-missing' "$gid -> $tpl" '建立該 template 或修正 gate 的段落來源對應'
-        continue
-    }
-    try {
-        $gj = Get-Content $gf -Raw | ConvertFrom-Json
-        $need = @($gj.'findings-required-sections')
-        if ($need.Count -eq 0) {
-            Add-V 'findings-sections-undeclared' $gid `
-                  "在 $gid.json 加入 findings-required-sections —— 沒有它，gate 與 template 之間沒有任何機械綁定"
-        } else {
-            $tplText = Get-Content $tpl -Raw
-            foreach ($s in $need) {
-                if ($tplText -notmatch [regex]::Escape("## $s")) {
-                    Add-V 'findings-section-drift' "$gid 要求 '## $s'，$tpl 沒有" `
-                          'template 補上該段落，或從 gate 的 findings-required-sections 移除'
-                }
-            }
-        }
-    } catch { Add-V 'gate-confirmation-unparsable' $gf '修正 JSON 格式' }
-}
-
-# ---- 11. 定義了合併 mode 的代理，不得同時保留「一次只處理一個 mode」的切片守門 ----
-# 這是已經發生過兩次的缺陷類型：v2.0.0 的 consolidation 加了 foundation/elaboration
-# 與 mode: all，卻沒刪掉合併前那句切片守門，於是同一份 prompt 裡隔數十行講反話。
-# AGENT-CORE 的預設方向是往嚴格側倒（tier 缺漏套 t3），衝突時代理會挑保守讀法 ——
-# 也就是把合併整個作廢，退回逐一 mode 呼叫。症狀是靜默的：流程照跑，只是每次多花幾次 spawn。
-foreach ($a in $agents) {
-    $txt = Get-Content $a.FullName -Raw
-    # 合併 mode 的宣告特徵：mode 表中出現「同一 invocation」「一次完成」，或有「合併模式」段。
-    $hasMerged = $txt -match '(?m)^###?\s*合併模式' -or
-                 $txt -match '同一 invocation (內)?(依序)?完成' -or
-                 $txt -match '一次完成 \w'
-    if (-not $hasMerged) { continue }
-    # 未加豁免說明的裸切片守門句。允許帶「但」的修訂版（明確排除合併 mode 本身）。
-    foreach ($m in [regex]::Matches($txt, '(?m)^\s*[-*]\s*一次只處理一個 mode[^\r\n]*')) {
-        if ($m.Value -notmatch '但') {
-            Add-V 'merged-mode-contradiction' "$($a.Name): 「$($m.Value.Trim())」與同檔的合併模式宣告互相矛盾" `
-                  '刪除該句，或改寫成明確排除合併 mode 本身（例如「但 `all` 本身就是 mode，其內含項須在同一 invocation 完成」）'
-        }
-    }
+    Add-V 'version-file-missing' $VersionFile '建立版本檔 —— 消費端專案靠它判斷相容性'
 }
 
 # ---- 輸出 ----
@@ -331,7 +217,7 @@ $summary = [pscustomobject]@{
 if ($Json) { $summary | ConvertTo-Json -Depth 4 -Compress }
 else {
     if ($violations.Count -eq 0) {
-        "[agent-lint] OK — $($agents.Count) agents, core block in sync, no dangling or stale refs."
+        "[agent-lint] OK — $($agents.Count) agents, core block in sync, routes resolved, no dangling or stale refs."
     } else {
         [Console]::Error.WriteLine("[agent-lint] $($violations.Count) violation(s):")
         foreach ($v in $violations) {

@@ -15,12 +15,13 @@ description: 控制既有系統的安全修改邊界與遷移模式
 
 ## Safe-Change Envelope
 
-每次 feature 開始前，`project-scanner` 會建立 envelope：
+`sa-analyst` 在系統分析時就該把邊界講清楚，寫進 `spec.md` 的選定做法：
 
-- `editable-paths`：允許修改的檔案與目錄
-- `forbidden-paths`：禁止修改的檔案與目錄
-- `risky-areas`：可修改但需額外審核的區域
-- `max-impact-radius`：預期影響的最大範圍
+- **會動到的檔案與資料表** —— 具體列出，不寫「相關的服務層」
+- **不該碰的** —— 這次明確排除的區域
+- **需要額外審核的** —— 可以改，但 `reviewer` 要特別看的地方
+
+`implementer` 發現要動的範圍比這個大很多 → **停下來回 `partial`**，不要一路改下去。
 
 ## 安全遷移模式
 
@@ -47,19 +48,16 @@ description: 控制既有系統的安全修改邊界與遷移模式
 
 高風險變更需經過以下流程才能進入實作：
 
-1. `impact-analysis` 產出 impact report，標注 risk-level = high。
-2. orchestrator 在 `approval-matrix.md` 中記錄待批准項目。
-3. 輸出影響摘要到終端，請求使用者明確批准。
-4. 使用者批准後，更新 `approval-matrix.md` 與 `workflow-state.json`。
-5. 批准記錄必須包含：批准者、時間、批准範圍、附帶條件。
-6. 未經批准不得進入 `tdd-implementer` 實作高風險切片。
+1. 把影響講清楚：動到什麼、誰會受影響、出事的話怎麼回去。
+2. 以 `Codex user confirmation` 請使用者明確批准，選項要包含「不做這件事」的代價。
+3. 批准的內容寫進 `bdd-docs/{feature-id}/spec.md`：批准範圍與附帶條件。**批准以 `spec.md` 傳遞，不以對話可見性傳遞** —— 子代理是冷啟動的，看不到你們的對話。
+4. **未經批准不得委派實作。**
 
 ## 檢查清單
 
-- [ ] 變更不超出 editable-paths
-- [ ] 未觸及 forbidden-paths
-- [ ] risky-areas 的變更已有額外審核
-- [ ] 高風險變更已取得批准
+- [ ] 變更範圍不超出 `spec.md` 寫的
+- [ ] 高風險區域的變更已有獨立審核
+- [ ] 高風險變更已取得批准，且批准範圍寫在 `spec.md` 裡
 - [ ] migration 策略已確認（additive-only / data migration / breaking）
 - [ ] rollback plan 已記錄
 
