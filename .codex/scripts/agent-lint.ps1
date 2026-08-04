@@ -1,13 +1,17 @@
 # agent-lint.ps1
 # 驗證 agent 定義的結構完整性與共用核心一致性。
 #
-# 共用核心刻意內嵌在每個 toml（系統提示內，可跨同 agent 重複呼叫命中 cache），
+# **orchestrator 沒有 toml —— 它就是 AGENTS.md（最上層對話本身）。** 被 spawn 出來的
+# agent 不能再 spawn，所以 orchestrator 一旦有了 agent 定義檔就會被當成子代理叫起來，
+# 然後委派不出去。檢查 3 因此多守一條：`bdd-orchestrator.toml` 不得出現在 $AgentDir。
+#
+# 共用核心刻意內嵌在每個檔（系統提示內，可跨同 agent 重複呼叫命中 cache），
 # 而不是執行期讀共用檔。內嵌會帶來漂移風險 —— 本腳本把「重複」變成「被強制一致的重複」。
 #
 # 檢查項：
-#   1. AGENT-CORE 區塊在所有 agent 中逐字相同
+#   1. AGENT-CORE 區塊在所有 agent（含 AGENTS.md）中逐字相同
 #   2. TOML 結構：''' 配對、必要 key 齊全、name 與檔名一致
-#   3. agent 名冊與 orchestrator 委派表雙向一致
+#   3. agent 名冊與 orchestrator 委派表雙向一致，且 orchestrator 不得是可被 spawn 的 agent
 #      （沒被路由到的 agent 永遠不會被叫起來；路由到不存在的 agent 會在執行期才炸）
 #   4. 引用的 policy / runbook / script / skill 路徑真實存在
 #   5. 無 v4.0.0 已移除的概念殘留
@@ -24,9 +28,10 @@
 
 [CmdletBinding()]
 param(
-    [string]$AgentDir      = '.codex/agents',
-    [string]$Orchestrator  = 'bdd-orchestrator',
-    [string]$VersionFile   = '.codex/bdd-workflow/bdd-workflow-version.json',
+    [string]$AgentDir          = '.codex/agents',
+    [string]$Orchestrator      = 'bdd-orchestrator',
+    [string]$OrchestratorFile  = 'AGENTS.md',
+    [string]$VersionFile       = '.codex/bdd-workflow/bdd-workflow-version.json',
     [switch]$Json
 )
 
@@ -39,17 +44,32 @@ function Add-V([string]$rule, [string]$detail, [string]$fix) {
 $agents = @(Get-ChildItem $AgentDir -Filter *.toml -ErrorAction SilentlyContinue)
 if (-not $agents) { Write-Error "no agent toml under $AgentDir"; exit 2 }
 
+# 受檢文件 = 子代理 toml ＋ orchestrator（AGENTS.md）。
+# 檢查 1／4／5／6 對兩者一視同仁；只有檢查 2（TOML 結構）僅適用於 toml。
+$docs = [ordered]@{}
+foreach ($a in $agents) {
+    $docs[$a.BaseName] = [pscustomobject]@{ Label = $a.Name; Text = (Get-Content $a.FullName -Raw) }
+}
+if (Test-Path $OrchestratorFile) {
+    $docs[$Orchestrator] = [pscustomobject]@{
+        Label = (Split-Path $OrchestratorFile -Leaf)
+        Text  = (Get-Content $OrchestratorFile -Raw)
+    }
+} else {
+    Add-V 'orchestrator-missing' $OrchestratorFile `
+          'orchestrator 的指令就是這個檔（最上層對話讀的那份）—— 缺檔則整套流程沒有入口'
+}
+
 # ---- 1. AGENT-CORE 區塊逐字一致 ----
 $coreRe = '(?s)<!-- AGENT-CORE:BEGIN.*?<!-- AGENT-CORE:END -->'
 $cores = @{}
-foreach ($a in $agents) {
-    $t = Get-Content $a.FullName -Raw
-    $m = [regex]::Match($t, $coreRe)
+foreach ($k in $docs.Keys) {
+    $m = [regex]::Match($docs[$k].Text, $coreRe)
     if (-not $m.Success) {
-        Add-V 'missing-agent-core' $a.Name '內嵌 AGENT-CORE 區塊（從任一現有 agent 複製）'
+        Add-V 'missing-agent-core' $docs[$k].Label '內嵌 AGENT-CORE 區塊（從任一現有 agent 複製）'
         continue
     }
-    $cores[$a.BaseName] = ($m.Value -replace "`r`n", "`n")
+    $cores[$k] = ($m.Value -replace "`r`n", "`n")
 }
 if ($cores.Count -gt 1) {
     $ref = $cores[($cores.Keys | Sort-Object)[0]]
@@ -81,11 +101,18 @@ foreach ($a in $agents) {
 # ---- 3. agent 名冊 ↔ orchestrator 委派表 雙向一致 ----
 # 取代了舊的 agent-skill-matrix.json 覆蓋檢查。矩陣是第二份會走鐘的名冊；
 # orchestrator 的委派表本來就是唯一真正決定「誰會被叫起來」的地方，直接綁它。
-$orchPath = Join-Path $AgentDir "$Orchestrator.toml"
-if (-not (Test-Path $orchPath)) {
-    Add-V 'orchestrator-missing' $orchPath "orchestrator 是唯一的 top-level 入口，缺檔則整套流程無法啟動"
-} else {
-    $orchText = Get-Content $orchPath -Raw
+
+# orchestrator 一旦有了 agent 定義檔，就會被當成子代理 spawn 起來，而被 spawn 出來的
+# agent 拿不到 `agent` 工具 —— ② 到 ⑤ 全部委派不出去，症狀卻只是一句「工具不存在」。
+# 這道檢查是唯一在守它的東西：踩過一次，兩次冷啟動零產出收場。
+$orchToml = Join-Path $AgentDir "$Orchestrator.toml"
+if (Test-Path $orchToml) {
+    Add-V 'orchestrator-must-not-be-spawnable' $orchToml `
+          "刪掉這個檔 —— orchestrator 的指令屬於 $OrchestratorFile。被 spawn 出來的 orchestrator 無法再委派"
+}
+
+if ($docs.Contains($Orchestrator)) {
+    $orchText = $docs[$Orchestrator].Text
     $onDisk = @($agents.BaseName | Where-Object { $_ -ne $Orchestrator })
 
     foreach ($d in $onDisk) {
@@ -106,7 +133,7 @@ if (-not (Test-Path $orchPath)) {
             }
         }
     } else {
-        Add-V 'route-table-missing' 'bdd-orchestrator.toml' '「## 委派」段落遺失；沒有它就沒有任何機械可查的路由來源'
+        Add-V 'route-table-missing' $OrchestratorFile '「## 委派」段落遺失；沒有它就沒有任何機械可查的路由來源'
     }
 }
 
@@ -117,26 +144,25 @@ $refPatterns = @(
     @{ re = '(\.codex/scripts/[a-z0-9-]+\.ps1)'; base = '' }
     @{ re = '(\.codex/bdd-workflow/(?:policies|runbooks|templates)/[a-z0-9-]+\.md)'; base = '' }
 )
-foreach ($a in $agents) {
-    $t = Get-Content $a.FullName -Raw
+foreach ($k in $docs.Keys) {
+    $t = $docs[$k].Text
     foreach ($p in $refPatterns) {
         foreach ($mm in [regex]::Matches($t, $p.re)) {
             $rel = $mm.Groups[1].Value
             if ($rel -match '\{') { continue }   # 樣板路徑
             $full = if ($p.base) { Join-Path $p.base $rel } else { $rel }
             if (-not (Test-Path $full)) {
-                Add-V 'dangling-ref' "$($a.Name) -> $rel" '修正路徑或建立該檔'
+                Add-V 'dangling-ref' "$($docs[$k].Label) -> $rel" '修正路徑或建立該檔'
             }
         }
     }
 }
 # skill 引用：skill `name` → .agents/skills/{name}/SKILL.md
-foreach ($a in $agents) {
-    $t = Get-Content $a.FullName -Raw
-    foreach ($mm in [regex]::Matches($t, 'skill\s+`([a-z0-9-]+)`')) {
+foreach ($k in $docs.Keys) {
+    foreach ($mm in [regex]::Matches($docs[$k].Text, 'skill\s+`([a-z0-9-]+)`')) {
         $skill = $mm.Groups[1].Value
         if (-not (Test-Path ".agents/skills/$skill/SKILL.md")) {
-            Add-V 'dangling-skill-ref' "$($a.Name) -> skill ``$skill``" '修正 skill 名稱或建立 .agents/skills/{name}/SKILL.md'
+            Add-V 'dangling-skill-ref' "$($docs[$k].Label) -> skill ``$skill``" '修正 skill 名稱或建立 .agents/skills/{name}/SKILL.md'
         }
     }
 }
@@ -187,10 +213,10 @@ $stale = @(
     'bdd-orchestrator\.agent\.md',
     'complexity-(assessment|routing)'
 )
-foreach ($a in $agents) {
-    $t = Get-Content $a.FullName -Raw
+foreach ($k in $docs.Keys) {
+    $t = $docs[$k].Text
     foreach ($s in $stale) {
-        if ($t -match $s) { Add-V 'stale-ref' "$($a.Name): /$s/" 'v4.0.0 已移除該概念，更新或刪除該處' }
+        if ($t -match $s) { Add-V 'stale-ref' "$($docs[$k].Label): /$s/" 'v4.0.0 已移除該概念，更新或刪除該處' }
     }
 }
 
@@ -206,14 +232,12 @@ $artifactContracts = @(
     @{ path = 'bdd-docs/{feature-id}/analysis.md'; roles = @('sa-analyst', 'bdd-orchestrator') }
     @{ path = 'bdd-docs/artifacts/legacy-schema/'; roles = @('db-introspection-scanner', 'bdd-orchestrator', 'sa-analyst') }
 )
-$agentText = @{}
-foreach ($a in $agents) { $agentText[$a.BaseName] = Get-Content $a.FullName -Raw }
 foreach ($c in $artifactContracts) {
     $lit = [regex]::Escape($c.path)
-    $mentions = @($agentText.Keys | Where-Object { $agentText[$_] -match $lit })
+    $mentions = @($docs.Keys | Where-Object { $docs[$_].Text -match $lit })
     if ($mentions.Count -eq 0) { continue }
     foreach ($role in $c.roles) {
-        if ($role -notin $agentText.Keys) { continue }
+        if ($role -notin $docs.Keys) { continue }
         if ($role -notin $mentions) {
             Add-V 'artifact-path-orphan' "$($c.path) 未出現在 $role" `
                   '產物路徑須生產者／路由者／消費者三方一致 —— 漏掉消費者的症狀是它退回去重新要求查 DB，不是報錯'
@@ -237,18 +261,20 @@ if (Test-Path $VersionFile) {
 
 # ---- 輸出 ----
 $summary = [pscustomobject]@{
-    passed          = ($violations.Count -eq 0)
-    agent_count     = $agents.Count
-    core_block_sync = ($cores.Count -eq $agents.Count -and
-                       ($violations | Where-Object rule -eq 'agent-core-drift').Count -eq 0)
-    violation_count = $violations.Count
-    violations      = $violations
+    passed           = ($violations.Count -eq 0)
+    subagent_count   = $agents.Count
+    # 子代理 toml ＋ orchestrator（AGENTS.md）—— 這些檔的 AGENT-CORE 必須逐字相同。
+    core_block_files = $docs.Count
+    core_block_sync  = ($cores.Count -eq $docs.Count -and
+                        ($violations | Where-Object rule -eq 'agent-core-drift').Count -eq 0)
+    violation_count  = $violations.Count
+    violations       = $violations
 }
 
 if ($Json) { $summary | ConvertTo-Json -Depth 4 -Compress }
 else {
     if ($violations.Count -eq 0) {
-        "[agent-lint] OK — $($agents.Count) agents, core block in sync, routes resolved, no dangling or stale refs."
+        "[agent-lint] OK — $($agents.Count) subagents + orchestrator($OrchestratorFile), core block in sync, routes resolved, no dangling or stale refs."
     } else {
         [Console]::Error.WriteLine("[agent-lint] $($violations.Count) violation(s):")
         foreach ($v in $violations) {

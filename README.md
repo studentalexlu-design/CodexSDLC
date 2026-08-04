@@ -10,15 +10,18 @@
 
 ## 安裝
 
-把兩個目錄複製到**你的專案根目錄**：
+把兩個目錄**加上 `AGENTS.md`** 複製到**你的專案根目錄**：
 
 ```
 你的專案/
 ├── .codex/          ← 從這裡複製
 ├── .agents/         ← 從這裡複製
+├── AGENTS.md        ← 從這裡複製（少了它整套流程不會啟動）
 ├── src/
 └── tests/
 ```
+
+`AGENTS.md` **就是 orchestrator 本身** —— Codex 最上層對話讀的那份指令。它不是說明文件，漏掉會安靜地什麼都不發生。你的專案已經有 `AGENTS.md` 的話，把內容合進去（流程那幾節照抄，專案自己的規範另外擺）。
 
 需要：
 
@@ -36,13 +39,13 @@ pwsh -NoProfile -File .codex/scripts/agent-lint.ps1
 
 ## 啟動
 
-以 **top-level** 呼叫 `bdd-orchestrator` 這個 custom agent，然後直接說你要什麼：
+在專案裡開 Codex，直接說你要什麼：
 
 > 我要讓客戶可以取消訂單
 
 **一句話就夠。** 把需求想清楚再來，正是它要幫你省掉的事。
 
-> ⚠️ **一定要 top-level。** 從別的 agent 裡叫起來的 orchestrator 沒有 spawn 權限、也不會觸發 hook —— 整套強制層會靜默失效。它偵測到自己不是 top-level 會直接停下來告訴你。
+**不用挑 agent、不用打指令。** 最上層那個對話讀了 `AGENTS.md` 就是 orchestrator 本人，`sa-analyst` 那些是它自己去叫的。
 
 ---
 
@@ -205,7 +208,6 @@ C# 用 **Reqnroll**，Java 用 **Cucumber**；你的專案已經在用別的就�
 | `review-loop-exceeded` | 已經第 4 輪修正 | 它會交回你裁定：接受現版本／指定重點跑最後一輪／暫停 |
 | `handoff-too-long` | 委派超過 1200 字元 | 通常是它想貼全文；讓它改傳路徑 |
 | `connection-string`／`secret-literal` | prompt 裡有連線字串或密鑰 | **不要繞過**，把敏感值從來源拿掉 |
-| `must-run-top-level` | 它不是 top-level | 直接叫 `bdd-orchestrator`，不要從別的 agent 裡叫 |
 
 寫入 `bdd-docs/**` 之後還會掃一次敏感資料殘留。確定整個專案沒有敏感資料的話，建一個 `bdd-docs/.dlp-disabled` 可以整個關掉。
 
@@ -238,13 +240,20 @@ pwsh -NoProfile -File .codex/scripts/agent-lint.ps1        # 設定一致性
 pwsh -NoProfile -File .codex/scripts/tests/run-tests.ps1   # 強制層的 fixture 測試
 ```
 
-三條容易踩的規則：
+四條容易踩的規則：
 
-1. **`AGENT-CORE` 區塊必須在 5 個 agent 之間逐字相同。** 重複是刻意的 —— prompt cache 只認逐字相同的前綴，跨 agent 不共用。改一個要改全部，`agent-lint` 檢查 1 會擋。
-2. **加了 agent 就要加進 orchestrator 的「## 委派」表**，反之亦然。檢查 3 雙向比對。
-3. **每個檢查都要有一個「刻意弄壞後必須紅燈」的測試。** 抓不到東西的檢查比沒有檢查更糟。
+1. **`AGENT-CORE` 區塊必須在 5 個檔之間逐字相同**（`.codex/agents/` 的 4 個 toml ＋ `AGENTS.md`）。重複是刻意的 —— prompt cache 只認逐字相同的前綴，跨 agent 不共用。改一個要改全部，`agent-lint` 檢查 1 會擋。
+2. **不要幫 orchestrator 補一個 `.codex/agents/bdd-orchestrator.toml`。** 它的指令屬於 `AGENTS.md`。有了 toml 它就會被當子代理 spawn 起來，而被 spawn 出來的 agent 拿不到 `agent` 工具 —— ② 到 ⑤ 全部委派不出去，症狀只是一句「工具不存在」。檢查 3 會擋。
+3. **加了 agent 就要加進 orchestrator 的「## 委派」表**，反之亦然。檢查 3 雙向比對。
+4. **每個檢查都要有一個「刻意弄壞後必須紅燈」的測試。** 抓不到東西的檢查比沒有檢查更糟。
 
 **為什麼是這樣設計**（五個 agent 的判準、為什麼無狀態、v4 砍掉了什麼、砍掉的代價）見 `docs/design-rationale.md`。那份只給人看，執行期不讀。
+
+### 從 v4.0 升上來
+
+只有一件事要做：**把 `AGENTS.md` 複製到你的專案根目錄，並刪掉 `.codex/agents/bdd-orchestrator.toml`。** 產物格式、流程、handoff 合約都沒變，手上跑到一半的需求可以直接接著跑。
+
+改的是 orchestrator 的**啟動方式**：v4.0 要你去 spawn `bdd-orchestrator`，但被 spawn 出來的 agent 拿不到 `agent` 工具，於是它自己委派不出去 —— ② 到 ⑤ 全部卡住，而症狀只是一句「工具不存在」。v4.1 讓最上層對話直接就是 orchestrator，沒有那個 agent 了。
 
 ### 從 v3.x 升上來
 

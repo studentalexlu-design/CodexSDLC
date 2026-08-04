@@ -35,10 +35,22 @@ $Body
     return $p
 }
 
+# orchestrator 沒有 toml —— 它的指令就是 AGENTS.md（最上層對話讀的那份）。
+# 被 spawn 出來的 agent 拿不到 `agent` 工具，所以 orchestrator 一旦變成可被 spawn 的
+# agent，② 到 ⑤ 全部委派不出去。scratch 這裡照同樣的形狀擺。
+$ScratchOrchFile = Join-Path $Scratch 'AGENTS.md'
+
+function New-ScratchOrchestrator {
+    param([string]$Body, [string]$CoreBlock = $Core)
+    New-Item -ItemType Directory -Path $Scratch -Force | Out-Null
+    Set-Content $ScratchOrchFile -Value "# bdd-orchestrator`n`n$CoreBlock`n`n$Body" -NoNewline
+    return $ScratchOrchFile
+}
+
 # 一組乾淨的 scratch 設定：orchestrator + 一個被正確路由到的子代理。
 function New-CleanScratch {
     Remove-Item $Scratch -Recurse -Force -ErrorAction SilentlyContinue
-    New-ScratchAgent 'bdd-orchestrator' @'
+    New-ScratchOrchestrator @'
 ## 委派
 
 | 要什麼 | 給誰 | mode |
@@ -51,7 +63,7 @@ function New-CleanScratch {
 
 function Invoke-Lint {
     param([hashtable]$Extra = @{})
-    $p = @{ AgentDir = $Scratch }
+    $p = @{ AgentDir = $Scratch; OrchestratorFile = $ScratchOrchFile }
     foreach ($k in $Extra.Keys) { $p[$k] = $Extra[$k] }
     return Invoke-Script $Script -Params $p
 }
@@ -63,11 +75,13 @@ Describe-Suite 'agent-lint / 基準' {
         Assert-Equal 0 $r.exit "stderr: $($r.stderr)"
     }
 
-    It-Should '-Json 輸出可解析且回報 5 個 agent' {
+    It-Should '-Json 輸出可解析且回報 4 個子代理 ＋ 5 個核心檔' {
+        # 4 個子代理 toml，加上 orchestrator（AGENTS.md）＝ 5 個檔要維持核心逐字一致。
         $r = Invoke-Script $Script -Params @{ Json = $true }
         $j = $r.stdout | ConvertFrom-Json
         Assert-True $j.passed
-        Assert-Equal 5 $j.agent_count
+        Assert-Equal 4 $j.subagent_count
+        Assert-Equal 5 $j.core_block_files
         Assert-True $j.core_block_sync
     }
 
@@ -128,7 +142,7 @@ Describe-Suite 'agent-lint / 檢查 3：名冊與委派表雙向一致' {
         # 這個錯誤原本要到執行期 spawn 失敗才會出現，而當下的訊息通常
         # 只說「找不到 agent」，不會說「是委派表寫錯」。
         New-CleanScratch | Out-Null
-        New-ScratchAgent 'bdd-orchestrator' @'
+        New-ScratchOrchestrator @'
 ## 委派
 
 | 要什麼 | 給誰 | mode |
@@ -145,11 +159,34 @@ Describe-Suite 'agent-lint / 檢查 3：名冊與委派表雙向一致' {
 
     It-Should '委派表整段消失必須紅燈' {
         New-CleanScratch | Out-Null
-        New-ScratchAgent 'bdd-orchestrator' '沒有委派表，只有 `sa-analyst` 這個提及。' | Out-Null
+        New-ScratchOrchestrator '沒有委派表，只有 `sa-analyst` 這個提及。' | Out-Null
         try {
             $r = Invoke-Lint
             Assert-Equal 2 $r.exit
             Assert-Match 'route-table-missing' $r.stderr
+        } finally { Remove-Item $Scratch -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'orchestrator 被做成可 spawn 的 agent 必須紅燈' {
+        # 這是踩過的那一次：orchestrator 有了 toml → 被當子代理 spawn 起來 →
+        # 拿不到 `agent` 工具 → ② 到 ⑤ 全部委派不出去。而症狀只是一句「工具不存在」，
+        # 看起來像環境壞掉，沒有人會回頭懷疑是設定的形狀不對。
+        New-CleanScratch | Out-Null
+        New-ScratchAgent 'bdd-orchestrator' '## 委派' | Out-Null
+        try {
+            $r = Invoke-Lint
+            Assert-Equal 2 $r.exit '檢查 3 的可 spawn 分支沒有觸發'
+            Assert-Match 'orchestrator-must-not-be-spawnable' $r.stderr
+        } finally { Remove-Item $Scratch -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'orchestrator 檔缺漏必須紅燈' {
+        New-CleanScratch | Out-Null
+        Remove-Item $ScratchOrchFile -Force
+        try {
+            $r = Invoke-Lint
+            Assert-Equal 2 $r.exit
+            Assert-Match 'orchestrator-missing' $r.stderr
         } finally { Remove-Item $Scratch -Recurse -Force -ErrorAction SilentlyContinue }
     }
 }
@@ -241,7 +278,7 @@ Describe-Suite 'agent-lint / 檢查 6：產物路徑合約' {
         # 這是**靜默**失效：生產者改了落地路徑而消費者沒跟上，症狀不是報錯，
         # 是 SA 找不到證據於是回頭要求查 DB —— 使用者被要求批准一件已經批准過的事。
         New-CleanScratch | Out-Null
-        New-ScratchAgent 'bdd-orchestrator' $OrchWithEvidence | Out-Null
+        New-ScratchOrchestrator $OrchWithEvidence | Out-Null
         try {
             $r = Invoke-Lint
             Assert-Equal 2 $r.exit 'sa-analyst 沒提到 evidence 路徑卻通過了'
@@ -251,7 +288,7 @@ Describe-Suite 'agent-lint / 檢查 6：產物路徑合約' {
 
     It-Should '三方都提到就通過' {
         New-CleanScratch | Out-Null
-        New-ScratchAgent 'bdd-orchestrator' $OrchWithEvidence | Out-Null
+        New-ScratchOrchestrator $OrchWithEvidence | Out-Null
         New-ScratchAgent 'sa-analyst' 'handoff 帶了 `bdd-docs/{feature-id}/evidence/db-*.md` 就先讀它。' | Out-Null
         try {
             $r = Invoke-Lint

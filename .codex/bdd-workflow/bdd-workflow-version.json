@@ -1,8 +1,9 @@
 {
-    "contract-version": "4.0.0",
-    "min-compatible-version": "4.0.0",
-    "deployed-at": "2026-08-01T00:00:00.000Z",
+    "contract-version": "4.1.0",
+    "min-compatible-version": "4.1.0",
+    "deployed-at": "2026-08-04T00:00:00.000Z",
     "startup-read": true,
     "note": "消費端專案靠本檔判斷相容性。一致性由 .codex/scripts/agent-lint.ps1 檢查（檢查 6）。",
-    "v4-breaking": "流程改為 BA 需求分析 → SA 系統分析 → 定案 → 實作 → 審核 → 交付，無狀態。移除整層 tier 系統（discover/t0-t3）、5 道 gate、run 骨架與所有 run 狀態檔（workflow-state.json、checkpoints、log.md、decision-log、context-packs、evidence、probe-findings）。agent 由 12 個併為 5 個：bdd-orchestrator、sa-analyst、implementer、reviewer、db-introspection-scanner。產物只剩 bdd-docs/{feature-id}/spec.md、選用的 contract/，以及舊系統逆推時的 artifacts/legacy-schema/。v3 以前的 run 目錄新版讀不懂，不提供 resume 相容路徑。"
+    "v41-breaking": "orchestrator 不再是可被 spawn 的 agent —— 它的指令移到專案根目錄的 AGENTS.md，最上層對話本身就是 orchestrator，.codex/agents/bdd-orchestrator.toml 已刪除。被 spawn 出來的 agent 拿不到 `agent` 工具（config.toml 的 max_depth 把最上層算成第 1 層），所以舊形狀的 orchestrator 從 ② 起就委派不出去，症狀只是一句「工具不存在」。升級動作：複製 AGENTS.md 到專案根、刪掉 bdd-orchestrator.toml。流程、產物格式與 handoff 合約不變，進行中的需求可直接續跑。",
+    "v4-breaking": "流程改為 BA 需求分析 → SA 系統分析 → 定案 → 實作 → 審核 → 交付，無狀態。移除整層 tier 系統（discover/t0-t3）、5 道 gate、run 骨架與所有 run 狀態檔（workflow-state.json、checkpoints、log.md、decision-log、context-packs、evidence、probe-findings）。agent 由 12 個併為 5 個。產物只剩 bdd-docs/{feature-id}/spec.md、選用的 contract/，以及舊系統逆推時的 artifacts/legacy-schema/。v3 以前的 run 目錄新版讀不懂，不提供 resume 相容路徑。"
 }

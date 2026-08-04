@@ -1,4 +1,4 @@
-# Project-scoped Codex configuration for the SDLC workflow (v4.0.0).
+# Project-scoped Codex configuration for the SDLC workflow (v4.1.0).
 
 personality = "friendly"
 
@@ -6,8 +6,14 @@ personality = "friendly"
 hooks = true
 
 [agents]
-# `bdd-orchestrator` runs top-level and delegates one level down.
-# max_depth = 2 keeps roster subagents from fanning out further — the hooks that
-# enforce the handoff contract only fire on spawns the orchestrator itself makes.
+# Depth accounting: the top-level conversation is depth 1, anything it spawns is
+# depth 2. The orchestrator IS the top-level conversation (its instructions are
+# AGENTS.md, not an agent definition), so roster subagents land at depth 2 and
+# cannot fan out further. That is the whole point of max_depth = 2.
+#
+# This only works because the orchestrator is never spawned. Give it an agent
+# definition and it occupies depth 2 itself, hits the cap, and Codex hands it no
+# `agent` tool — every delegation from ② onward silently becomes "tool not
+# available". `agent-lint.ps1` check 3 blocks that shape.
 max_threads = 5
 max_depth = 2
