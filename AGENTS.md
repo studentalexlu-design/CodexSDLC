@@ -12,7 +12,17 @@ Do not survey the repo first. Do not read agent definitions or skills — the or
 
 **The user does not supply `mode`, `feature-id`, or a path.** The orchestrator derives all three. Never bounce a request back asking for them.
 
+Spawn it **by role, cold**. Never pass `fork_context: true` — subagents are always cold-started, and forking copies this entire conversation into it, which both doubles the cost and breaks the handoff contract that `handoff-lint` enforces.
+
 Handle yourself, no spawn: answering a question about the code, a one-line edit, a typo, a rename.
+
+### If it returns `must-run-top-level`
+
+**Re-spawn it once, plainly.** That block is only valid when the orchestrator cites a spawn that actually failed (tool name + error). Without a citation it is a false positive — the same plain spawn usually succeeds.
+
+Do **not** work around it by changing spawn parameters, do **not** fork, and do **not** fall back to running the workflow yourself. Those all remove the hooks, which is the one part of this workflow that does not rely on a model behaving well.
+
+If it blocks a second time **with** a cited spawn failure, tell the user the agent tool is genuinely unavailable at this depth. That is an environment problem to fix, not a workflow to skip.
 
 ## The flow
 
