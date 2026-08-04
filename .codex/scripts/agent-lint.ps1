@@ -13,7 +13,8 @@
 #   5. 無 v4.0.0 已移除的概念殘留
 #      （這是本次重構最高價值的檢查：tier／gate／run 狀態／已刪除的 agent 名稱
 #        散落在十幾個檔裡，漏一處的症狀通常是「執行期被擋下，而訊息指向錯的原因」）
-#   6. bdd-workflow-version.json 可解析且帶版本號
+#   6. 產物路徑合約：生產者／路由者／消費者三方都提到同一個路徑
+#   7. bdd-workflow-version.json 可解析且帶版本號
 #
 # v4.0.0 移除的檢查：skill matrix 覆蓋、gate 定義完整性、回傳 shape 對 policy 檔、
 # tier 表對 route-profiles、findings 段落對 template、合併 mode 矛盾、文件 tier 預算。
@@ -190,7 +191,34 @@ foreach ($a in $agents) {
     }
 }
 
-# ---- 6. 版本檔 ----
+# ---- 6. 產物路徑合約：生產者／路由者／消費者三方一致 ----
+# 這類漂移是**靜默**的。scanner 改了落地路徑而 sa-analyst 沒跟上，症狀不是報錯 ——
+# 是 SA 找不到證據於是回 `blocked` 要求查 DB，使用者被要求批准一件已經批准過的事，
+# 而整條流程看起來一切正常。付出的代價（一次批准 ＋ 一次連線 ＋ 一次等待）沒有任何地方會記帳。
+#
+# 所以規則是「有人提到就三方都要提到」：沒有人用的產物不強制（這一版可能就是沒有），
+# 但只要有人開始寫它，讀它的那一方就不能缺席。
+$artifactContracts = @(
+    @{ path = 'bdd-docs/{feature-id}/evidence/';   roles = @('db-introspection-scanner', 'bdd-orchestrator', 'sa-analyst') }
+    @{ path = 'bdd-docs/{feature-id}/analysis.md'; roles = @('sa-analyst', 'bdd-orchestrator') }
+    @{ path = 'bdd-docs/artifacts/legacy-schema/'; roles = @('db-introspection-scanner', 'bdd-orchestrator', 'sa-analyst') }
+)
+$agentText = @{}
+foreach ($a in $agents) { $agentText[$a.BaseName] = Get-Content $a.FullName -Raw }
+foreach ($c in $artifactContracts) {
+    $lit = [regex]::Escape($c.path)
+    $mentions = @($agentText.Keys | Where-Object { $agentText[$_] -match $lit })
+    if ($mentions.Count -eq 0) { continue }
+    foreach ($role in $c.roles) {
+        if ($role -notin $agentText.Keys) { continue }
+        if ($role -notin $mentions) {
+            Add-V 'artifact-path-orphan' "$($c.path) 未出現在 $role" `
+                  '產物路徑須生產者／路由者／消費者三方一致 —— 漏掉消費者的症狀是它退回去重新要求查 DB，不是報錯'
+        }
+    }
+}
+
+# ---- 7. 版本檔 ----
 if (Test-Path $VersionFile) {
     try {
         $ver = Get-Content $VersionFile -Raw | ConvertFrom-Json

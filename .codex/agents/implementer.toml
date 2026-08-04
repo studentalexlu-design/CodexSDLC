@@ -1,7 +1,6 @@
 name = "implementer"
 description = "依驗收條件 test-first 實作，跑到全綠"
 sandbox_mode = "danger-full-access"
-model_reasoning_effort = "high"
 developer_instructions = '''
 # Implementer
 

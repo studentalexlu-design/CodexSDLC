@@ -4,6 +4,16 @@ This repo is configuration only. Every file here is a prompt, policy, or script 
 
 **What this workflow is for:** help the user make correct decisions faster at each SDLC stage, then produce the code correctly. Everything below is an instrument kept only while it buys correctness or speed.
 
+## First move
+
+If the user asks for feature work, bug work, or anything that ends in code: **spawn `bdd-orchestrator` as a top-level agent right away, passing the user's sentence verbatim.**
+
+Do not survey the repo first. Do not read agent definitions or skills — the orchestrator loads its own. Do not run `git status` to orient yourself. Every read done here is a read the orchestrator will do again, and its context is the one that matters.
+
+**The user does not supply `mode`, `feature-id`, or a path.** The orchestrator derives all three. Never bounce a request back asking for them.
+
+Handle yourself, no spawn: answering a question about the code, a one-line edit, a typo, a rename.
+
 ## The flow
 
 ```
@@ -41,11 +51,23 @@ Delegation buys exactly one thing: reads that never enter the orchestrator's con
 |---|---|---|
 | `bdd-docs/{feature-id}/spec.md` | orchestrator | after ③, always |
 | `.feature` + step definitions (**in the project's test tree**) | `implementer` | ④, landed verbatim from ③'s Gherkin block |
+| `bdd-docs/{feature-id}/evidence/db-*.md` | `db-introspection-scanner` | after every live DB query, always |
+| `bdd-docs/{feature-id}/analysis.md` | `sa-analyst` | only when ② did **not** finish (`blocked`/`partial`) |
 | `bdd-docs/{feature-id}/contract/*` | `sa-analyst` | only with real external consumers or a real schema change |
 | `bdd-docs/artifacts/legacy-schema/*.sql` | `db-introspection-scanner` | only when reverse-engineering legacy SQL |
 | code and tests | `implementer` | ④ |
 
-Nothing else is produced. The workflow is **stateless** — no state files, no progress records, no stage handoff documents, no evidence directories.
+Nothing else is produced — no state files, no progress records, no stage handoff documents.
+
+**The test is what it costs to get again, not whether it counts as state.**
+
+- Re-thinkable inside a context that already exists (① 's reasoning, how far along we are, who handed off to whom) → **off disk**. Re-running is nearly free; maintaining it is not.
+- Costs **another spawn** to recover (`sa-analyst`'s unfinished analysis) → **on disk, but only when it did not finish.** A completed analysis goes straight into `spec.md`; the happy path gains no file.
+- Obtained through **user approval or a live-system round trip** (DB introspection, legacy SQL definitions) → **always on disk.** Losing it means paying for the approval and the wait a second time, and nothing anywhere accounts for that.
+
+It also resolves a hard conflict: handoffs are capped at 1200 chars, so DB metadata cannot travel inline — but `sa-analyst` needs it. A file is the only form that satisfies both.
+
+So a lost conversation is not a restart: `spec.md` and `evidence/` survive, ① is pure reasoning (nearly free), and only ②'s static analysis costs another spawn. Cheaper than maintaining a state machine.
 
 ## Gherkin is a QA deliverable, not documentation
 
@@ -55,8 +77,6 @@ Everything follows from that: C# uses Reqnroll, Java uses Cucumber (an existing 
 
 The one exception: a change with no acceptance-testable behaviour (pure refactor, dependency bump, config) gets a one-line DoD instead. Don't apply the format for its own sake.
 
-State lives in the conversation. If the conversation is lost, re-run: `spec.md` survives, ① is pure reasoning (nearly free), and only ② costs another spawn. That is cheaper than maintaining a state machine.
-
 ## Always-on principles
 
 1. **Irreversibility is confirmed, not inferred.** Two questions, asked at ⑥ and required in every `sa-analyst` option: does it touch **existing data or live traffic**? do **consumers I don't control** see a difference? Either yes → stop and get the user's answer. Providing a contract counts; consuming someone else's does not. QA's automation is such a consumer — see the Gherkin section.
@@ -65,6 +85,7 @@ State lives in the conversation. If the conversation is lost, re-run: `spec.md` 
 4. **Green means green.** `failed == 0` and `skipped == 0`. A skip is not a pass — it is reported as a risk.
 5. **Minimal implementation.** Build what the acceptance criteria ask for. Input validation, error handling, security, and necessary tests are not "extra" and are never cut in the name of minimalism.
 6. **Bounded vs unbounded unknowns.** Bounded (single verifiable answer, ≤3 read-only operations) → the agent resolves it itself. Unbounded (needs logic reconstruction, cross-system comparison, live DB, binary files, or no unique answer) → return `blocked` with what to look for and what was already checked. An unbounded unknown is never absorbed by scanning wider.
+7. **Rough beats timed-out.** An agent running out of room returns `partial` with what it has; a timeout returns nothing and voids every approval and wait that preceded it. When a subagent times out after a long run, the recovery is **cutting scope**, never compressing the prompt — a shorter prompt does not shrink the work.
 
 ## Enforcement
 

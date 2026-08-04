@@ -225,7 +225,52 @@ Describe-Suite 'agent-lint / 檢查 4：引用路徑存在性' {
     }
 }
 
-Describe-Suite 'agent-lint / 檢查 2 與 6：結構與版本' {
+# orchestrator 提到 evidence 路徑，但委派表仍然完整 —— 只差消費者那一側。
+$OrchWithEvidence = @'
+## 委派
+
+| 要什麼 | 給誰 | mode |
+|---|---|---|
+| 查現況 | `sa-analyst` | `analyze` |
+
+DB 盤點落在 `bdd-docs/{feature-id}/evidence/db-*.md`，把 path 補進 handoff。
+'@
+
+Describe-Suite 'agent-lint / 檢查 6：產物路徑合約' {
+
+    It-Should '消費者沒提到產物路徑必須紅燈' {
+        # 這是**靜默**失效：生產者改了落地路徑而消費者沒跟上，症狀不是報錯，
+        # 是 SA 找不到證據於是回頭要求查 DB —— 使用者被要求批准一件已經批准過的事。
+        New-CleanScratch | Out-Null
+        New-ScratchAgent 'bdd-orchestrator' $OrchWithEvidence | Out-Null
+        try {
+            $r = Invoke-Lint
+            Assert-Equal 2 $r.exit 'sa-analyst 沒提到 evidence 路徑卻通過了'
+            Assert-Match 'artifact-path-orphan' $r.stderr
+        } finally { Remove-Item $Scratch -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '三方都提到就通過' {
+        New-CleanScratch | Out-Null
+        New-ScratchAgent 'bdd-orchestrator' $OrchWithEvidence | Out-Null
+        New-ScratchAgent 'sa-analyst' 'handoff 帶了 `bdd-docs/{feature-id}/evidence/db-*.md` 就先讀它。' | Out-Null
+        try {
+            $r = Invoke-Lint
+            Assert-Equal 0 $r.exit "誤報：stderr: $($r.stderr)"
+        } finally { Remove-Item $Scratch -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '沒有人用到的產物不強制' {
+        # 這一版可能就是沒有 legacy-schema 的需求，不該因此紅燈。
+        New-CleanScratch | Out-Null
+        try {
+            $r = Invoke-Lint
+            Assert-Equal 0 $r.exit "stderr: $($r.stderr)"
+        } finally { Remove-Item $Scratch -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+Describe-Suite 'agent-lint / 檢查 2 與 7：結構與版本' {
 
     It-Should 'name 與檔名不一致必須紅燈' {
         New-CleanScratch | Out-Null

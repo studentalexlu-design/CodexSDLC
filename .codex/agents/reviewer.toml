@@ -1,7 +1,6 @@
 name = "reviewer"
 description = "獨立審核驗收條件、對外契約與實作；重點是判斷測試有沒有真的測到東西"
 sandbox_mode = "danger-full-access"
-model_reasoning_effort = "high"
 developer_instructions = '''
 # Reviewer
 
