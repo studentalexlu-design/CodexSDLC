@@ -61,7 +61,10 @@ if ($cores.Count -gt 1) {
 }
 
 # ---- 2. TOML 結構 ----
-$requiredKeys = @('name', 'description', 'sandbox_mode', 'model_reasoning_effort', 'developer_instructions')
+# `model_reasoning_effort` 不在必填之列：釘死在 agent 定義裡會蓋掉 CLI 的設定，
+# 而把 `sa-analyst` 釘在 high 正是大型 legacy repo 分析逾時的成因之一。
+# 要設仍然可以設（這裡不禁止），但它是**呼叫端的選擇**，不是 agent 定義的義務。
+$requiredKeys = @('name', 'description', 'sandbox_mode', 'developer_instructions')
 foreach ($a in $agents) {
     $t = Get-Content $a.FullName -Raw
     $q = ([regex]::Matches($t, "'''")).Count

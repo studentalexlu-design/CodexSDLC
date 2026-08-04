@@ -23,7 +23,6 @@ function New-ScratchAgent {
 name = "$Name"
 description = "scratch"
 sandbox_mode = "danger-full-access"
-model_reasoning_effort = "high"
 developer_instructions = '''
 # $Name
 
