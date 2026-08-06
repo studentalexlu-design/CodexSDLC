@@ -1,9 +1,11 @@
 {
-    "contract-version": "4.1.0",
-    "min-compatible-version": "4.1.0",
-    "deployed-at": "2026-08-04T00:00:00.000Z",
+    "contract-version": "4.3.0",
+    "min-compatible-version": "4.2.0",
+    "deployed-at": "2026-08-06T00:00:00.000Z",
     "startup-read": true,
     "note": "消費端專案靠本檔判斷相容性。一致性由 .codex/scripts/agent-lint.ps1 檢查（檢查 6）。",
+    "v43-additive": "spec.md 提早到 ① 開檔、並在 ④ 分片時多一節「切片與沿用」。兩者同源：orchestrator 知道、但 ≤300 字的 handoff 傳不出去，而子代理非知道不可 —— spec.md 是唯一掛得上 handoff 的 path。① 有缺口才先落檔（沒缺口的需求 300 字裝得下）；分片一節只記「下一片要沿用什麼」，不記進度。此外把數量上限改寫成兩段式「上限是多少 ＋ 超過時要做什麼」：BA 缺口超過 5 個要列出全部標題請使用者切小範圍，不得自己挑 5 個問完就往下走；SA 用「動到的檔會不會不一樣」篩完仍超過 4 個做法時照數回報並寫明為什麼不能合併，不得硬湊 —— 硬合併出來的選項技術上不成立，而使用者會照著它做不可逆的決定。四者同一個病：規則只寫了上限、沒寫超過時怎麼辦，預設行為就變成靜默截斷。理由見 docs/design-rationale.md。產物路徑數不變（仍是 spec.md），handoff 合約不變，流程步驟不變。升級動作：複製新的 AGENTS.md、.codex/agents/*.toml 與 .agents/skills/requirement-gap-analysis/。**非破壞性** —— 4.2.0 的進行中需求可直接續跑，spec.md 少那兩節不會讓任何 agent 回 blocked。",
+    "v42-breaking": "移除 db-introspection-scanner agent —— live DB 改由 orchestrator 自己查，規則搬到 skill .agents/skills/db-introspection/。升級動作：刪掉 .codex/agents/db-introspection-scanner.toml、複製新的 skill 目錄。批准要求、evidence/db-*.md 落檔位置與寫檔後的 DLP 掃描都不變；少掉的是工具層隔離（orchestrator 現在呼叫得到 DB 工具，只被 prompt 規則綁著）。**DB 連線務必使用唯讀帳號** —— 這一版之後「不能寫」由帳號權限保證，不再由流程結構保證。",
     "v41-breaking": "orchestrator 不再是可被 spawn 的 agent —— 它的指令移到專案根目錄的 AGENTS.md，最上層對話本身就是 orchestrator，.codex/agents/bdd-orchestrator.toml 已刪除。被 spawn 出來的 agent 拿不到 `agent` 工具（config.toml 的 max_depth 把最上層算成第 1 層），所以舊形狀的 orchestrator 從 ② 起就委派不出去，症狀只是一句「工具不存在」。升級動作：複製 AGENTS.md 到專案根、刪掉 bdd-orchestrator.toml。流程、產物格式與 handoff 合約不變，進行中的需求可直接續跑。",
     "v4-breaking": "流程改為 BA 需求分析 → SA 系統分析 → 定案 → 實作 → 審核 → 交付，無狀態。移除整層 tier 系統（discover/t0-t3）、5 道 gate、run 骨架與所有 run 狀態檔（workflow-state.json、checkpoints、log.md、decision-log、context-packs、evidence、probe-findings）。agent 由 12 個併為 5 個。產物只剩 bdd-docs/{feature-id}/spec.md、選用的 contract/，以及舊系統逆推時的 artifacts/legacy-schema/。v3 以前的 run 目錄新版讀不懂，不提供 resume 相容路徑。"
 }

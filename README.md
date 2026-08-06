@@ -172,7 +172,7 @@ pwsh -NoProfile -File .codex/scripts/agent-lint.ps1
 
 | 檔 | 什麼時候 |
 |---|---|
-| `bdd-docs/{feature-id}/spec.md` | ③ 之後一律有。需求決議＋選定做法＋驗收條件 |
+| `bdd-docs/{feature-id}/spec.md` | 你答完 ① 的問題就先有（那時只有需求決議），③ 之後補上選定做法＋驗收條件。行為多到要分次做時，多一節「切片與沿用」 |
 | `.feature` ＋ step definitions | ④。**跟你專案的單元測試放在一起**，不在 `bdd-docs/` 底下 |
 | 程式碼與測試 | ④ |
 | `bdd-docs/{feature-id}/evidence/db-*.md` | 每次查過 live DB 之後。**你批准換來的東西，一定會留檔** |
@@ -242,12 +242,18 @@ pwsh -NoProfile -File .codex/scripts/tests/run-tests.ps1   # 強制層的 fixtur
 
 四條容易踩的規則：
 
-1. **`AGENT-CORE` 區塊必須在 5 個檔之間逐字相同**（`.codex/agents/` 的 4 個 toml ＋ `AGENTS.md`）。重複是刻意的 —— prompt cache 只認逐字相同的前綴，跨 agent 不共用。改一個要改全部，`agent-lint` 檢查 1 會擋。
+1. **`AGENT-CORE` 區塊必須在 4 個檔之間逐字相同**（`.codex/agents/` 的 3 個 toml ＋ `AGENTS.md`）。重複是刻意的 —— prompt cache 只認逐字相同的前綴，跨 agent 不共用。改一個要改全部，`agent-lint` 檢查 1 會擋。
 2. **不要幫 orchestrator 補一個 `.codex/agents/bdd-orchestrator.toml`。** 它的指令屬於 `AGENTS.md`。有了 toml 它就會被當子代理 spawn 起來，而被 spawn 出來的 agent 拿不到 `agent` 工具 —— ② 到 ⑤ 全部委派不出去，症狀只是一句「工具不存在」。檢查 3 會擋。
 3. **加了 agent 就要加進 orchestrator 的「## 委派」表**，反之亦然。檢查 3 雙向比對。
 4. **每個檢查都要有一個「刻意弄壞後必須紅燈」的測試。** 抓不到東西的檢查比沒有檢查更糟。
 
-**為什麼是這樣設計**（五個 agent 的判準、為什麼無狀態、v4 砍掉了什麼、砍掉的代價）見 `docs/design-rationale.md`。那份只給人看，執行期不讀。
+**為什麼是這樣設計**（哪些事該有自己的 context、為什麼無狀態、v4 砍掉了什麼、砍掉的代價）見 `docs/design-rationale.md`。那份只給人看，執行期不讀。
+
+### 從 v4.1 升上來
+
+`db-introspection-scanner` 這個 agent 沒了 —— 改由 orchestrator 自己查 live DB，規則搬進 skill `.agents/skills/db-introspection/`。升級動作：刪掉 `.codex/agents/db-introspection-scanner.toml`、複製新的 skill 目錄，`AGENTS.md` 一併更新。
+
+**對你的差別**：查 DB 之前一樣要你批准，落檔位置一樣是 `bdd-docs/{feature-id}/evidence/db-*.md`，寫檔後的 DLP 掃描一樣會跑。少掉的是**工具層的隔離** —— 以前 orchestrator 根本呼叫不到 DB 工具，現在它可以，只是被規則綁著。所以 **DB 連線請務必用唯讀帳號**：這一版之後，「不能寫」要靠帳號權限保證，而不是靠流程結構。
 
 ### 從 v4.0 升上來
 

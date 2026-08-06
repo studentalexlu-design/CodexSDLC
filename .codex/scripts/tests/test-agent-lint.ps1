@@ -75,13 +75,13 @@ Describe-Suite 'agent-lint / 基準' {
         Assert-Equal 0 $r.exit "stderr: $($r.stderr)"
     }
 
-    It-Should '-Json 輸出可解析且回報 4 個子代理 ＋ 5 個核心檔' {
-        # 4 個子代理 toml，加上 orchestrator（AGENTS.md）＝ 5 個檔要維持核心逐字一致。
+    It-Should '-Json 輸出可解析且回報 3 個子代理 ＋ 4 個核心檔' {
+        # 3 個子代理 toml，加上 orchestrator（AGENTS.md）＝ 4 個檔要維持核心逐字一致。
         $r = Invoke-Script $Script -Params @{ Json = $true }
         $j = $r.stdout | ConvertFrom-Json
         Assert-True $j.passed
-        Assert-Equal 4 $j.subagent_count
-        Assert-Equal 5 $j.core_block_files
+        Assert-Equal 3 $j.subagent_count
+        Assert-Equal 4 $j.core_block_files
         Assert-True $j.core_block_sync
     }
 
@@ -272,6 +272,17 @@ $OrchWithEvidence = @'
 DB 盤點落在 `bdd-docs/{feature-id}/evidence/db-*.md`，把 path 補進 handoff。
 '@
 
+# 同上，換成 spec.md：orchestrator 在 ① 就落檔，但消費者那一側缺席。
+$OrchWithSpec = @'
+## 委派
+
+| 要什麼 | 給誰 | mode |
+|---|---|---|
+| 查現況 | `sa-analyst` | `analyze` |
+
+① 的決議先寫進 `bdd-docs/{feature-id}/spec.md`，② 委派時帶那個 path。
+'@
+
 Describe-Suite 'agent-lint / 檢查 6：產物路徑合約' {
 
     It-Should '消費者沒提到產物路徑必須紅燈' {
@@ -293,6 +304,20 @@ Describe-Suite 'agent-lint / 檢查 6：產物路徑合約' {
         try {
             $r = Invoke-Lint
             Assert-Equal 0 $r.exit "誤報：stderr: $($r.stderr)"
+        } finally { Remove-Item $Scratch -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'spec.md 的消費者缺席必須紅燈' {
+        # v4.3.0：spec.md 提早到 ① 開檔，`sa-analyst` 在 ② 讀它拿 BA 決議。
+        # `analyze` **不在** handoff-lint 檢查 3a 的清單裡（那條只管 build／fix／code），
+        # 所以這是唯一在守「SA 讀不讀得到決議」的地方。漏掉不會報錯 —— SA 會拿著
+        # 被壓進 300 字的決議去分析，回一份方向錯但看起來很合理的做法清單。
+        New-CleanScratch | Out-Null
+        New-ScratchOrchestrator $OrchWithSpec | Out-Null
+        try {
+            $r = Invoke-Lint
+            Assert-Equal 2 $r.exit 'sa-analyst 沒提到 spec.md 路徑卻通過了'
+            Assert-Match 'artifact-path-orphan' $r.stderr
         } finally { Remove-Item $Scratch -Recurse -Force -ErrorAction SilentlyContinue }
     }
 

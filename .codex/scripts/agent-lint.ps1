@@ -205,6 +205,9 @@ $stale = @(
     '`design-modeler`',
     '`integration-tester`',
     '`living-doc`',
+    # v4.2.0 移除：live DB 改由 orchestrator 自己查（skill `db-introspection`）。
+    # 殘留的委派指示會讓它去 spawn 一個不存在的 agent，而錯誤要到執行期才出現。
+    '`db-introspection-scanner`',
     # 已改名的回傳狀態
     'partial-completed',
     'needs-probe',
@@ -228,9 +231,17 @@ foreach ($k in $docs.Keys) {
 # 所以規則是「有人提到就三方都要提到」：沒有人用的產物不強制（這一版可能就是沒有），
 # 但只要有人開始寫它，讀它的那一方就不能缺席。
 $artifactContracts = @(
-    @{ path = 'bdd-docs/{feature-id}/evidence/';   roles = @('db-introspection-scanner', 'bdd-orchestrator', 'sa-analyst') }
+    # DB 證據自 v4.2.0 起由 orchestrator 自己查、自己落地（skill `db-introspection`），
+    # 生產者與路由者是同一方；消費者仍是 sa-analyst，它靠 handoff 帶的 path 讀檔。
+    @{ path = 'bdd-docs/{feature-id}/evidence/';   roles = @('bdd-orchestrator', 'sa-analyst') }
     @{ path = 'bdd-docs/{feature-id}/analysis.md'; roles = @('sa-analyst', 'bdd-orchestrator') }
-    @{ path = 'bdd-docs/artifacts/legacy-schema/'; roles = @('db-introspection-scanner', 'bdd-orchestrator', 'sa-analyst') }
+    # v4.3.0：spec.md 多了一個消費者 —— sa-analyst 在 ② 讀 ① 的需求決議。
+    # implementer／reviewer 有 handoff-lint 檢查 3a 保底（build／fix／code 必須帶 spec.md
+    # 路徑），但 `analyze` **不在**那份清單裡，所以沒有任何機械層在守 SA 讀不讀得到決議。
+    # 漏掉的症狀不是報錯：SA 拿著被壓進 300 字的決議去分析，回一份看起來很合理、
+    # 但方向錯的做法清單，然後使用者在 ③ 照著它做不可逆的決定。
+    @{ path = 'bdd-docs/{feature-id}/spec.md';     roles = @('bdd-orchestrator', 'sa-analyst') }
+    @{ path = 'bdd-docs/artifacts/legacy-schema/'; roles = @('bdd-orchestrator', 'sa-analyst') }
 )
 foreach ($c in $artifactContracts) {
     $lit = [regex]::Escape($c.path)

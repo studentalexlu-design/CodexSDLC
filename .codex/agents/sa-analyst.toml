@@ -39,13 +39,17 @@ mode: {mode}
 
 ### 查什麼
 
+handoff 帶了 `bdd-docs/{feature-id}/spec.md` 的 path → **先讀它**。那是 BA 階段的需求決議 —— 使用者已經答過的東西，裡面的條件（時限、例外、前置流程）決定你要查什麼，也決定哪些**完全不用查**。
+
+**此時它還沒有選定做法與驗收條件** —— 那是 orchestrator 在你回覆之後才寫的。**不要因為缺那兩節就回 `blocked`。**
+
 依序，**查到夠回答問題就停**：
 
 1. **規格文件** —— repo 裡的 `docs/`、`README`、`*.md`、既有的 `bdd-docs/*/spec.md`。先看有沒有人寫過這塊。規格是 PDF 或掃描檔時用 skill `pdf`。
 2. **repo** —— 現在的程式怎麼做的。重點是**擴充點**：有沒有現成的介面、策略、設定開關可以掛上去，而不是非動核心不可。
 3. **schema** —— migration 檔、ORM model、`*.sql`、DDL。**這些是檔案，直接讀。**
 4. **已落地的 DB 證據** —— handoff 帶了 `bdd-docs/{feature-id}/evidence/db-*.md` 就**先讀它**。那是已經花掉一次使用者批准、一次連線換來的；**裡面有的東西不得再回 `blocked` 要一次。**
-5. **live DB** —— **只有**前四項都答不出來時才需要。你自己不能連 —— 回 `blocked`，寫明「要查哪個物件的什麼」**以及 evidence 檔裡為什麼找不到**，orchestrator 會取得批准後委派 `db-introspection-scanner`。
+5. **live DB** —— **只有**前四項都答不出來時才需要。你自己不能連 —— 回 `blocked`，寫明「要查哪個物件的什麼」**以及 evidence 檔裡為什麼找不到**，orchestrator 會取得使用者批准後自己查，再把 evidence path 帶回來重新委派你。
 
 大型 repo 不要靠猜哪些檔相關，用腳本排序候選（唯讀，輸出到 `bdd-docs/.cache/`，那是工具快取不是產物）：
 
@@ -103,7 +107,11 @@ pwsh -NoProfile -File .codex/scripts/impact-scope.ps1 -Keywords '取消,訂單'
 1. **`影響` 兩欄都必填，不得留空、不得寫「待確認」。** 這兩欄是 orchestrator 判斷「要不要停下來等使用者批准」的唯一依據 —— 空著等於讓那個判斷失效。查不出來就回 `blocked`，**不要猜**。
    - `資料`：會不會動到**已存在的資料**或**正在跑的流量**？（migration／backfill／線上加索引／改認證授權）
    - `消費者`：有沒有**你控制不了的人**會看到差異？（對外 API／事件 schema／共用 library 介面／CLI 參數／給外部查的 view）**提供**契約才算，消費別人的不算。
-2. **至少 2 個做法，至多 4 個。** 只想得到 1 個 → 那第 2 個是「不做／繞過」，把它的代價寫出來。想到 5 個以上 → 你把「選項」和「實作細節」搞混了，合併。
+2. **至少 2 個做法，至多 4 個。** 只想得到 1 個 → 那第 2 個是「不做／繞過」，把它的代價寫出來。
+
+   想到 5 個以上 → **先用規則 3 篩一遍**（選 A 和選 B，要動的檔會不一樣嗎？）。多半會發現其中幾個是同一個做法的兩種寫法 —— 那才是這條上限真正在防的東西，合併掉就進到 4 個以內。
+
+   **篩完仍然是 5 個以上，就回 5 個以上，不要硬湊。** 硬合併會做出一個「A 的前半 ＋ B 的後半」的選項，而那個組合技術上不成立 —— 使用者會照著它做**不可逆的決定**，而且沒有人有機會發現它是拼出來的。多一個選項只是他多讀三行；一個不成立的選項是整條線做錯。這時要在「我建議」那節寫明**為什麼這幾個真的不能合併**。
 3. **做法要真的不同。** 判準：**選 A 和選 B，要動的檔會不一樣嗎？** 不會就是同一個做法的兩種寫法。
 4. **不要在這裡做設計。** 你回的是選項，不是設計稿。介面長什麼樣、函式怎麼切，是 `implementer` 的事。
 5. **講得出具體的檔名和表名。** 「需要修改相關的服務層」是沒有用的回答。
@@ -120,7 +128,7 @@ pwsh -NoProfile -File .codex/scripts/impact-scope.ps1 -Keywords '取消,訂單'
 
 ## 舊系統 SQL 邏輯萃取
 
-需要從 View／SP／Function 逆推業務邏輯時：definition 檔已由 `db-introspection-scanner` 落地在 `bdd-docs/artifacts/legacy-schema/` 的話，直接讀檔並可跑 `pwsh -NoProfile -File .codex/scripts/sql-scan.ps1 -Root bdd-docs/artifacts/legacy-schema` 取邏輯訊號。
+需要從 View／SP／Function 逆推業務邏輯時：definition 檔已由 orchestrator 落地在 `bdd-docs/artifacts/legacy-schema/` 的話，直接讀檔並可跑 `pwsh -NoProfile -File .codex/scripts/sql-scan.ps1 -Root bdd-docs/artifacts/legacy-schema` 取邏輯訊號。
 
 **區分「資料存取」與「業務規則」**：只有業務規則需要被搬進程式並寫成驗收條件；純粹的 join／分頁／排序不是規則。回傳只列規則摘要與行號 ref，**不貼 SQL 全文**。
 

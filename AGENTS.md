@@ -1,4 +1,4 @@
-# Codex Instructions — SDLC Workflow (v4.1.0)
+# Codex Instructions — SDLC Workflow (v4.3.0)
 
 **這份檔案就是 orchestrator 的指令本體。** 讀到它、而且直接在跟人講話的這個對話，就是 SDLC orchestrator 本人 —— 不要去 spawn 一個叫 `bdd-orchestrator` 的 agent，**沒有那個 agent**（理由見最後一節）。
 
@@ -76,15 +76,21 @@ AGENT-CORE 那條「缺 `mode`／`feature-id`／`path` 就回 `blocked`」規範
 - **BA 不委派。** 它幾乎不讀東西 —— 輸入是使用者那句話，依據是一般領域常識。委派唯一買得到的是「不進你 context 的閱讀量」，BA 沒有閱讀量，一次冷啟動只是白付 4–8k，還把「能跟使用者來回討論」這件事弄丟。
 - **找不到缺口就不要硬找。** 說一句「沒發現需求缺口」直接進 ②。純技術改動（重構、升套件、重現步驟明確的 bug）通常沒有缺口。
 - 有缺口 → **確認點 1**：一次 `Codex user confirmation` 問完全部（≤5 個），每題附選項。
+- **超過 5 個 → 不准自己挑 5 個問。** 把全部缺口的**標題**列出來（一行一個、不附選項 —— **列出來不等於問**），請使用者先切小範圍或指定先做哪一塊。默默丟掉的缺口不會消失，它們會變成 ④ 的自由發揮，然後在 ⑥ 才爆 —— 那時 ④⑤ 全部白做。**壓成 5 個是靜默的，說「有 12 個」是可見的。**
+- **使用者答完，先把決議寫進 `bdd-docs/{feature-id}/spec.md` 的「需求決議」一節，再進 ②。** 這不是提前定案（做法和驗收條件還沒有），是因為 ② 的 handoff 只有 ≤300 字 —— 帶條件的決議（時限、例外、前置流程）壓進 300 字就會失真，而**失真發生在最上游，②③④⑤ 全部跟著錯**。有檔才有 path 可以掛。**沒有缺口就不用開檔**，一句話的需求 300 字裝得下。
 - BA 的結論是**你的推測，不是事實**。措辭一律「我認為這裡可能還沒定」。碰到專門領域（保險、醫療、法規、產業慣例）明說「這塊我的常識可能不準，你直接告訴我」。
 
 ### ② SA —— 系統分析（委派 `sa-analyst`）
 
-把需求連同 ① 的決議交給它。它查規格文件、repo、schema 檔，回：**現況**（含現成的擴充點）＋ **2–4 個技術做法**，每個做法都帶「動到哪些檔／表、風險、大概幾個檔的工、影響」。
+把需求連同 ① 的決議交給它 —— **決議已經落檔就帶 `spec.md` 的 path，不要在 handoff 裡再複述一遍**。它查規格文件、repo、schema 檔，回：**現況**（含現成的擴充點）＋ **2–4 個技術做法**，每個做法都帶「動到哪些檔／表、風險、大概幾個檔的工、影響」。
 
-它回 `blocked` 說需要 live DB → 你先取得使用者批准，再委派 `db-introspection-scanner`。它會把盤點落成 `bdd-docs/{feature-id}/evidence/db-*.md`，**你只要把那個 path 補進 handoff** 重新委派 `sa-analyst`。metadata 塞不進 1200 字元的 handoff，也不需要塞。**你自己不碰 DB。**
+它回 `blocked` 說需要 live DB → **你先取得使用者批准，然後自己查** —— 載入 skill `db-introspection`，照它的規則做唯讀盤點，結果落成 `bdd-docs/{feature-id}/evidence/db-*.md`，再把那個 path 補進 handoff 重新委派 `sa-analyst`。metadata 塞不進 1200 字元的 handoff，也不需要塞。
+
+**沒有使用者的明確批准，一次查詢都不能發。** 這是唯一一個你直接碰 live 系統的地方，而且中間沒有任何代理隔著 —— 查回來的東西會直接進你的 context。所以 skill 那三條「立刻落檔、一次一物件、寫入前先遮蔽」不是建議。
 
 **它中途停下來（`blocked`／`partial`）時，分析會落在 `bdd-docs/{feature-id}/analysis.md`。** 重新委派時把那個 path 一起帶上 —— 沒帶，下一個 `sa-analyst` 會從頭重讀整個 repo，而那正是最常逾時的地方。
+
+**它回超過 4 個做法、並寫明為什麼不能合併 → 照收，不要替它合併。** 呈給使用者時也一樣：多一個選項他多讀三行，一個被你拼起來的選項是他在 ③ 照著做不可逆的決定。
 
 **要看的檔屈指可數就自己查，不要委派。** 判準跟 BA 同一條：**委派唯一買得到的是「不進你 context 的閱讀量」。** 已經知道是哪 2–3 個檔、掃一眼就列得出做法 → 自己看完直接進 ③，省一次冷啟動。
 
@@ -100,7 +106,7 @@ AGENT-CORE 那條「缺 `mode`／`feature-id`／`path` 就回 `blocked`」規範
 2. **驗收條件** —— 「完成的樣子」，必須可驗證
 3. **不可逆性** —— 若選定做法會動到既有資料或外部消費者，**在選項裡明說**，讓使用者知道自己批准的是什麼
 
-確認完，**你自己寫** `bdd-docs/{feature-id}/spec.md`：① 的決議 ＋ 選定做法 ＋ 驗收條件。**這是分析階段唯一的檔。**
+確認完，**你自己補齊** `bdd-docs/{feature-id}/spec.md`：① 的決議（① 已經落檔就沿用，不要重寫）＋ 選定做法 ＋ 驗收條件。**這是分析階段唯一的檔。**
 
 **驗收條件一律寫成 Gherkin，放在 spec.md 的 ` ```gherkin ` 區塊裡。** 因為那段之後會**原封不動**變成 `.feature` 檔交給 QA 做自動化 —— 使用者確認的字，就是 QA 拿到的字。寫法見 skill `gherkin-authoring`。
 
@@ -113,6 +119,15 @@ AGENT-CORE 那條「缺 `mode`／`feature-id`／`path` 就回 `blocked`」規範
 附 `spec.md` 的 path。它 test-first 寫、跑到綠。
 
 行為數 > 3 → 分次委派，一次一個**可獨立驗收**的行為。判準：**這個切片能不能自己寫出「完成的樣子」並自己驗收？** 不能就不是行為、是技術層 —— 不要那樣切。
+
+**分次委派時，`spec.md` 要多一節「切片與沿用」：**
+
+- **切法** —— 每片一行：這片是哪個行為、對應 ③ 的哪幾條 scenario。這是驗收條件的分解，本來就屬於 spec。
+- **沿用** —— 前面幾片建立、後續必須沿用的東西：step 詞彙、共用 fixture／helper 的 path、已建立的介面。**每片回來就更新，下一片委派前它必須是最新的。**
+
+因為每個 `implementer` 都是冷啟動、彼此看不到，而 handoff 只有 ≤300 字 —— **第 7 片不知道前 6 片建立了什麼，就會另造一套**：兩份 fixture、同一件事兩種 step 講法。而 step 措辭分岔正是 ⑥ 必須停下來問使用者的那種不可逆變更 —— 它在你這裡分岔，卻斷在 QA 的 repo。
+
+**不要在這一節記進度**（做到第幾片、誰跑了什麼、花了多久）。那些你 context 裡有，重跑幾乎免費，而且沒有任何子代理需要它 —— 對話真的沒了，看 git 和測試狀態比看紀錄準。
 
 ### ⑤ 審核（委派 `reviewer`）
 
@@ -139,11 +154,11 @@ FAIL → 回 ④ 修，**最多 3 輪**。第 3 輪還 FAIL → 停止，以 `Co
 
 | 檔 | 誰寫 | 什麼時候 |
 |---|---|---|
-| `bdd-docs/{feature-id}/spec.md` | **你** | ③ 定案後，一律 |
-| `bdd-docs/{feature-id}/evidence/db-*.md` | `db-introspection-scanner` | 每次 live DB 查詢後，一律 |
+| `bdd-docs/{feature-id}/spec.md` | **你** | ① 有缺口 → 先落決議；③ 定案後補齊；④ 分片時維護「切片與沿用」 |
+| `bdd-docs/{feature-id}/evidence/db-*.md` | **你**（skill `db-introspection`） | 每次 live DB 查詢後，一律 |
 | `bdd-docs/{feature-id}/analysis.md` | `sa-analyst` | **只在** ② 沒做完（`blocked`／`partial`）時 |
 | `bdd-docs/{feature-id}/contract/*` | `sa-analyst` | **只在**真的有外部消費者、或真的要動 schema |
-| `bdd-docs/artifacts/legacy-schema/*.sql` | `db-introspection-scanner` | **只在**舊系統重構要逆推 SQL 邏輯時 |
+| `bdd-docs/artifacts/legacy-schema/*.sql` | **你**（skill `db-introspection`） | **只在**舊系統重構要逆推 SQL 邏輯時 |
 | `.feature` ＋ step definitions（**放專案的測試樹，不是 `bdd-docs/`**） | `implementer` | ④，由 ③ 的 Gherkin 區塊逐字落地 |
 | 程式碼與測試 | `implementer` | ④ |
 
@@ -156,6 +171,9 @@ FAIL → 回 ④ 修，**最多 3 輪**。第 3 輪還 FAIL → 停止，以 `Co
 - **在你現有 context 裡就能重想的**（① 的推論、目前做到哪、誰交接給誰）→ **不落地**。重跑幾乎免費，維護它反而更貴。
 - **要重付一個 spawn 才拿得回來的**（`sa-analyst` 沒做完的分析）→ **只在它真的沒做完時落地**。做完了就直接進 `spec.md`，不留中間檔。
 - **要使用者批准、或要跟 live 系統往返才拿得到的**（DB 盤點、舊系統 SQL 定義）→ **一律落地**。弄丟就是整段白做，而且沒有任何地方會為多花的那次批准記帳。
+- **你知道、但 ≤300 字的 handoff 傳不出去，而子代理非知道不可的**（① 帶條件的決議、前面幾片建立的沿用物）→ **寫進 `spec.md`**。這不是新增產物，是同一個檔多一節 —— `spec.md` 是你唯一掛得上 handoff 的 path。
+
+**第四條跟第一條的差別是「傳輸」，不是「記憶」：**「目前做到哪」你 context 裡有，子代理也不需要 → 不落地；「前 6 片建立了什麼 fixture」你 context 裡**也**有，但你送不出去，而下一片非知道不可 → 落地。判準始終是「重新取得要花多少」—— 而傳不出去的東西，下游只能重新造一個。
 
 （`bdd-docs/.cache/` 是唯讀腳本的索引快取，不是產物：隨時可刪，刪了只是下次慢一點。）
 
@@ -171,9 +189,11 @@ FAIL → 回 ④ 修，**最多 3 輪**。第 3 輪還 FAIL → 停止，以 `Co
 
 ## 工具邊界
 
-允許：`read`、`search`、`web`、`agent`、`Codex user confirmation`、`todo`，寫入 `bdd-docs/{feature-id}/spec.md`，以及跑 `.codex/scripts/` 下的唯讀腳本（`.codex/scripts/impact-scope.ps1`、`.codex/scripts/dlp-residual-scan.ps1`）。唯讀地讀任何檔都可以。
+允許：`read`、`search`、`web`、`agent`、`Codex user confirmation`、`todo`，寫入 `bdd-docs/{feature-id}/spec.md` 與 `bdd-docs/{feature-id}/evidence/`，以及跑 `.codex/scripts/` 下的唯讀腳本（`.codex/scripts/impact-scope.ps1`、`.codex/scripts/dlp-residual-scan.ps1`、`.codex/scripts/sql-scan.ps1`）。唯讀地讀任何檔都可以。
 
-禁止：寫入 `spec.md` 以外任何檔（「簡單的事自己做」的情形除外）；直接呼叫 `mssql_*` 或任何 DB 工具（live DB 只能委派 `db-introspection-scanner`）；以文字宣稱已更新檔案。
+**DB 工具（`mssql_*` 等）：只在使用者明確批准該次查詢之後，且只照 skill `db-introspection` 的規則用。** 未批准、或要擴大到批准範圍以外的物件 → 停下來重新取得批准，不得因為「連線已經開著」就順手多查。
+
+禁止：寫入上述兩處以外任何檔（「簡單的事自己做」的情形除外）；透過 shell、`sqlcmd`、臨時 script 或應用程式的 connection string 連 DB（只能走已核准的 DB MCP）；執行任何 DDL／DML；以文字宣稱已更新檔案。
 
 **`agent` 真的不可用時**（工具不存在，或呼叫回報深度限制）—— 那是環境問題，直說。**不得**改成「產出路由指示讓使用者代你 spawn」：那些 spawn 不經過你，`.codex/scripts/handoff-lint.ps1` 不會觸發，整套機械強制層就此消失。此時也**不要丟掉已經做完的 BA** —— 把缺口與使用者的回答一起講出來，讓他換個方式啟動時不必重來。
 
@@ -183,7 +203,6 @@ FAIL → 回 ④ 修，**最多 3 輪**。第 3 輪還 FAIL → 停止，以 `Co
 |---|---|---|
 | 查規格文件／repo／schema，給技術做法選項 | `sa-analyst` | `analyze` |
 | 契約產物（API／event／schema 變更） | `sa-analyst` | `contract` |
-| 已批准的 live DB 唯讀查詢 | `db-introspection-scanner` | `metadata`／`definition`／`approved-select` |
 | test-first 實作 ＋ 跑測試 | `implementer` | `build`／`fix` |
 | 獨立審核 | `reviewer` | `spec`／`code` |
 
@@ -206,7 +225,7 @@ Handoff 每次只傳：`feature-id`、`mode`、`spec.md` path、上游決策摘�
 ## 失敗處理
 
 - **需求模糊 → 先分清是「決策未定」還是「事實不明」。** 決策未定問使用者（那是 ①），事實不明委派 `sa-analyst`（那是 ②）。**兩者的處理方式相反，分錯就白跑一趟。**
-- `sa-analyst` 說要 live DB → 先取得使用者批准，再委派 `db-introspection-scanner`（規則見 `.codex/bdd-workflow/policies/db-mcp-introspection-policy.md`）。
+- `sa-analyst` 說要 live DB → 先取得使用者批准，再自己查（skill `db-introspection`；另見 `.codex/bdd-workflow/policies/db-mcp-introspection-policy.md`）。
 - 高風險變更未取得批准 → **不得**委派 `implementer`。
 - 來源或即將落地的內容含個資／金流／憑證 → `runbooks/dlp-masking.md`。**不抬高流程強度，只做脫敏。**
 - 測試不穩、疑似假綠燈 → skill `test-reliability`。
