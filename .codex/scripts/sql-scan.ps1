@@ -1,6 +1,10 @@
 # sql-scan.ps1
-# 遺留 SQL 邏輯訊號偵測。把 runbooks/sql-logic-extraction.md 已寫死的樣式清單
-# 實作成 regex，用腳本掃完整個舊碼庫 —— 零 token。
+# 遺留 SQL 邏輯訊號偵測。用腳本掃完整個舊碼庫 —— 零 token。
+#
+# 下面兩份樣式清單**就是**這件事的規格，沒有第二份文件。原本它們寫在
+# runbooks/sql-logic-extraction.md，那份 runbook 連同它引用的 db-introspection-scanner、
+# project-scanner 與 bdd-docs/runs/ 在 v4.0.0 一起被移除 —— 樣式本身完整搬到這裡了。
+# 要增修樣式改這裡，不要為此把那份 runbook 復活（它會把 v3 概念一起帶回來）。
 #
 # LLM 只讀本腳本輸出的訊號清單，判定 data-access vs business-rule（那才是 LLM 的工作）。
 #
@@ -32,7 +36,7 @@ function Protect-Context([string]$line) {
     return $s
 }
 
-# ---- inline-code-sql 樣式（sql-logic-extraction.md L41-49）----
+# ---- inline-code-sql 樣式：舊應用程式碼內嵌的 SQL ----
 # 順序即優先序：一行只記一個訊號，**最具體的樣式必須排在最前面**，
 # 否則通用的 string-concat-sql 會把 FromSqlRaw / StringBuilder 等更有資訊量的型別吃掉。
 $inlinePatterns = @(
@@ -43,7 +47,7 @@ $inlinePatterns = @(
     @{ type='string-concat-sql'; re='(?i)(?:"|\$")[^"]*\b(SELECT|INSERT|UPDATE|DELETE|WHERE|CASE\s+WHEN)\b' }
 )
 
-# ---- db-object 樣式（sql-logic-extraction.md L30-38）----
+# ---- db-object 樣式：View／SP／Function／Trigger 定義裡的邏輯構件 ----
 # 同樣最具體優先：dynamic-sql 與 cursor 是重構風險最高的訊號，
 # 不可被通用的 join-filter（WHERE ... AND/OR）吃掉。
 $dbObjectPatterns = @(
@@ -117,9 +121,12 @@ $result = [pscustomobject]@{
     'cs-file-count'     = $csFiles.Count
     'signal-count'      = $all.Count
     truncated           = $truncated
+    # 這個欄位會直接進讀者的 context，所以它必須指向現在真的存在的 agent 與 mode。
+    # v4.0.0 之前寫的是「analyst 以 sql-logic-extraction mode」—— 那個 agent 和那個 mode
+    # 都已經不存在，照著做的人會去找一個叫不出來的東西。
     'next-step'         = if ($truncated) { "訊號超過 $MaxSignals；以 -MaxSignals 提高上限或分批處置" }
-                          elseif ($dbObjectSource -eq 'none-found' -and $inlineSignals.Count -eq 0) { 'sql-logic-extraction 可標 not-applicable' }
-                          else { 'analyst 以 sql-logic-extraction mode 判定 data-access vs business-rule' }
+                          elseif ($dbObjectSource -eq 'none-found' -and $inlineSignals.Count -eq 0) { '沒有邏輯訊號，這次不需要 SQL 逆推' }
+                          else { 'sa-analyst（mode: analyze）逐一判定 data-access vs business-rule' }
     'by-construct'      = ($emit | Group-Object 'construct-type' |
                             ForEach-Object { [pscustomobject]@{ type=$_.Name; count=$_.Count } })
     signals             = $emit

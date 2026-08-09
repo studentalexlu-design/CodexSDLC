@@ -49,6 +49,21 @@ pwsh -NoProfile -File .codex/scripts/agent-lint.ps1
 
 ---
 
+## 流程六步
+
+| | 做什麼 | 誰做 | 產出 |
+|---|---|---|---|
+| **① BA** | 找出你沒說的需求缺口 | orchestrator 自己（不查你的專案） | `spec.md`（有缺口才開） |
+| **② SA** | 查規格／repo／schema，回 2–4 個做法 | `sa-analyst` | `project-map.md`；沒做完才有 `analysis.md` |
+| **③ 定案** | 選做法＋確認驗收條件（Gherkin） | 你 ＋ orchestrator | `spec.md` 補齊 |
+| **④ 實作** | test-first 寫到綠 | `implementer` | `.feature`、step definitions、程式碼與測試 |
+| **⑤ 審核** | 換一個乾淨的 context 獨立審 | `reviewer` | 無（PASS／FAIL，最多修 3 輪） |
+| **⑥ 交付** | 回報改了什麼、怎麼驗的、殘留風險 | orchestrator | 無 |
+
+**能跳的就跳。** 純技術改動（重構、升套件、重現步驟明確的 bug）① 通常沒缺口，直接進 ②；改動小到「單一 commit 可 revert 且沒有要驗收的行為變更」，② 也跳過，它自己改完。
+
+---
+
 ## 一次完整的例子
 
 ### ① 它先問你需求的漏洞
@@ -170,17 +185,46 @@ pwsh -NoProfile -File .codex/scripts/agent-lint.ps1
 
 ## 你會拿到什麼檔
 
-| 檔 | 什麼時候 |
-|---|---|
-| `bdd-docs/{feature-id}/spec.md` | 你答完 ① 的問題就先有（那時只有需求決議），③ 之後補上選定做法＋驗收條件。行為多到要分次做時，多一節「切片與沿用」 |
-| `.feature` ＋ step definitions | ④。**跟你專案的單元測試放在一起**，不在 `bdd-docs/` 底下 |
-| 程式碼與測試 | ④ |
-| `bdd-docs/{feature-id}/evidence/db-*.md` | 每次查過 live DB 之後。**你批准換來的東西，一定會留檔** |
-| `bdd-docs/{feature-id}/analysis.md` | 只在 ② 中途停下來時。做完了就直接進 `spec.md`，不會多一個檔 |
-| `bdd-docs/{feature-id}/contract/` | 只在真的有外部消費者或真的動 schema |
-| `bdd-docs/artifacts/legacy-schema/*.sql` | 只在舊系統逆推 SQL 時 |
+產出物分三層。**分層方式決定了你做第二個需求時會不會撞到第一個**，所以值得看一眼。
 
-**其餘一律不產出** —— 沒有狀態檔、沒有進度紀錄、沒有階段交接文件。判準是**「重新拿一次要花多少」**：想一想就有的不留檔；要重跑一次分析的，只在沒做完時留；**要你批准、要連 live 系統才拿得到的一定留檔**。（`bdd-docs/.cache/` 是唯讀腳本的索引快取，隨時可刪。）
+### 這個需求專屬 —— `bdd-docs/{feature-id}/`
+
+| 檔 | 誰寫 | 什麼時候 |
+|---|---|---|
+| `spec.md` | orchestrator | 你答完 ① 的問題就先有（那時只有需求決議），③ 之後補上選定做法＋驗收條件。行為多到要分次做時，多一節「切片與沿用」 |
+| `evidence/db-*.md` | orchestrator | 每次查過 live DB 之後。**你批准換來的東西，一定會留檔** |
+| `analysis.md` | `sa-analyst` | 只在 ② 中途停下來時。做完了就直接進 `spec.md`，不會多一個檔 |
+| `contract/` | `sa-analyst` | 只在真的有外部消費者或真的動 schema |
+
+`{feature-id}` 是它從你的需求取的英文短名（`cancel-order`），第一次回覆會說用了什麼、你可以改。**換一個需求就換一個目錄，這一層不會互相覆蓋。**
+
+### 跨需求共用 —— 固定路徑，不分 feature
+
+| 檔 | 誰寫 | 作用 |
+|---|---|---|
+| `bdd-docs/project-map.md` | `sa-analyst`，每次分析結束 | 這個 repo 的系統地圖：模組邊界、分層與擴充點、資料存取、重點資料表、**已經建立的 step 詞彙**。上限 200 行，每節掛「來源」。有它，第二個需求就不必把同一份現況再查一遍 |
+| `bdd-docs/artifacts/legacy-schema/*.sql` | orchestrator | 只在舊系統逆推 SQL 時，見下 |
+
+### 落進你的專案樹
+
+`.feature` ＋ step definitions ＋ 程式碼與測試，都由 `implementer` 在 ④ 寫。**跟你的單元測試放在一起，不在 `bdd-docs/` 底下** —— `bdd-docs/` 是流程草稿區，QA 不會去那裡找測試。
+
+---
+
+**其餘一律不產出** —— 沒有狀態檔、沒有進度紀錄、沒有階段交接文件。判準是**「重新拿一次要花多少」**：想一想就有的不留檔；要重跑一次分析的，只在沒做完時留；**要你批准、要連 live 系統才拿得到的一定留檔**；而**每個需求都要重付一次的**（這個 repo 長什麼樣）留成 `project-map.md`。（`bdd-docs/.cache/` 是唯讀腳本的索引快取，隨時可刪。）
+
+### `legacy-schema/*.sql` 是做什麼的
+
+舊系統常把業務規則寫在 View／Stored Procedure／Function 裡，不在程式碼裡。要動那塊時：
+
+1. `sa-analyst` 發現邏輯在 DB 物件裡 —— 但它連不到 DB，會停下來
+2. **你批准** → orchestrator 讀出 definition，遮蔽後**一物件一檔**落成 `legacy-schema/{object-name}.sql`
+3. 跑 `sql-scan.ps1` 掃出 cursor／case-when／dynamic-sql 這類邏輯訊號（純腳本，零 token）
+4. `sa-analyst` 讀檔判定：哪些是**業務規則**（要搬進程式、要寫成驗收條件）、哪些只是資料存取（join／分頁／排序不算規則）
+
+它存在的理由是 `sa-analyst` 沒有 DB 權限、而 orchestrator 不該替它做「哪些算業務規則」的判斷 —— 這個檔就是那道落差的橋，順帶讓幾百行的 definition 不必擠進 1200 字元的委派、也不必進對話。
+
+**它是唯讀的分析素材，不是拿來執行的**（整套流程禁止任何 DDL／DML）。放在 `artifacts/` 而不是 `{feature-id}/` 底下，因為它描述的是你的資料庫、不是這次的需求。
 
 ### `.feature` 是交付給 QA 的，不是文件
 

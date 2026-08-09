@@ -242,6 +242,16 @@ $artifactContracts = @(
     # 但方向錯的做法清單，然後使用者在 ③ 照著它做不可逆的決定。
     @{ path = 'bdd-docs/{feature-id}/spec.md';     roles = @('bdd-orchestrator', 'sa-analyst') }
     @{ path = 'bdd-docs/artifacts/legacy-schema/'; roles = @('bdd-orchestrator', 'sa-analyst') }
+    # v4.4.0：唯一跨需求的產物。生產者是 sa-analyst，orchestrator 只是路由者 ——
+    # 它刻意**不讀**這個檔（那會把 repo 現況灌進唯一必須活到 ⑥ 的 context），但產出物表
+    # 必須列它：漏了，「其餘一律不產出」就把它變成一個沒有人授權、卻每次分析都被寫出來的檔，
+    # 而下一個維護者看不出那是設計還是失控。
+    #
+    # implementer 與 reviewer 是「測試骨架」那一節的消費者，兩者都只讀那一節。它們缺席的
+    # 症狀比別的產物嚴重：step definition 在測試專案裡全域繫結，第 N 個需求看不到前 N-1 個
+    # 建立的 step 詞彙就會另造一套，撞名時 Reqnroll／Cucumber 整包炸掉 —— 連已經綠的
+    # 測試一起帶走。而那是 build 期的失敗，不是這條 lint 抓得到的東西，所以指標本身不能掉。
+    @{ path = 'bdd-docs/project-map.md';           roles = @('sa-analyst', 'bdd-orchestrator', 'implementer', 'reviewer') }
 )
 foreach ($c in $artifactContracts) {
     $lit = [regex]::Escape($c.path)

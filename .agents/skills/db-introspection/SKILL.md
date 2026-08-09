@@ -72,9 +72,14 @@ description: 已取得使用者批准後，親自透過 DB MCP 做唯讀盤點�
 
 需要從 View／SP／Function 逆推舊系統邏輯時：
 
-1. 定義**一物件一檔**落成 `bdd-docs/artifacts/legacy-schema/{object-name}.sql`（同樣先遮蔽）。
-2. 落地後跑 `pwsh -NoProfile -File .codex/scripts/sql-scan.ps1 -Root bdd-docs/artifacts/legacy-schema`。
-3. 對話裡只留腳本摘要（`signal_count`、`by_construct`、輸出檔 path）。
+1. **先看 `bdd-docs/artifacts/legacy-schema/{object-name}.sql` 在不在。在就不要查。** 這個目錄**不分 feature**，裡面的物件可能是前幾個需求抓的 —— 直接把 path 帶進 handoff，**也不要為它去要批准**。批准是這條路徑上最貴的東西，而這一次根本不需要。
+
+   例外只有一個：`sa-analyst` 或使用者明確指出那份可能過期（`-- captured:` 太舊、或跟現況對不上）。那時連同「這份是哪天抓的、為什麼要重抓」一起取得批准。
+2. 定義**一物件一檔**落成 `bdd-docs/artifacts/legacy-schema/{object-name}.sql`（同樣先遮蔽）。**檔頭第一行寫 `-- captured: {YYYY-MM-DD} | object: {schema.物件名}`** —— 沒有它，下一個需求分不出這份是三天前還是三個月前抓的，只能整個重抓，第 1 條也就失效了。
+3. 落地後跑 `pwsh -NoProfile -File .codex/scripts/sql-scan.ps1 -Root bdd-docs/artifacts/legacy-schema`。
+4. 對話裡只留腳本摘要（`signal_count`、`by_construct`、輸出檔 path）。
+
+**重抓時直接覆寫，不要附加。** 這一條跟上面 `evidence/db-{scope}.md` 的規則**刻意相反**，因為兩者的內容形狀不同：evidence 是一次次累積的盤點紀錄（這次查了哪些物件），少一節就少一段歷史；definition 是**單一權威版本**，會重抓就表示物件真的改了，後蓋前才是正確的現況。留兩份只會讓 `sa-analyst` 不知道該信哪一份。
 
 - **不要把完整 definition 或原始 SQL 貼進對話。** 也不要自己判定哪些是資料存取、哪些是業務規則 —— 那是 `sa-analyst` 的事，它讀檔就好。
 - `sql-scan.ps1` 不可用時，退回：列出構件型別 ＋ 物件名／行號 ref（已遮蔽），並標記 `environment: index-unavailable`。

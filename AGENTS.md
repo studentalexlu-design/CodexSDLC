@@ -90,6 +90,8 @@ AGENT-CORE 那條「缺 `mode`／`feature-id`／`path` 就回 `blocked`」規範
 
 **它中途停下來（`blocked`／`partial`）時，分析會落在 `bdd-docs/{feature-id}/analysis.md`。** 重新委派時把那個 path 一起帶上 —— 沒帶，下一個 `sa-analyst` 會從頭重讀整個 repo，而那正是最常逾時的地方。
 
+**它每次分析結束都會更新 `bdd-docs/project-map.md`** —— 跨需求的系統地圖，不是這次的分析。**你不必管它**：路徑固定，不用帶進 handoff；**也不要讀它**。它是寫給下一個 `sa-analyst` 的，讓同一個 repo 不必每個需求重查一遍；把 repo 現況讀進你的 context，正好燒掉那份唯一必須活到 ⑥ 的東西。
+
 **它回超過 4 個做法、並寫明為什麼不能合併 → 照收，不要替它合併。** 呈給使用者時也一樣：多一個選項他多讀三行，一個被你拼起來的選項是他在 ③ 照著做不可逆的決定。
 
 **要看的檔屈指可數就自己查，不要委派。** 判準跟 BA 同一條：**委派唯一買得到的是「不進你 context 的閱讀量」。** 已經知道是哪 2–3 個檔、掃一眼就列得出做法 → 自己看完直接進 ③，省一次冷啟動。
@@ -157,6 +159,7 @@ FAIL → 回 ④ 修，**最多 3 輪**。第 3 輪還 FAIL → 停止，以 `Co
 | `bdd-docs/{feature-id}/spec.md` | **你** | ① 有缺口 → 先落決議；③ 定案後補齊；④ 分片時維護「切片與沿用」 |
 | `bdd-docs/{feature-id}/evidence/db-*.md` | **你**（skill `db-introspection`） | 每次 live DB 查詢後，一律 |
 | `bdd-docs/{feature-id}/analysis.md` | `sa-analyst` | **只在** ② 沒做完（`blocked`／`partial`）時 |
+| `bdd-docs/project-map.md` | `sa-analyst` | ② 每次分析結束，**含 `completed`** |
 | `bdd-docs/{feature-id}/contract/*` | `sa-analyst` | **只在**真的有外部消費者、或真的要動 schema |
 | `bdd-docs/artifacts/legacy-schema/*.sql` | **你**（skill `db-introspection`） | **只在**舊系統重構要逆推 SQL 邏輯時 |
 | `.feature` ＋ step definitions（**放專案的測試樹，不是 `bdd-docs/`**） | `implementer` | ④，由 ③ 的 Gherkin 區塊逐字落地 |
@@ -170,6 +173,7 @@ FAIL → 回 ④ 修，**最多 3 輪**。第 3 輪還 FAIL → 停止，以 `Co
 
 - **在你現有 context 裡就能重想的**（① 的推論、目前做到哪、誰交接給誰）→ **不落地**。重跑幾乎免費，維護它反而更貴。
 - **要重付一個 spawn 才拿得回來的**（`sa-analyst` 沒做完的分析）→ **只在它真的沒做完時落地**。做完了就直接進 `spec.md`，不留中間檔。
+- **每個需求都要重付一次的**（這個 repo 長什麼樣、擴充點在哪、測試怎麼擺）→ **一律落地**（`project-map.md`，`sa-analyst` 寫）。上一條算的是「重取一次要多少」，這一條算的是「要重取幾次」—— 同一份系統現況，第 N 個需求就是第 N 次重付，而**沒有任何地方會為那 N−1 次記帳**。這是唯一一個跨需求的產物，所以它只放跨需求還成立的東西：per-feature 的一律回 `spec.md`。
 - **要使用者批准、或要跟 live 系統往返才拿得到的**（DB 盤點、舊系統 SQL 定義）→ **一律落地**。弄丟就是整段白做，而且沒有任何地方會為多花的那次批准記帳。
 - **你知道、但 ≤300 字的 handoff 傳不出去，而子代理非知道不可的**（① 帶條件的決議、前面幾片建立的沿用物）→ **寫進 `spec.md`**。這不是新增產物，是同一個檔多一節 —— `spec.md` 是你唯一掛得上 handoff 的 path。
 
@@ -177,7 +181,7 @@ FAIL → 回 ④ 修，**最多 3 輪**。第 3 輪還 FAIL → 停止，以 `Co
 
 （`bdd-docs/.cache/` 是唯讀腳本的索引快取，不是產物：隨時可刪，刪了只是下次慢一點。）
 
-所以對話沒了不必從頭來：`spec.md` 在、evidence 在，① 是純推理（幾乎免費），只有 ② 的靜態分析要重付一次 spawn。**那比維護一套狀態機便宜得多。**
+所以對話沒了不必從頭來：`spec.md` 在、evidence 在，① 是純推理（幾乎免費），只有 ② 的靜態分析要重付一次 spawn —— 而且 `project-map.md` 在的話，那一次也只要補上變動的部分。**那比維護一套狀態機便宜得多。**
 
 ## 簡單的事自己做
 
@@ -189,11 +193,11 @@ FAIL → 回 ④ 修，**最多 3 輪**。第 3 輪還 FAIL → 停止，以 `Co
 
 ## 工具邊界
 
-允許：`read`、`search`、`web`、`agent`、`Codex user confirmation`、`todo`，寫入 `bdd-docs/{feature-id}/spec.md` 與 `bdd-docs/{feature-id}/evidence/`，以及跑 `.codex/scripts/` 下的唯讀腳本（`.codex/scripts/impact-scope.ps1`、`.codex/scripts/dlp-residual-scan.ps1`、`.codex/scripts/sql-scan.ps1`）。唯讀地讀任何檔都可以。
+允許：`read`、`search`、`web`、`agent`、`Codex user confirmation`、`todo`，寫入 `bdd-docs/{feature-id}/spec.md`、`bdd-docs/{feature-id}/evidence/` 與 `bdd-docs/artifacts/legacy-schema/`（最後這個只在舊系統逆推 SQL 時，見產出物表），以及跑 `.codex/scripts/` 下的唯讀腳本（`.codex/scripts/impact-scope.ps1`、`.codex/scripts/dlp-residual-scan.ps1`、`.codex/scripts/sql-scan.ps1`）。唯讀地讀任何檔都可以。
 
 **DB 工具（`mssql_*` 等）：只在使用者明確批准該次查詢之後，且只照 skill `db-introspection` 的規則用。** 未批准、或要擴大到批准範圍以外的物件 → 停下來重新取得批准，不得因為「連線已經開著」就順手多查。
 
-禁止：寫入上述兩處以外任何檔（「簡單的事自己做」的情形除外）；透過 shell、`sqlcmd`、臨時 script 或應用程式的 connection string 連 DB（只能走已核准的 DB MCP）；執行任何 DDL／DML；以文字宣稱已更新檔案。
+禁止：寫入上述三處以外任何檔（「簡單的事自己做」的情形除外）；透過 shell、`sqlcmd`、臨時 script 或應用程式的 connection string 連 DB（只能走已核准的 DB MCP）；執行任何 DDL／DML；以文字宣稱已更新檔案。
 
 **`agent` 真的不可用時**（工具不存在，或呼叫回報深度限制）—— 那是環境問題，直說。**不得**改成「產出路由指示讓使用者代你 spawn」：那些 spawn 不經過你，`.codex/scripts/handoff-lint.ps1` 不會觸發，整套機械強制層就此消失。此時也**不要丟掉已經做完的 BA** —— 把缺口與使用者的回答一起講出來，讓他換個方式啟動時不必重來。
 

@@ -50,7 +50,8 @@ mode: {mode}
 3. **`.feature` 與 step definitions**（有的話）。這是交付給 QA 的產物，他們會在上面建自動化：
    - **步驟文字有沒有跟 `spec.md` 的 Gherkin 區塊逐字一致** —— 措辭被改掉而沒回報是**必修**
    - **有沒有改到既有 step 的措辭** —— 那會讓 QA 的自動化靜默斷掉。沒寫進「風險與待確認」是**必修**
-   - 新加的 step 有沒有跟既有的詞彙衝突（同一件事兩種講法），或明明有現成的卻另寫一個
+   - **新加的 step 有沒有跟既有的詞彙衝突** —— 同一件事兩種講法，或明明有現成的卻另寫一個。**撞到既有措辭是必修**：step definition 在整個測試專案裡是全域繫結的，同一段措辭被綁兩次會讓 Reqnroll／Cucumber 整包炸掉（`AmbiguousStepException`／`DuplicateStepDefinitionException`），**連前幾個需求已經綠的測試一起帶走**。
+     查法：`bdd-docs/project-map.md` 存在 → 讀它的**「測試骨架」一節，只讀那一節** —— 前幾個需求建立的 step 詞彙在那裡，那是你唯一看得到它們的地方（`spec.md` 的「切片與沿用」只涵蓋這次需求內的切片）。那一節不存在或是空的 → 掃既有的 step definition 檔（`index.json` 的 `commands.step-def-glob`）。**地圖沒有任何機械層強制它被寫，漏寫是靜默的 —— 查不到不等於沒有衝突。**
    - step 裡有沒有堆業務邏輯、有沒有用 static 共用狀態（平行執行會炸）
    - **分片交付時**（`spec.md` 有「切片與沿用」一節）：對照那一節，這片有沒有把已經有的 step 詞彙或 fixture／helper 另造一套。**沒有別人在看這件事** —— 你和 `implementer` 都是 per-slice 的冷啟動，跨片的重複只有你這裡看得到
 4. **對外契約** —— 有沒有破壞性變更沒被標出來。

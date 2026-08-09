@@ -321,6 +321,20 @@ Describe-Suite 'agent-lint / 檢查 6：產物路徑合約' {
         } finally { Remove-Item $Scratch -Recurse -Force -ErrorAction SilentlyContinue }
     }
 
+    It-Should '跨需求地圖只有生產者提到必須紅燈' {
+        # 方向跟上面兩個相反：這裡缺席的是**路由者**。project-map.md 是唯一跨需求的
+        # 產物，而 orchestrator 刻意不讀它 —— 正因為它不讀，產出物表是唯一會記下
+        # 「這個檔存在、而且是被授權寫的」的地方。漏掉不會報錯，只會讓下一個維護者
+        # 看到一個每次分析都被寫出來、卻沒有出現在「產出物：只有這些」裡的檔。
+        New-CleanScratch | Out-Null
+        New-ScratchAgent 'sa-analyst' '分析結束時更新 `bdd-docs/project-map.md`。' | Out-Null
+        try {
+            $r = Invoke-Lint
+            Assert-Equal 2 $r.exit 'orchestrator 沒提到 project-map.md 卻通過了'
+            Assert-Match 'artifact-path-orphan' $r.stderr
+        } finally { Remove-Item $Scratch -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
     It-Should '沒有人用到的產物不強制' {
         # 這一版可能就是沒有 legacy-schema 的需求，不該因此紅燈。
         New-CleanScratch | Out-Null

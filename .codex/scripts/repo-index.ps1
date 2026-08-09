@@ -6,7 +6,11 @@
 # LLM 只讀本腳本輸出的 index.json —— 包含 `meta.language`、`test-toolchain`
 # 與 `commands`，下游 agent 一律讀 `commands`，**不得自行硬編 dotnet／mvn／gradle**。
 #
-# 失效判定：偵測到 git → git diff；非 git → 檔案 hash 比對。分域失效，只重掃有變的 scope。
+# 失效判定：偵測到 git → git diff；非 git → 檔案 hash 比對。分域失效，只重掃有變的 scope
+# —— `symbols` 是唯一要讀進每個檔內容的 scope，也是唯一值得沿用的；它沒失效就直接搬上一份。
+#
+# `-StatusOnly` 只列檔名／大小／mtime，不讀任何檔內容，是下游 agent 的固定第一動作：
+# 一次呼叫就回規模、語言、建置工具與「上次索引之後變了哪些檔」，不必自己數檔案。
 #
 # Exit: 0 = 索引為最新或已成功刷新；1 = 錯誤。
 
@@ -23,6 +27,10 @@ $ErrorActionPreference = 'Stop'
 $Root = (Resolve-Path $Root).Path
 $indexPath  = Join-Path $OutDir 'index.json'
 $digestPath = Join-Path $OutDir 'index-digest.json'
+
+# 索引結構版本。改欄位就要 +1 —— 舊索引缺新欄位（ns／bases／di-registrations），
+# 沿用它會讓下游把「這一版沒掃」讀成「掃過但沒有」，而那是靜默的錯。
+$IndexSchema = 2
 
 function Get-Sha256([string]$text) {
     $sha = [System.Security.Cryptography.SHA256]::Create()
@@ -56,6 +64,8 @@ $prev = $null
 if ((Test-Path $indexPath) -and -not $Force) {
     try { $prev = Get-Content $indexPath -Raw | ConvertFrom-Json } catch { $prev = $null }
 }
+# schema 不符的舊索引一律當成沒有索引 —— 重建一次，好過讓下游拿缺欄位的索引下結論。
+if ($prev -and $prev.meta.'index-schema' -ne $IndexSchema) { $prev = $null }
 
 # ---------- 掃描輸入 ----------
 $slnFiles   = @(Get-SourceFiles '*.sln')
@@ -86,11 +96,11 @@ $buildTool =
     elseif ($slnFiles.Count -gt 0 -or $csprojs.Count -gt 0) { 'dotnet' }
     else { $null }
 
-$srcFiles = switch ($language) {
+$srcFiles = @(switch ($language) {
     'java'  { $javaFiles }
     'mixed' { @($csFiles) + @($javaFiles) }
     default { $csFiles }
-}
+})
 
 # ---------- 分域 hash ----------
 $structureInput = (@($slnFiles) + @($csprojs) + @($poms) + @($gradles) | Sort-Object FullName | ForEach-Object {
@@ -127,13 +137,22 @@ if ($gitSha -and $prev -and $prev.meta.'git-sha' -and $prev.meta.'git-sha' -ne $
 }
 
 if ($StatusOnly) {
+    # 這份輸出要讓 agent 一次呼叫就決定得了下一步，所以規模與工具鏈也一起回 ——
+    # 沒有它們，agent 為了知道「這個 repo 多大」還是得自己掃一遍，門檻等於自我否定。
     [pscustomobject]@{
-        index_exists      = [bool]$prev
-        stale_scopes      = $stale
-        invalidation_mode = $invalidationMode
-        git_sha           = $gitSha
-        changed_files     = $changedFiles
-        needs_refresh     = ($stale.Count -gt 0)
+        index_exists       = [bool]$prev
+        index_path         = ($indexPath -replace '\\', '/')
+        index_schema       = $IndexSchema
+        stale_scopes       = $stale
+        invalidation_mode  = $invalidationMode
+        git_sha            = $gitSha
+        language           = $language
+        build_tool         = $buildTool
+        file_count         = $srcFiles.Count
+        project_count      = (@($csprojs).Count + @($poms).Count + @($gradles).Count)
+        changed_file_count = $changedFiles.Count
+        changed_files      = @($changedFiles | Select-Object -First 200)
+        needs_refresh      = ($stale.Count -gt 0)
     } | ConvertTo-Json -Depth 4 -Compress
     exit 0
 }
@@ -239,7 +258,7 @@ $commands = switch ($buildTool) {
 }
 
 # ---------- entrypoints ----------
-$entrypoints = if ($language -eq 'java') {
+$entrypoints = @(if ($language -eq 'java') {
     @($javaFiles | Where-Object {
         $_.Name -match 'Application\.java$' -or $_.Name -match 'Controller\.java$' -or
         $_.Name -match 'Resource\.java$'    -or $_.Name -eq 'Main.java'
@@ -250,7 +269,7 @@ $entrypoints = if ($language -eq 'java') {
         $_.Name -match 'Controller\.(cs|java)$' -or $_.Name -match 'Endpoints?\.cs$' -or
         $_.Name -match 'Application\.java$'
     } | ForEach-Object { ConvertTo-RelPath $_.FullName })
-}
+})
 
 # ---------- config keys（只記 key path，不記 value） ----------
 $configKeys = @()
@@ -275,14 +294,41 @@ foreach ($a in $appYaml) {
         ForEach-Object { if ($_ -match '^\s*([A-Za-z0-9_.\-]+)\s*[:=]') { $configKeys += "${rel}#$($Matches[1])" } }
 }
 
-# ---------- symbols（只抓 public 簽章，不含 body） ----------
+# ---------- symbols ＋ DI 註冊（只抓 public 簽章與註冊點，不含 body） ----------
+# 這是整份索引唯一要讀進每個檔內容的一段，也是唯一貴到值得沿用的。
+# `symbols` 沒失效就直接搬上一份 —— 只有 config 或專案檔變動時不必重讀幾千個原始碼檔。
 $symbols = @()
+$diRegistrations = @()
+
+# 名稱正規化：去掉泛型引數與 namespace 前綴，只留可比對的短名。
+function Get-ShortName([string]$raw) {
+    $n = ($raw -replace '<[^>]*>', '').Trim()
+    if ($n -match '([\w]+)$') { return $Matches[1] }
+    return $n
+}
+
+if ($prev -and ('symbols' -notin $stale)) {
+    $symbols         = @($prev.symbols)
+    $diRegistrations = @($prev.'di-registrations')
+} else {
+
 $symFiles = $srcFiles | Select-Object -First $MaxSymbolFiles
 foreach ($f in $symFiles) {
     $txt = Get-Content $f.FullName -Raw -ErrorAction SilentlyContinue
     if (-not $txt) { continue }
     $isJava = $f.Extension -eq '.java'
-    $types = if ($isJava) {
+    $rel = ConvertTo-RelPath $f.FullName
+
+    # namespace / package：讓「這個型別住在哪一層」不必開檔就看得出來
+    $ns = if ($isJava) {
+        ([regex]::Match($txt, '(?m)^\s*package\s+([\w.]+)\s*;')).Groups[1].Value
+    } else {
+        ([regex]::Match($txt, '(?m)^\s*namespace\s+([\w.]+)')).Groups[1].Value
+    }
+
+    # 外層的 @() 不可省：PowerShell 會把 if/switch 回傳的單元素集合展開成純量，
+    # 只有一個 public 型別的檔會因此在 JSON 裡變成字串而不是陣列，讀的人得處理兩種形狀。
+    $types = @(if ($isJava) {
         @([regex]::Matches($txt,
             '(?m)^\s*public\s+(?:final\s+|abstract\s+|static\s+)*(class|interface|record|enum)\s+(\w+)') |
             ForEach-Object { "$($_.Groups[1].Value) $($_.Groups[2].Value)" })
@@ -290,8 +336,8 @@ foreach ($f in $symFiles) {
         @([regex]::Matches($txt,
             '(?m)^\s*public\s+(?:sealed\s+|abstract\s+|static\s+|partial\s+)*(class|interface|record|struct|enum)\s+(\w+)') |
             ForEach-Object { "$($_.Groups[1].Value) $($_.Groups[2].Value)" })
-    }
-    $methods = if ($isJava) {
+    })
+    $methods = @(if ($isJava) {
         # interface 方法隱含 public、無修飾詞，因此 public 為選用；
         # 以負向前瞻排除控制流關鍵字，避免把 `else if (` 之類誤判為方法。
         @([regex]::Matches($txt,
@@ -303,20 +349,65 @@ foreach ($f in $symFiles) {
         @([regex]::Matches($txt,
             '(?m)^\s*public\s+(?:static\s+|async\s+|virtual\s+|override\s+|sealed\s+)*[\w<>,\[\]\?\.]+\s+(\w+)\s*\(') |
             ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
-    }
-    if ($types.Count -or $methods.Count) {
-        $symbols += [pscustomobject]@{
-            file = ConvertTo-RelPath $f.FullName
-            types = $types
-            methods = @($methods | Select-Object -First 40)
+    })
+    # 繼承／實作關係。「有沒有現成的擴充點」是每次分析都要問的問題，而它完全是機械可掃的：
+    # 知道誰實作了 IFoo，就不必為了找掛載點把整層服務讀過一遍。
+    $bases = @()
+    if ($isJava) {
+        foreach ($m in [regex]::Matches($txt,
+            '(?m)^\s*public\s+(?:final\s+|abstract\s+|static\s+)*(?:class|interface|record|enum)\s+(\w+)\s*(?:<[^>]*>)?\s*(?:\([^)]*\))?\s*((?:extends|implements)\b[^{\r\n]+)')) {
+            $list = @(($m.Groups[2].Value -replace '\b(extends|implements)\b', ',') -split ',' |
+                      ForEach-Object { Get-ShortName $_ } | Where-Object { $_ })
+            if ($list.Count) { $bases += "$($m.Groups[1].Value) : $($list -join ', ')" }
+        }
+    } else {
+        foreach ($m in [regex]::Matches($txt,
+            '(?m)^\s*public\s+(?:sealed\s+|abstract\s+|static\s+|partial\s+)*(?:class|interface|record|struct)\s+(\w+)\s*(?:<[^>]*>)?\s*(?:\([^)]*\))?\s*:\s*([^{\r\n]+)')) {
+            $list = @((($m.Groups[2].Value -split '\bwhere\b')[0]) -split ',' |
+                      ForEach-Object { Get-ShortName $_ } | Where-Object { $_ })
+            if ($list.Count) { $bases += "$($m.Groups[1].Value) : $($list -join ', ')" }
         }
     }
+
+    # DI 註冊：C# 是泛型註冊呼叫，Java 是類別層註解。兩者都是「這個實作真的被掛上去了」的訊號 ——
+    # 光看有沒有實作某介面不夠，沒註冊的實作是死碼，掛上去的那個才是擴充點。
+    if ($isJava) {
+        $primary = if ($types.Count) { ($types[0] -split '\s+')[-1] } else { $f.BaseName }
+        foreach ($a in @([regex]::Matches($txt, '(?m)^\s*@(Service|Component|Repository|Configuration|RestController)\b') |
+                         ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)) {
+            $diRegistrations += [pscustomobject]@{ file = $rel; kind = "@$a"; service = $primary; impl = $null }
+        }
+    } else {
+        foreach ($m in [regex]::Matches($txt,
+            '\.(?:Try)?Add(Scoped|Singleton|Transient|HostedService)\s*<\s*([\w.]+(?:<[^>]*>)?)\s*(?:,\s*([\w.]+(?:<[^>]*>)?)\s*)?>')) {
+            $diRegistrations += [pscustomobject]@{
+                file    = $rel
+                kind    = "Add$($m.Groups[1].Value)"
+                service = (Get-ShortName $m.Groups[2].Value)
+                impl    = if ($m.Groups[3].Success) { Get-ShortName $m.Groups[3].Value } else { $null }
+            }
+        }
+    }
+
+    if ($types.Count -or $methods.Count) {
+        $entry = [ordered]@{ file = $rel }
+        if ($ns)           { $entry.ns    = $ns }
+        $entry.types = $types
+        if ($bases.Count)  { $entry.bases = $bases }
+        $entry.methods = @($methods | Select-Object -First 40)
+        $symbols += [pscustomobject]$entry
+    }
 }
+
+$diRegistrations = @($diRegistrations | Select-Object -First 300)
+
+}   # end: symbols 重掃
 
 # ---------- 組裝 ----------
 $index = [pscustomobject]@{
     meta = [pscustomobject]@{
         'generated-at'      = (Get-Date).ToUniversalTime().ToString('o')
+        'index-schema'      = $IndexSchema
         'git-sha'           = $gitSha
         'invalidation-mode' = $invalidationMode
         'language'          = $language
@@ -328,6 +419,7 @@ $index = [pscustomobject]@{
         'refreshed-scopes'  = $stale
         'changed-files'     = @($changedFiles | Select-Object -First 200)
         'symbol-truncated'  = ($srcFiles.Count -gt $MaxSymbolFiles)
+        'symbols-reused'    = [bool]($prev -and ('symbols' -notin $stale))
     }
     solutions       = @(@($slnFiles) + @($poms) + @($gradles) | ForEach-Object { ConvertTo-RelPath $_.FullName })
     projects        = $projects
@@ -335,6 +427,7 @@ $index = [pscustomobject]@{
     commands        = $commands
     entrypoints     = $entrypoints
     'config-keys'   = @($configKeys | Select-Object -First 400)
+    'di-registrations' = $diRegistrations
     symbols         = $symbols
     hashes = [pscustomobject]@{
         'structure-hash' = $structureHash
@@ -351,15 +444,17 @@ $json | Set-Content $indexPath -Encoding UTF8
     artifact = ($indexPath -replace '\\', '/')
     version  = "scan.repo-index.$((Get-Sha256 $json).Substring(0,16))"
     hash     = (Get-Sha256 $json)
-    summary  = "$language/$buildTool, $($projects.Count) projects, $($srcFiles.Count) source files, $($symbols.Count) symbol entries"
-    counts   = [pscustomobject]@{ projects=$projects.Count; files=$srcFiles.Count; entrypoints=$entrypoints.Count }
+    summary  = "$language/$buildTool, $($projects.Count) projects, $($srcFiles.Count) source files, $($symbols.Count) symbol entries, $($diRegistrations.Count) DI registrations"
+    counts   = [pscustomobject]@{ projects=$projects.Count; files=$srcFiles.Count; entrypoints=$entrypoints.Count; di=$diRegistrations.Count }
     open_questions = 0
 } | ConvertTo-Json -Depth 5 | Set-Content $digestPath -Encoding UTF8
 
 [pscustomobject]@{
     status = 'refreshed'; index_path = $indexPath; digest_path = $digestPath
     stale_scopes = $stale; invalidation_mode = $invalidationMode
-    index_bytes = $json.Length
+    index_bytes = $json.Length; index_schema = $IndexSchema
+    symbols_reused = [bool]($prev -and ('symbols' -notin $stale))
     file_count = $srcFiles.Count; project_count = $projects.Count; language = $language; build_tool = $buildTool
+    di_count = $diRegistrations.Count
 } | ConvertTo-Json -Depth 4 -Compress
 exit 0

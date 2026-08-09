@@ -3,6 +3,8 @@
 # 變成「讀分數最高的 N 個檔」。
 #
 # 評分：命中 symbol table (3) > 命中檔名 (2) > 命中內容 (1)，再加 ProjectReference 鄰近度。
+# 關鍵字命中介面名時，實作它的檔與註冊它的檔也一起排進來 —— 那兩處正是擴充點所在，
+# 而它們的檔名通常跟需求關鍵字完全不同，純靠檔名／內容比對排不出來。
 # 優先使用 repo-index.ps1 產生的索引；索引不存在時退化為直接搜尋。
 #
 # Exit: 0 = 完成；1 = 錯誤。
@@ -57,10 +59,19 @@ if ($indexUsed -and $index.symbols) {
         $hits = @()
         foreach ($t in $s.types)   { if ($t   -match $termRe) { $hits += "type:$t" } }
         foreach ($m in $s.methods) { if ($m   -match $termRe) { $hits += "method:$m" } }
+        # bases 的形狀是 "Impl : Base1, Base2" —— 只比對冒號右邊，左邊已由 types 計分過
+        foreach ($b in $s.bases) {
+            $rhs = ($b -split ' : ', 2)[-1]
+            if ($rhs -match $termRe) { $hits += "implements:$rhs" }
+        }
         if ($hits.Count) { Add-Score $s.file (3 * $hits.Count) ("symbol " + (($hits | Select-Object -First 3) -join ',')) }
     }
     # entrypoints 命中額外加權
     foreach ($e in $index.entrypoints) { if ($e -match $termRe) { Add-Score $e 2 'entrypoint-name' } }
+    # DI 註冊命中：實作有沒有真的被掛上去，只有註冊處看得到
+    foreach ($d in $index.'di-registrations') {
+        if ("$($d.service) $($d.impl)" -match $termRe) { Add-Score $d.file 2 "di:$($d.kind)<$($d.service)>" }
+    }
 }
 
 # ---------- 2. 檔名命中（權重 2） ----------
