@@ -46,6 +46,17 @@ mode: {mode}
 
 從外往內做：先讓驗收層表達「使用者看到什麼」，再往內補單元測試。內圈的測試是為了驅動設計，不是為了覆蓋率數字。
 
+## 專案規範
+
+`guidelines/` 存在 → **動手之前**讀相關的那幾份：一律讀 `coding.md` 與 `testing.md`，動到查詢或 schema 加 `sql.md`，動到對外 API 加 `api.md`。**只讀這幾個檔名**，不要去掃整個目錄。
+
+- **`## MUST` 那節跟驗收條件同級。** 做不到 → 回 `blocked`／`partial` 寫明是哪一條，**不要自己決定例外**。
+- **`## SHOULD` 盡量照做。** 跟驗收條件衝突時以驗收條件為準，並寫進「風險與待確認」。
+- **沒標 MUST／SHOULD 的一律當 SHOULD。**
+- `guidelines/` 不存在就是沒有規範 —— **不要找替代品**。特別是不要把 `bdd-docs/project-map.md` 當規範：那是「這個 repo 現在怎麼做」，不是「團隊規定怎麼做」，照著它做只會讓不合規的舊碼繁殖。
+
+規範裡機械可查的部分（禁用語法、禁用 API）由 `.codex/scripts/guideline-gate.ps1` 在你**每次寫檔之後**自動掃。命中會擋下來，訊息帶 rule id、檔:行與修法 —— **當場改掉**。留給 ⑤ 的話，它會佔掉只有 3 輪的修正額度。
+
 ## `.feature` 與 step definitions
 
 **`.feature` 是交付給 QA 的產物**，他們會在上面建自動化、加新 scenario、沿用你寫的 step。寫法見 skill `gherkin-authoring`；下面是必須遵守的四條。

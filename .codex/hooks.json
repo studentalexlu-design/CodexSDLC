@@ -26,6 +26,17 @@
         ]
       },
       {
+        "matcher": "Edit|Write|^apply_patch$|^shell$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .codex/scripts/guideline-gate.ps1",
+            "timeout": 30,
+            "statusMessage": "Project guideline scan on written files"
+          }
+        ]
+      },
+      {
         "matcher": "Edit|Write|^apply_patch$",
         "hooks": [
           {

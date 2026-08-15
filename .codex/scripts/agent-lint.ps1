@@ -19,6 +19,7 @@
 #        散落在十幾個檔裡，漏一處的症狀通常是「執行期被擋下，而訊息指向錯的原因」）
 #   6. 產物路徑合約：生產者／路由者／消費者三方都提到同一個路徑
 #   7. bdd-workflow-version.json 可解析且帶版本號
+#   8. guidelines/ 底下每個規範檔都有 agent 讀（檔名即路由鍵，沒有讀者就是靜默失效）
 #
 # v4.0.0 移除的檢查：skill matrix 覆蓋、gate 定義完整性、回傳 shape 對 policy 檔、
 # tier 表對 route-profiles、findings 段落對 template、合併 mode 矛盾、文件 tier 預算。
@@ -32,6 +33,7 @@ param(
     [string]$Orchestrator      = 'bdd-orchestrator',
     [string]$OrchestratorFile  = 'AGENTS.md',
     [string]$VersionFile       = '.codex/bdd-workflow/bdd-workflow-version.json',
+    [string]$GuidelineDir      = 'guidelines',
     [switch]$Json
 )
 
@@ -252,6 +254,12 @@ $artifactContracts = @(
     # 建立的 step 詞彙就會另造一套，撞名時 Reqnroll／Cucumber 整包炸掉 —— 連已經綠的
     # 測試一起帶走。而那是 build 期的失敗，不是這條 lint 抓得到的東西，所以指標本身不能掉。
     @{ path = 'bdd-docs/project-map.md';           roles = @('sa-analyst', 'bdd-orchestrator', 'implementer', 'reviewer') }
+    # v4.4.0：團隊規範。生產者是**人**（不是任何 agent），所以這裡只驗消費端。
+    # orchestrator 刻意不讀它，但必須列 —— 它是 ③ 唯一會把「這個做法需要規範豁免」
+    # 呈到使用者眼前的地方。漏掉的症狀是靜默的：sa-analyst 照樣標出違反 MUST 的做法，
+    # 而 orchestrator 因為沒有被告知那一行的意義，把它當雜訊濾掉，使用者永遠不知道
+    # 自己在 ③ 批准的是一個違反團隊規範的做法 —— 然後 ⑤ 才炸，而 ③ 已經回不去了。
+    @{ path = 'guidelines/';                       roles = @('bdd-orchestrator', 'sa-analyst', 'implementer', 'reviewer') }
 )
 foreach ($c in $artifactContracts) {
     $lit = [regex]::Escape($c.path)
@@ -278,6 +286,22 @@ if (Test-Path $VersionFile) {
     } catch { Add-V 'version-file-unparsable' $VersionFile '修正 JSON 格式' }
 } else {
     Add-V 'version-file-missing' $VersionFile '建立版本檔 —— 消費端專案靠它判斷相容性'
+}
+
+# ---- 8. guidelines/ 的每個檔都要有讀者 ----
+# 規範走「檔名即路由鍵」，沒有映射表（映射表是第二份會走鐘的名冊）。代價是：
+# 團隊新增 guidelines/security.md 而沒有任何 agent 提到那個檔名時，**沒有人會讀它**，
+# 而症狀是零 —— 沒有錯誤、沒有警告，只是規範不生效，團隊卻以為有人在守。
+# 這道檢查是唯一在守它的東西。README.md 是寫給人看的說明，不算規範。
+if (Test-Path $GuidelineDir) {
+    $allAgentText = ($docs.Keys | ForEach-Object { $docs[$_].Text }) -join "`n"
+    foreach ($g in @(Get-ChildItem $GuidelineDir -Filter *.md -File -ErrorAction SilentlyContinue)) {
+        if ($g.Name -eq 'README.md') { continue }
+        if ($allAgentText -notmatch [regex]::Escape($g.Name)) {
+            Add-V 'guideline-has-no-reader' "$GuidelineDir/$($g.Name)" `
+                  '沒有任何 agent 提到這個檔名 —— 規範不會被讀到，而且完全靜默。把檔名寫進讀它的 agent 的「專案規範」一節，或把內容併進已經有讀者的檔'
+        }
+    }
 }
 
 # ---- 輸出 ----

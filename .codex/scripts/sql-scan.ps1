@@ -62,7 +62,9 @@ $dbObjectPatterns = @(
 function Get-Signals($files, $patterns, [string]$sourceType) {
     $out = @()
     foreach ($f in $files) {
-        $lines = Get-Content $f.FullName -ErrorAction SilentlyContinue
+        # `@()` 不可省：單行檔的 Get-Content 回字串而非陣列，`$lines[$i]` 會取到單一**字元**，
+        # 於是整個檔靜默地掃不出任何訊號。壓成一行的 View／SP 定義正好是最常見的那種。
+        $lines = @(Get-Content $f.FullName -ErrorAction SilentlyContinue)
         if (-not $lines) { continue }
         for ($i = 0; $i -lt $lines.Count; $i++) {
             foreach ($p in $patterns) {

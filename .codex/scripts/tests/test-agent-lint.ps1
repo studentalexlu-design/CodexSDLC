@@ -61,11 +61,22 @@ function New-CleanScratch {
     return $Scratch
 }
 
+# guidelines/ 也要指向 scratch。不指的話檢查 8 會拿本 repo 真正的 guidelines/ 去比對
+# scratch 裡的假 agent —— 每個紅燈案例都會多帶一組與該案例無關的違規，
+# 而「乾淨設定必須全綠」那條前提也就跟著失效。
+$ScratchGuidelines = Join-Path $Scratch 'guidelines'
+
 function Invoke-Lint {
     param([hashtable]$Extra = @{})
-    $p = @{ AgentDir = $Scratch; OrchestratorFile = $ScratchOrchFile }
+    $p = @{ AgentDir = $Scratch; OrchestratorFile = $ScratchOrchFile; GuidelineDir = $ScratchGuidelines }
     foreach ($k in $Extra.Keys) { $p[$k] = $Extra[$k] }
     return Invoke-Script $Script -Params $p
+}
+
+function New-ScratchGuideline {
+    param([string]$Name)
+    New-Item -ItemType Directory -Path $ScratchGuidelines -Force | Out-Null
+    Set-Content (Join-Path $ScratchGuidelines $Name) -Value '## MUST' -NoNewline
 }
 
 Describe-Suite 'agent-lint / 基準' {
@@ -364,6 +375,62 @@ Describe-Suite 'agent-lint / 檢查 2 與 7：結構與版本' {
             $r = Invoke-Lint -Extra @{ VersionFile = '.codex/bdd-workflow/no-such-version.json' }
             Assert-Equal 2 $r.exit
             Assert-Match 'version-file-missing' $r.stderr
+        } finally { Remove-Item $Scratch -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+Describe-Suite 'agent-lint / 檢查 8：規範檔要有讀者' {
+
+    # 規範走「檔名即路由鍵」，沒有映射表。代價是：新增一個沒有人讀的規範檔，
+    # 症狀是**零** —— 沒有錯誤、沒有警告，只是那份規範不生效，而團隊以為有人在守。
+    # 這道檢查是唯一在守它的東西，所以它自己必須有紅燈案例。
+
+    It-Should '沒有 agent 提到該檔名時必須紅燈' {
+        New-CleanScratch | Out-Null
+        New-ScratchGuideline 'security.md'
+        try {
+            $r = Invoke-Lint
+            Assert-Equal 2 $r.exit '多了一份沒有讀者的規範卻通過了'
+            Assert-Match 'guideline-has-no-reader' $r.stderr
+            Assert-Match 'security\.md' $r.stderr
+        } finally { Remove-Item $Scratch -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '有 agent 提到就通過（證明上一條真的是「沒有讀者」在起作用）' {
+        New-CleanScratch | Out-Null
+        # orchestrator 也要提到 `guidelines/` —— 檢查 6 的合約要求它在場。
+        # 它不讀規範，但它是 ③ 唯一會把「這個做法需要規範豁免」呈到使用者眼前的地方。
+        New-ScratchOrchestrator @'
+## 委派
+
+| 要什麼 | 給誰 | mode |
+|---|---|---|
+| 查現況 | `sa-analyst` | `analyze` |
+
+規範放在 `guidelines/`，你不讀它。
+'@ | Out-Null
+        New-ScratchAgent 'sa-analyst' '排做法前先讀 `guidelines/security.md`。' | Out-Null
+        New-ScratchGuideline 'security.md'
+        try {
+            $r = Invoke-Lint
+            Assert-Equal 0 $r.exit "stderr: $($r.stderr)"
+        } finally { Remove-Item $Scratch -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'README.md 是寫給人看的，不算規範' {
+        New-CleanScratch | Out-Null
+        New-ScratchGuideline 'README.md'
+        try {
+            $r = Invoke-Lint
+            Assert-Equal 0 $r.exit "說明檔被當成規範要求讀者了；stderr: $($r.stderr)"
+        } finally { Remove-Item $Scratch -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '沒有 guidelines/ 的專案不受影響' {
+        New-CleanScratch | Out-Null
+        try {
+            $r = Invoke-Lint
+            Assert-Equal 0 $r.exit "沒有規範的團隊被這道檢查擋住了；stderr: $($r.stderr)"
         } finally { Remove-Item $Scratch -Recurse -Force -ErrorAction SilentlyContinue }
     }
 }

@@ -1,6 +1,6 @@
 ---
 name: gherkin-authoring
-version: 2.0.0
+version: 2.1.0
 description: 撰寫 Gherkin 驗收條件與 step definitions；.feature 是交付給 QA 做自動化的產物
 ---
 
@@ -14,6 +14,7 @@ description: 撰寫 Gherkin 驗收條件與 step definitions；.feature 是交�
 - Feature 對業務能力；Rule 對業務規則；Scenario 對具體範例。
 - **一個 Scenario 一條規則。** 塞兩條的那個，之後壞掉時你不知道是哪一條壞了。
 - 同型資料多筆 → `Scenario Outline` + `Examples`，不要複製貼上。
+- **具體值優先取需求階段談定的實例**（`spec.md` 的「需求決議」）：`Given` 裡的日期、金額、狀態，以及 `Examples:` 的列。**使用者確認過的數字直接用，不要另編一組看起來差不多的** —— 他確認的是那些值，QA 拿到的也該是那些值。決議裡沒有的才自己補，補的邊界值要跟他答過的門檻一致。
 - **例外路徑要有自己的 Scenario。** 只寫 happy path 的驗收條件等於沒寫 —— 出事的都在例外路徑。
 - 非功能需求能轉成可驗證條件就轉（「3 秒內回應」可以驗，「效能要好」不行）。
 
