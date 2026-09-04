@@ -175,4 +175,26 @@ if ($violations.Count -gt 0) {
     }
     exit 2
 }
+
+# --- 更新通知（不阻斷、不碰網路）---
+# 這裡是唯一夠便宜的位置：PreToolUse 每個需求只觸發 4–5 次，不是每次寫檔。
+#
+# 三條紀律，每一條都有對應的失敗模式：
+#   只讀一個本地 JSON —— 這支 hook 有 timeout，網路請求會擋在每一次 spawn 前面，
+#   而「擋下的理由跟使用者要做的事無關、他也修不了」正是這套流程踩過兩次的失敗形狀。
+#   整段包在 try/catch，任何例外都當作沒有更新 —— 通知壞掉不該讓流程停下來。
+#   一行 stderr，不擋、不問、不自動升 —— 更新提示不得變成第三個必經確認
+#   （AGENTS.md「必經的確認只有兩個」）。形狀比照 v4.5.1 的 kill switch 警告。
+#
+# 快取由 `sdlc.ps1 check-update` 寫；`whatsnew` 會把 seen 設成該版本，於是看過就安靜下來。
+try {
+    $cachePath = 'bdd-docs/.sdlc/update-cache.json'
+    if (Test-Path $cachePath) {
+        $c = Get-Content $cachePath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($c.newer -and $c.latest -and $c.seen -ne $c.latest) {
+            [Console]::Error.WriteLine("[sdlc] 有新版 $($c.latest)（你在 $($c.installed)）。看變更：pwsh .codex/scripts/sdlc.ps1 whatsnew")
+        }
+    }
+} catch { }
+
 exit 0

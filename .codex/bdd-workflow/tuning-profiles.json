@@ -1,0 +1,25 @@
+{
+  "note": "install -Preset 用的預設組合。使用者裝完可以隨時手改 sdlc.config.json，或跑 sdlc.ps1 tune 讓它依 repo 現況重新提議。\"inherit\" = 產生出來的 toml 裡不寫那一行，交由 Codex CLI 決定 —— 每個 agent 的預設都是它。",
+  "why-no-preset-pins-sa-analyst-high": "把 sa-analyst 釘在 high 正是大型 legacy repo 分析逾時的成因（1d8e411 全部釘 high → 7159725 拿掉，理由留在 agent-lint.ps1 檢查 2 的檔頭）。它的成本驅動是讀取量，讀取量大時的失敗模式是逾時，不是想得不夠深。所以連 deep 都不把它推到 high。",
+  "orchestrator-note": "orchestrator 沒有 agent 定義檔（它就是 AGENTS.md，最上層對話本身），這裡的值強制不了它 —— install 與 doctor 只會把它印成建議的啟動指令。",
+  "presets": {
+    "fast": {
+      "orchestrator": { "model": "inherit", "effort": "inherit" },
+      "sa-analyst":   { "model": "inherit", "effort": "low" },
+      "implementer":  { "model": "inherit", "effort": "inherit" },
+      "reviewer":     { "model": "inherit", "effort": "medium" }
+    },
+    "balanced": {
+      "orchestrator": { "model": "inherit", "effort": "inherit" },
+      "sa-analyst":   { "model": "inherit", "effort": "inherit" },
+      "implementer":  { "model": "inherit", "effort": "inherit" },
+      "reviewer":     { "model": "inherit", "effort": "high" }
+    },
+    "deep": {
+      "orchestrator": { "model": "inherit", "effort": "high" },
+      "sa-analyst":   { "model": "inherit", "effort": "medium" },
+      "implementer":  { "model": "inherit", "effort": "medium" },
+      "reviewer":     { "model": "inherit", "effort": "high" }
+    }
+  }
+}

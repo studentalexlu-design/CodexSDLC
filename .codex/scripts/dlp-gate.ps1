@@ -17,7 +17,14 @@ param(
 if (-not $Payload) { $Payload = [Console]::In.ReadToEnd() }
 if (-not $Payload) { exit 0 }
 if (-not (Test-Path $ScanScript)) { exit 0 }
-if (Test-Path $DisableMarker) { exit 0 }
+
+# 標記檔關掉時**每次都喊**（不阻斷，exit 仍是 0）。標記檔通常是某一次為了解卡建的，
+# 建完就留在那裡 —— 之後每一個需求都在沒有殘留掃描的情況下寫檔，而畫面上一切正常。
+# 靜默地「防護其實沒在生效」比擋錯更糟，這一行是唯一會提醒的東西。
+if (Test-Path $DisableMarker) {
+    [Console]::Error.WriteLine("[Hook][DLP] 已被 $DisableMarker 關閉 —— 這次沒有掃任何檔。要恢復就刪掉那個標記檔。")
+    exit 0
+}
 
 # 引號類別含單引號：PowerShell heredoc／shell 寫入路徑慣用單引號，
 # 只認雙引號會讓經 shell 寫入的 artifact 完全躲過本 gate。

@@ -66,11 +66,51 @@ function New-CleanScratch {
 # 而「乾淨設定必須全綠」那條前提也就跟著失效。
 $ScratchGuidelines = Join-Path $Scratch 'guidelines'
 
+# 同樣的理由，檢查 9／10 讀的兩個檔也要指向 scratch：不指的話它們會拿**本 repo 真正的**
+# sdlc.config.json 與 .codex/config.toml 去比對 scratch 裡的假 agent。
+$ScratchConfig     = Join-Path $Scratch 'sdlc.config.json'
+$ScratchWfConfig   = Join-Path $Scratch 'config.toml'
+$ScratchVersion    = Join-Path $Scratch 'version.json'
+
 function Invoke-Lint {
     param([hashtable]$Extra = @{})
-    $p = @{ AgentDir = $Scratch; OrchestratorFile = $ScratchOrchFile; GuidelineDir = $ScratchGuidelines }
+    $p = @{
+        AgentDir = $Scratch; OrchestratorFile = $ScratchOrchFile; GuidelineDir = $ScratchGuidelines
+        ConfigFile = $ScratchConfig; WorkflowConfig = $ScratchWfConfig
+    }
     foreach ($k in $Extra.Keys) { $p[$k] = $Extra[$k] }
     return Invoke-Script $Script -Params $p
+}
+
+# 產生一份 scratch 的 sdlc.config.json。sha 由 agent-lint 自己算，這裡只寫設定值。
+function New-ScratchConfig {
+    param([string]$Agent = 'sa-analyst', [string]$Model = 'inherit', [string]$Effort = 'inherit')
+    New-Item -ItemType Directory -Path $Scratch -Force | Out-Null
+    $json = @"
+{ "workflow-version": "4.6.0",
+  "agents": { "$Agent": { "model": "$Model", "effort": "$Effort" } } }
+"@
+    [IO.File]::WriteAllText($ScratchConfig, $json, [Text.UTF8Encoding]::new($false))
+}
+
+# 把 apply 會產生的區塊寫進 scratch agent。`-Sha` 給錯就是「設定改了但沒 apply」。
+function Add-ScratchTuningBlock {
+    param([string]$Agent = 'sa-analyst', [string]$Sha, [string]$Body = '')
+    $p = Join-Path $Scratch "$Agent.toml"
+    $t = [IO.File]::ReadAllText($p)
+    $block = "# SDLC-TUNING:BEGIN sha=$Sha`n" + $(if ($Body) { "$Body`n" }) + "# SDLC-TUNING:END`n"
+    $i = [regex]::Match($t, "(?m)^developer_instructions\s*=").Index
+    [IO.File]::WriteAllText($p, $t.Insert($i, $block), [Text.UTF8Encoding]::new($false))
+}
+
+# model=inherit;effort=inherit 的 sha —— 與 sdlc.ps1／agent-lint 的算法必須一致。
+function Get-ExpectedSha {
+    param([string]$Model = 'inherit', [string]$Effort = 'inherit')
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        return (-join ($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes("model=$Model;effort=$Effort")) |
+                       ForEach-Object { $_.ToString('x2') })).Substring(0, 8)
+    } finally { $sha.Dispose() }
 }
 
 function New-ScratchGuideline {
@@ -431,6 +471,101 @@ Describe-Suite 'agent-lint / 檢查 8：規範檔要有讀者' {
         try {
             $r = Invoke-Lint
             Assert-Equal 0 $r.exit "沒有規範的團隊被這道檢查擋住了；stderr: $($r.stderr)"
+        } finally { Remove-Item $Scratch -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+Describe-Suite 'agent-lint / 檢查 9：調校區塊與設定檔一致' {
+
+    It-Should '沒有 sdlc.config.json 的專案完全不受影響（非破壞性）' {
+        New-CleanScratch | Out-Null
+        try {
+            $r = Invoke-Lint
+            Assert-Equal 0 $r.exit "沒有啟用 per-agent 調校的專案被擋住了；stderr: $($r.stderr)"
+        } finally { Remove-Item $Scratch -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '有設定檔卻沒有產生區塊 → 紅燈' {
+        New-CleanScratch | Out-Null
+        New-ScratchConfig -Effort 'high'
+        try {
+            $r = Invoke-Lint
+            Assert-Equal 2 $r.exit '設定檔在、區塊不在，代表從來沒 apply 過'
+            Assert-Match 'tuning-block-missing' $r.stderr
+        } finally { Remove-Item $Scratch -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '設定改了但沒有 apply → 紅燈（這道檢查唯一在守的東西）' {
+        # 症狀是零：檔案看起來改好了，跑起來是舊值。沒有這道檢查就沒有任何人會發現。
+        New-CleanScratch | Out-Null
+        New-ScratchConfig -Effort 'high'
+        Add-ScratchTuningBlock -Sha (Get-ExpectedSha -Effort 'inherit') -Body 'model_reasoning_effort = "low"'
+        try {
+            $r = Invoke-Lint
+            Assert-Equal 2 $r.exit '舊的 sha 被當成最新了'
+            Assert-Match 'tuning-block-stale' $r.stderr
+            Assert-Match 'sdlc\.ps1 apply' $r.stderr '訊息要直接給得出修法'
+        } finally { Remove-Item $Scratch -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'sha 對得上就綠燈' {
+        New-CleanScratch | Out-Null
+        New-ScratchConfig -Effort 'high'
+        Add-ScratchTuningBlock -Sha (Get-ExpectedSha -Effort 'high') -Body 'model_reasoning_effort = "high"'
+        try {
+            $r = Invoke-Lint
+            Assert-Equal 0 $r.exit "stderr: $($r.stderr)"
+        } finally { Remove-Item $Scratch -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'agent 沒有出現在設定檔時，預設等同全部 inherit' {
+        # 升級新增了一個 agent 而使用者的設定檔還沒有它 —— 這是常態，不該紅燈。
+        New-CleanScratch | Out-Null
+        New-ScratchConfig -Agent 'someone-else' -Effort 'high'
+        Add-ScratchTuningBlock -Sha (Get-ExpectedSha)
+        try {
+            $r = Invoke-Lint
+            Assert-Equal 0 $r.exit "設定檔沒提到的 agent 被要求對上非預設值；stderr: $($r.stderr)"
+        } finally { Remove-Item $Scratch -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '設定檔 JSON 壞掉時明講，不是安靜略過' {
+        New-CleanScratch | Out-Null
+        [IO.File]::WriteAllText($ScratchConfig, '{ "agents": ', [Text.UTF8Encoding]::new($false))
+        try {
+            $r = Invoke-Lint
+            Assert-Equal 2 $r.exit '壞掉的設定檔被安靜吃掉了'
+            Assert-Match 'sdlc-config-unparsable' $r.stderr
+        } finally { Remove-Item $Scratch -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+Describe-Suite 'agent-lint / 檢查 10：版本號單一真相' {
+
+    It-Should '標題版本號與版本檔分岔 → 紅燈' {
+        # 真的發生過：AGENTS.md 與 config.toml 停在 v4.3.0 而版本檔已經是 4.5.1。
+        # 一個會謊報版本的發佈物，讓相容性判斷與使用者的升級決定同時建立在錯的數字上。
+        New-CleanScratch | Out-Null
+        [IO.File]::WriteAllText($ScratchVersion,
+            '{ "contract-version": "4.6.0", "min-compatible-version": "4.2.0" }', [Text.UTF8Encoding]::new($false))
+        $t = [IO.File]::ReadAllText($ScratchOrchFile)
+        [IO.File]::WriteAllText($ScratchOrchFile, "# bdd-orchestrator (v4.3.0)`n" + $t, [Text.UTF8Encoding]::new($false))
+        try {
+            $r = Invoke-Lint -Extra @{ VersionFile = $ScratchVersion }
+            Assert-Equal 2 $r.exit
+            Assert-Match 'version-drift' $r.stderr
+        } finally { Remove-Item $Scratch -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '對得上就綠燈' {
+        New-CleanScratch | Out-Null
+        [IO.File]::WriteAllText($ScratchVersion,
+            '{ "contract-version": "4.6.0", "min-compatible-version": "4.2.0" }', [Text.UTF8Encoding]::new($false))
+        $t = [IO.File]::ReadAllText($ScratchOrchFile)
+        [IO.File]::WriteAllText($ScratchOrchFile, "# bdd-orchestrator (v4.6.0)`n" + $t, [Text.UTF8Encoding]::new($false))
+        try {
+            $r = Invoke-Lint -Extra @{ VersionFile = $ScratchVersion }
+            Assert-Equal 0 $r.exit "stderr: $($r.stderr)"
         } finally { Remove-Item $Scratch -Recurse -Force -ErrorAction SilentlyContinue }
     }
 }

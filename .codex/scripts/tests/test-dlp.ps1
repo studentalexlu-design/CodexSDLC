@@ -107,6 +107,9 @@ Describe-Suite 'dlp-gate / PostToolUse 短路' {
         try {
             $r = Invoke-Script $Gate -Stdin "{`"tool_input`":{`"path`":`"$f`"}}"
             Assert-Equal 0 $r.exit "有 .dlp-disabled 時不該阻斷；stderr: $($r.stderr)"
+            # 關掉必須是**可見**的。標記檔通常是某一次為了解卡建的，建完就留在那裡 ——
+            # 之後每個需求都在沒有殘留掃描的情況下寫檔，而畫面上一切正常。
+            Assert-Match '\.dlp-disabled' $r.stderr '短路時必須每次都喊，否則防護會靜默地永久失效'
         } finally {
             Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue
             if (-not $markerPreexisting) { Remove-Item $marker -Force -ErrorAction SilentlyContinue }

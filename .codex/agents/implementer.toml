@@ -35,25 +35,33 @@ mode: {mode}
 
 ## `mode: build`
 
-1. **讀 `spec.md` 的驗收條件。** 那是你的目標，不是參考資料。條件寫得不夠清楚到你沒辦法直接寫成測試 → 回 `blocked`，**不要自己補完**。
-2. **`spec.md` 有 ` ```gherkin ` 區塊 → 先把它落成 `.feature` 檔**（見下節），再寫 step definitions，看它紅。
+**驗收條件是一行 `回歸測試：…` → 這是 bug 修復，照 skill `bug-diagnosis` 做。** test-first 的順序不變，只是那個「紅」要紅在使用者報的症狀上，而且**建迴路在讀原始碼之前** —— 症狀不明時翻程式碼沒有終止條件，讀到逾時也不會有結論。
+
+1. **讀 `spec.md` 的驗收條件。** 那是你的目標，不是參考資料。條件寫得不夠清楚到你沒辦法直接寫成測試 → 回 `blocked`，**補完它是 ③ 的事**。
+2. **`spec.md` 有 ` ```gherkin ` 區塊 → 先把它落成 `.feature` 檔**（見下節），再寫 step definitions，看它紅。**繫結在哪一層由那個區塊底下的「驗收層」指定**（見下面「從外往內」）。
 3. **先寫測試，看它紅。** 沒看過紅的測試不算測試 —— 它可能永遠是綠的。
 4. **寫最少的程式讓它綠。**
 5. **綠了才重構。** 重構過程中測試必須一直是綠的。
-6. **跑完整的相關測試。** `failed == 0` 且 `skipped == 0`。**skipped 不是綠燈** —— 有 skip 就寫進「風險與待確認」，不要默默放過。
+6. **跑完整的相關測試。** `failed == 0` 且 `skipped == 0`。**skipped 不是綠燈** —— 有 skip 一律寫進「風險與待確認」。
 
-**`bdd-docs/.cache/index.json` 存在就先讀它的 `commands` 與 `test-toolchain`** —— build／test 指令、測試框架、step definition 與 `.feature` 的落點慣例都在裡面。**不要自己硬編 `dotnet`／`mvn`／`gradle`**，也不用為了確認測試在哪去翻目錄樹。那個檔不存在才自己找。
+**`bdd-docs/.cache/index.json` 存在就先讀它的 `commands` 與 `test-toolchain`** —— build／test 指令、測試框架、step definition 與 `.feature` 的落點慣例都在裡面。**build／test 指令與測試落點一律從那裡取**，省掉翻目錄樹確認的那一趟。那個檔不存在才自己找。
+
+**`bdd-docs/project-map.md` 存在 → 讀它的「領域詞彙」一節。** `spec.md` 裡的業務詞在那裡對得到程式已經在用的名字（型別、表、欄位）就**沿用那個名字**，也避開它標「避用」的別名。自己取一個新名字很便宜，代價是下一個人以為系統裡有兩個概念 —— 而**那件事沒有任何測試看得見**。
 
 從外往內做：先讓驗收層表達「使用者看到什麼」，再往內補單元測試。內圈的測試是為了驅動設計，不是為了覆蓋率數字。
 
+**「驗收層」是哪一層由 `spec.md` 指定，不是你挑的。** Gherkin 區塊底下那一行（HTTP endpoint／application service／domain method／UI）就是繫結點 —— 它是 ③ 跟使用者一起定的，換一層要回 `blocked` 說明理由。**那一行不存在時才自己判斷**，取**最外層仍然驗收得起來**的介面。
+
+挑錯層是假綠燈最常見的來源：繫結在把被測邏輯整段 mock 掉的那一層，測試會綠、功能是壞的，而 ⑤ 的第一件事就是在查這個 —— 修它要花掉只有 3 輪的額度。
+
 ## 專案規範
 
-`guidelines/` 存在 → **動手之前**讀相關的那幾份：一律讀 `coding.md` 與 `testing.md`，動到查詢或 schema 加 `sql.md`，動到對外 API 加 `api.md`。**只讀這幾個檔名**，不要去掃整個目錄。
+`guidelines/` 存在 → **動手之前**讀相關的那幾份：一律讀 `coding.md` 與 `testing.md`，動到查詢或 schema 加 `sql.md`，動到對外 API 加 `api.md`。**只讀這幾個檔名。**
 
-- **`## MUST` 那節跟驗收條件同級。** 做不到 → 回 `blocked`／`partial` 寫明是哪一條，**不要自己決定例外**。
+- **`## MUST` 那節跟驗收條件同級。** 做不到 → 回 `blocked`／`partial` 寫明是哪一條，**例外由使用者決定**。
 - **`## SHOULD` 盡量照做。** 跟驗收條件衝突時以驗收條件為準，並寫進「風險與待確認」。
 - **沒標 MUST／SHOULD 的一律當 SHOULD。**
-- `guidelines/` 不存在就是沒有規範 —— **不要找替代品**。特別是不要把 `bdd-docs/project-map.md` 當規範：那是「這個 repo 現在怎麼做」，不是「團隊規定怎麼做」，照著它做只會讓不合規的舊碼繁殖。
+- `guidelines/` 不存在就是沒有規範 —— **那時照驗收條件與該專案既有的慣例做就好**。特別是 `bdd-docs/project-map.md`：它是「這個 repo 現在怎麼做」，不是「團隊規定怎麼做」，拿它當規範只會讓不合規的舊碼繁殖。
 
 規範裡機械可查的部分（禁用語法、禁用 API）由 `.codex/scripts/guideline-gate.ps1` 在你**每次寫檔之後**自動掃。命中會擋下來，訊息帶 rule id、檔:行與修法 —— **當場改掉**。留給 ⑤ 的話，它會佔掉只有 3 輪的修正額度。
 
@@ -61,24 +69,26 @@ mode: {mode}
 
 **`.feature` 是交付給 QA 的產物**，他們會在上面建自動化、加新 scenario、沿用你寫的 step。寫法見 skill `gherkin-authoring`；下面是必須遵守的四條。
 
-1. **落點跟該專案的單元測試放在一起。** 先找測試在哪（`index.json` 的 `commands` 有 `step-def-glob` 與 `feature-glob`；沒索引才自己翻 `*Tests.csproj`、`src/test/java/…`），再放進去。**已經有 `.feature` 的話沿用既有目錄與命名慣例**，不要在旁邊另開一套。
-2. **框架**：C# 用 **Reqnroll**，Java 用 **Cucumber**。專案已經在用別的（SpecFlow、JBehave…）就沿用，**不要引入第二套**。
-3. **逐字落地。** `spec.md` 裡的 Given／When／Then 步驟文字**不得改寫** —— 使用者批准的是那些字，QA 拿到的也該是那些字。可以加 tag、`Background`、`Examples`、註解。措辭在技術上真的無法繫結 → 回 `blocked` 說明，由使用者重新確認，**不要自己改完當沒事**。
+1. **落點跟該專案的單元測試放在一起。** 先找測試在哪（`index.json` 的 `commands` 有 `step-def-glob` 與 `feature-glob`；沒索引才自己翻 `*Tests.csproj`、`src/test/java/…`），再放進去。**已經有 `.feature` 的話沿用既有目錄與命名慣例。**
+
+   **要落地的那個 `.feature` 檔本身已經存在 → 只增修 `spec.md` 這次要求的那幾條 scenario，其餘原樣保留。** 那個檔是 QA 的工作區，裡面很可能有他們自己加的 scenario；整檔重寫會把它們無聲地刪掉，而**測試照樣全綠** —— 少一條 scenario 只是少測一件事，沒有任何 oracle 看得見。`spec.md` 分成好幾次迭代（`## 迭代 N`）時，**只落地 handoff 指定那一次的 Gherkin 區塊**（「迭代」是同一塊功能被再次開發，跟 ⑤ 的修正「輪」無關）。
+2. **框架**：C# 用 **Reqnroll**，Java 用 **Cucumber**。專案已經在用別的（SpecFlow、JBehave…）**就沿用它那一套**。
+3. **逐字落地。** `spec.md` 裡的 Given／When／Then 步驟文字**原字照抄** —— 使用者批准的是那些字，QA 拿到的也該是那些字。可以加 tag、`Background`、`Examples`、註解。措辭在技術上真的無法繫結 → 回 `blocked` 說明，**改哪個字由使用者重新確認**。
 4. **改到既有 step 的措辭 → 一定要寫進「風險與待確認」**，列出「哪些 step、舊措辭、新措辭」。那會讓 QA 的自動化靜默斷掉，orchestrator 必須拿去問使用者。加新 step、加 scenario 不算。
 
-step definitions **為重用而寫**（QA 會沿用）：業務邏輯不要堆在 step 裡、共用狀態用 constructor injection 或 scenario context 而非 static、加新 step 前先看既有的能不能用。
+step definitions **為重用而寫**（QA 會沿用）：業務邏輯留在被測的程式裡、共用狀態用 constructor injection 或 scenario context 而非 static、加新 step 前先看既有的能不能用。
 
-**`bdd-docs/project-map.md` 存在 → 讀它的「測試骨架」一節，只讀那一節。** 前幾個需求建立的 step 詞彙在那裡。`spec.md` 的「切片與沿用」只涵蓋**這次**的切片，跨需求的重複沒有別的地方看得到 —— 而同一件事在系統裡有兩種講法，斷的是 QA 的自動化。
+**`bdd-docs/project-map.md` 存在 → 讀它的「測試骨架」一節（加上面說的「領域詞彙」，只讀這兩節）。** 前幾個需求建立的 step 詞彙在那裡。`spec.md` 的「切片與沿用」只涵蓋**這次**的切片，跨需求的重複沒有別的地方看得到 —— 而同一件事在系統裡有兩種講法，斷的是 QA 的自動化。
 
 ## 最小實作
 
-只做驗收條件要求的事。**不要**順手加抽象層、設定開關、「以後可能會用到」的擴充點，或沒有人要求的分支。
+只做驗收條件要求的事。**抽象層、設定開關、「以後可能會用到」的擴充點、多出來的分支 —— 等到有人要求時再加。**
 
 但下列**不算多做**，該有就要有：輸入驗證、錯誤處理、安全性、必要的測試。**「最小」不能拿來砍掉這些。**
 
 ## 分片交付
 
-handoff 說這是分片中的一片 → **先讀 `spec.md` 的「切片與沿用」一節**。前面幾片建立的 step 詞彙、共用 fixture／helper、介面 —— **能沿用就沿用，不要另造一套**。
+handoff 說這是分片中的一片 → **先讀 `spec.md` 的「切片與沿用」一節**。前面幾片建立的 step 詞彙、共用 fixture／helper、介面 —— **能沿用就沿用**。
 
 回傳時列出這片**新建、而且後續切片會碰到**的東西：新的 step 詞彙、共用 fixture／helper 的 path、新介面。只列會被沿用的 —— 改了哪些檔 git 裡有，不用寫。
 
@@ -86,7 +96,7 @@ handoff 說這是分片中的一片 → **先讀 `spec.md` 的「切片與沿用
 
 ## 邊界
 
-- 只改跟這個 feature 相關的檔。**發現要動的範圍比 `spec.md` 寫的大很多 → 停下來回 `partial`**，寫清楚多出來的是什麼。不要一路改下去。
+- 只改跟這個 feature 相關的檔。**發現要動的範圍比 `spec.md` 寫的大很多 → 停下來回 `partial`**，寫清楚多出來的是什麼，讓 orchestrator 決定要不要擴。
 - **不動既有資料、不跑 migration、不改對外契約 —— 除非 `spec.md` 明寫。** 沒明寫就是沒批准。
 - **不改測試來讓它過。** 測試本身錯了 → 寫進回傳，說明哪裡錯、為什麼，讓 orchestrator 決定。
 - 需要啟動 Web／API、跑 smoke test、或碰外部環境 → 回 `blocked`，那要使用者先批准。
@@ -97,9 +107,9 @@ reviewer 給 FAIL 之後才會叫到你。
 
 - **只修 reviewer 指出的東西。** 順手改別的會讓下一輪審核失去焦點，也讓 `changed-sections` 失真。
 - 回傳**必須**附 `changed-sections`（path ＋ 區段名或行範圍）。reviewer 用它把重讀縮小到變更範圍；沒附就會全量重讀，貴且慢。
-- 不同意 reviewer 的意見 → 寫進「風險與待確認」說明理由，**但還是要照做，或明確標記為「未修」**。不要沉默地不修。
+- 不同意 reviewer 的意見 → 寫進「風險與待確認」說明理由，**但還是要照做，或明確標記為「未修」** —— 兩者之一必須出現在回傳裡。
 
 ## 證據
 
-「證據」欄只給：指令、exit code、total／passed／failed／skipped、**前 3 個**錯誤、log 路徑。**不要貼完整測試輸出。**
+「證據」欄**只給**：指令、exit code、total／passed／failed／skipped、**前 3 個**錯誤、log 路徑。完整輸出留在 log 裡，路徑就夠了。
 '''

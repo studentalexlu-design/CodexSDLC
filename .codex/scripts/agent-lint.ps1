@@ -20,6 +20,8 @@
 #   6. 產物路徑合約：生產者／路由者／消費者三方都提到同一個路徑
 #   7. bdd-workflow-version.json 可解析且帶版本號
 #   8. guidelines/ 底下每個規範檔都有 agent 讀（檔名即路由鍵，沒有讀者就是靜默失效）
+#   9. SDLC-TUNING 區塊與 sdlc.config.json 一致（改了設定卻沒 apply，症狀是零）
+#  10. 版本號單一真相：AGENTS.md 與 config.toml 的標題要對得上版本檔
 #
 # v4.0.0 移除的檢查：skill matrix 覆蓋、gate 定義完整性、回傳 shape 對 policy 檔、
 # tier 表對 route-profiles、findings 段落對 template、合併 mode 矛盾、文件 tier 預算。
@@ -34,6 +36,8 @@ param(
     [string]$OrchestratorFile  = 'AGENTS.md',
     [string]$VersionFile       = '.codex/bdd-workflow/bdd-workflow-version.json',
     [string]$GuidelineDir      = 'guidelines',
+    [string]$ConfigFile        = 'sdlc.config.json',
+    [string]$WorkflowConfig    = '.codex/config.toml',
     [switch]$Json
 )
 
@@ -300,6 +304,68 @@ if (Test-Path $GuidelineDir) {
         if ($allAgentText -notmatch [regex]::Escape($g.Name)) {
             Add-V 'guideline-has-no-reader' "$GuidelineDir/$($g.Name)" `
                   '沒有任何 agent 提到這個檔名 —— 規範不會被讀到，而且完全靜默。把檔名寫進讀它的 agent 的「專案規範」一節，或把內容併進已經有讀者的檔'
+        }
+    }
+}
+
+# ---- 9. SDLC-TUNING 區塊 ↔ sdlc.config.json ----
+# 使用者的 model／effort 真相是專案根的 sdlc.config.json（放在工具那半會在升級時靜默消失）。
+# toml 裡的區塊只是它的產物，由 `sdlc.ps1 apply` 產生。
+#
+# 這道檢查守的是「改了設定但沒 apply」：檔案看起來改好了，跑起來是舊值 —— **症狀是零**。
+# 同 guideline-gate 檔頭那句：靜默地「設定沒在生效」比擋錯更糟。
+#
+# 正規化字串是這裡與 sdlc.ps1 之間的合約，兩邊各有一份逐字相同的副本 ——
+# lint 必須能獨立驗，不能為了算一個雜湊去 spawn 那支腳本。重複由 test-sdlc.ps1 的
+# 「設定改了但沒 apply → 必須紅燈」那一條守住。
+if (Test-Path $ConfigFile) {
+    $cfg = $null
+    try { $cfg = Get-Content $ConfigFile -Raw -Encoding UTF8 | ConvertFrom-Json } catch { }
+    if (-not $cfg) {
+        Add-V 'sdlc-config-unparsable' $ConfigFile '修正 JSON 格式 —— 解析不了時 apply 與 doctor 都會停擺'
+    } else {
+        $sha256 = [Security.Cryptography.SHA256]::Create()
+        try {
+            foreach ($a in $agents) {
+                $acfg = $null
+                if ($cfg.agents) {
+                    $acfg = $cfg.agents.PSObject.Properties |
+                            Where-Object { $_.Name -eq $a.BaseName } |
+                            ForEach-Object { $_.Value } | Select-Object -First 1
+                }
+                $model  = if ($acfg -and $acfg.model)  { [string]$acfg.model }  else { 'inherit' }
+                $effort = if ($acfg -and $acfg.effort) { [string]$acfg.effort } else { 'inherit' }
+                $stanza = "model=$model;effort=$effort"
+                $want = (-join ($sha256.ComputeHash([Text.Encoding]::UTF8.GetBytes($stanza)) |
+                                ForEach-Object { $_.ToString('x2') })).Substring(0, 8)
+
+                $text = Get-Content $a.FullName -Raw
+                $m = [regex]::Match($text, '#\s*SDLC-TUNING:BEGIN\s+sha=([0-9a-f]{8})')
+                if (-not $m.Success) {
+                    Add-V 'tuning-block-missing' $a.Name `
+                          "有 $ConfigFile 就要有產生區塊 —— 跑 pwsh .codex/scripts/sdlc.ps1 apply"
+                } elseif ($m.Groups[1].Value -ne $want) {
+                    Add-V 'tuning-block-stale' "$($a.Name): sha=$($m.Groups[1].Value)，設定檔是 $want" `
+                          "設定改過但沒有套用 —— 跑 pwsh .codex/scripts/sdlc.ps1 apply（不跑的話流程用的是舊值，而畫面上看不出來）"
+                }
+            }
+        } finally { $sha256.Dispose() }
+    }
+}
+
+# ---- 10. 版本號單一真相 ----
+# 版本檔的 contract-version 是唯一真相。AGENTS.md 與 config.toml 的標題各自寫過一次版本號，
+# 而它們曾經停在 v4.3.0 而版本檔已經是 4.5.1 —— 一個會謊報自己版本的發佈物，
+# 讓 update 的相容性判斷與使用者的升級決定同時建立在錯的數字上。
+if ($ver -and $ver.'contract-version') {
+    $truth = [string]$ver.'contract-version'
+    foreach ($f in @($OrchestratorFile, $WorkflowConfig)) {
+        if (-not (Test-Path $f)) { continue }
+        $head = (Get-Content $f -TotalCount 3) -join "`n"
+        $m = [regex]::Match($head, 'v(\d+\.\d+\.\d+)')
+        if ($m.Success -and $m.Groups[1].Value -ne $truth) {
+            Add-V 'version-drift' "$f 標題寫 v$($m.Groups[1].Value)，版本檔是 $truth" `
+                  "改成 v$truth —— 版本檔是唯一真相"
         }
     }
 }
