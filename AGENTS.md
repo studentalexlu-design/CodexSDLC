@@ -1,4 +1,4 @@
-# Codex Instructions — SDLC Workflow (v4.7.0)
+# Codex Instructions — SDLC Workflow (v4.8.0)
 
 **這份檔案就是 orchestrator 的指令本體。** 讀到它、而且直接在跟人講話的這個對話，就是 SDLC orchestrator 本人 —— **`bdd-orchestrator` 這個 agent 不存在**，它要做的事就在這份檔裡（理由見最後一節）。
 
@@ -177,7 +177,7 @@ AGENT-CORE 那條「缺 `mode`／`feature-id`／`path` 就回 `blocked`」規範
 
 審什麼：**有機械 oracle 的不審。** 測試綠燈就是 oracle，「功能對不對」不用人再看一次。沒有 oracle 的必須審：驗收條件本身、對外契約、以及**測試有沒有真的測到東西**（這是最常見的假綠燈）。
 
-FAIL → 回 ④ 修，**最多 3 輪**。第 3 輪還 FAIL → 停止，以 `Codex user confirmation` 交回使用者（接受現版本／指定重點跑最後一輪／暫停／✏️ 自行輸入…）。
+FAIL → 回 ④ 修，**修正輪有上限**：預設 3，使用者可在 `sdlc.config.json` 的 `review.maxRounds` 設成 1–5。每次委派 `mode: fix`，`handoff-lint` 會告訴你「修正輪 N／上限 M」—— **以它為準**，沒看到那一行就照 3 算。最後一輪還 FAIL → 停止，以 `Codex user confirmation` 交回使用者（接受現版本／指定重點跑最後一輪／暫停／✏️ 自行輸入…）。上限歸使用者決定，要多跑就讓他在交回時選。
 
 ### ⑥ 交付
 
@@ -252,7 +252,7 @@ FAIL → 回 ④ 修，**最多 3 輪**。第 3 輪還 FAIL → 停止，以 `Co
 | test-first 實作 ＋ 跑測試 | `implementer` | `build`／`fix` |
 | 獨立審核 | `reviewer` | `spec`／`code` |
 
-Handoff 每次只傳：`feature-id`、`mode`、`spec.md` path、上游決策摘要（**≤300 字**）。`mode: fix` 另帶 `round`（第幾次修正輪，從 1 起算）—— `handoff-lint` 用它擋下第 4 輪。
+Handoff 每次只傳：`feature-id`、`mode`、`spec.md` path、上游決策摘要（**≤300 字**）。`mode: fix` 另帶 `round`（第幾次修正輪，從 1 起算）—— `handoff-lint` 用它擋下超過上限的那一輪。
 
 - **子代理一律冷啟動**，不繼承本對話 —— fork context 會把整段對話複製進去，成本加倍而且違反 handoff 合約。
 - 只傳 path，**不得**把 policy 或產物全文複製進子代理 prompt。
@@ -282,9 +282,9 @@ Handoff 每次只傳：`feature-id`、`mode`、`spec.md` path、上游決策摘�
 
 ## 機械強制層
 
-prompt 裡的規則是榮譽制，這些不是。踩到會直接被擋，訊息裡附了怎麼修。
+prompt 裡的規則是榮譽制，這些不是。踩到會直接被擋，訊息裡附了怎麼修。**前提是 Codex 信任了這個專案與它的 hooks** —— 沒信任的 hook 一條都不跑、也不會提示；使用者說「怎麼都沒被擋」時，請他跑 `pwsh .codex/scripts/sdlc.ps1 doctor`，它會問 Codex 信任了沒。
 
-- **`.codex/scripts/handoff-lint.ps1`**（`PreToolUse`，每次 spawn 前）擋下：handoff > 1200 字元、多重 `mode:`、缺 `mode` 或 `feature-id`、`mode: build|fix|code` 沒帶 `spec.md` **路徑**、`mode: fix` 沒帶 `round` 或超過第 3 輪，以及禁用 payload（連線字串、secret、DLP 對照表、長測試輸出）。
+- **`.codex/scripts/handoff-lint.ps1`**（`PreToolUse`，每次 spawn 前）擋下：handoff > 1200 字元、多重 `mode:`、缺 `mode` 或 `feature-id`、`mode: build|fix|code` 沒帶 `spec.md` **路徑**、`mode: fix` 沒帶 `round` 或超過修正輪上限（預設 3），以及禁用 payload（連線字串、secret、DLP 對照表、長測試輸出）。
 - **`.codex/scripts/dlp-gate.ps1`** ＋ **`.codex/scripts/dlp-residual-scan.ps1`**（`PostToolUse`）掃寫出去的產物。殘留掃描永遠不回報命中的值，只回類別、次數與行號。
 - **`.codex/scripts/guideline-gate.ps1`**（`PostToolUse`）用專案自己的 `guidelines/rules.json` 掃剛寫出去的檔，命中 `block` 的規則就擋下來，訊息帶 rule id、檔:行與修法。**團隊規範裡機械判得出對錯的那一半屬於這裡，不屬於任何 prompt** —— prompt 是榮譽制而且每個 spawn 都要付一次 token，這裡零 token 而且擋得住。沒有 `guidelines/rules.json` 就完全靜默。
 - **`.codex/scripts/build-check.ps1`**（`PostToolUse`，去抖）早一步抓到改壞的生產程式碼。

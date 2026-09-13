@@ -18,7 +18,7 @@
 pwsh <解壓目錄>/.codex/scripts/sdlc.ps1 install -Target C:\你的專案
 ```
 
-zip 裡是工具那半的全部（`.codex/`、`.agents/`、`AGENTS.md`）、一份 `manifest.json`（升級時用來分辨哪些檔是你改過的），以及一份 `guidelines/` 骨架。
+zip 裡是工具那半的全部（`.codex/`、`.agents/`、`AGENTS.md`）、一份 `manifest.json`（升級時用來分辨哪些檔是你改過的）、一份 `guidelines/` 骨架，以及選用的 VS Code extension（`editor/codex-sdlc-{版本}.vsix`；要順便裝就加 `-WithEditor`，見下面「在 VS Code 裡」）。
 
 裝完長這樣：
 
@@ -41,7 +41,7 @@ zip 裡是工具那半的全部（`.codex/`、`.agents/`、`AGENTS.md`）、一�
 
 需要：
 
-- Codex CLI（`.codex/config.toml` 裡的 hooks 已經開好）
+- Codex —— CLI 或 VS Code 裡的 Codex 擴充都可以。兩條路都會載入 `.codex/hooks.json` 與 `.codex/agents/*.toml`（Codex 0.154 實測：CLI，以及 VS Code 擴充底下跑的 `codex app-server`）；`.codex/config.toml` 裡的 hooks 已經開好
 - **PowerShell 7+（`pwsh`）** —— 強制層的腳本靠它，沒有的話 hook 會全部靜默失效
 - 只有要查 live DB 才需要：設定好的唯讀 DB MCP server
 
@@ -50,6 +50,19 @@ zip 裡是工具那半的全部（`.codex/`、`.agents/`、`AGENTS.md`）、一�
 ```powershell
 pwsh .codex/scripts/sdlc.ps1 doctor
 ```
+
+### 裝好之後一定要做的一件事：讓 Codex 信任它
+
+**Codex 不會跑它沒信任過的 hooks，而且不會告訴你。** 在專案裡開一次 `codex`：
+
+1. 問你要不要信任這個資料夾 → 信任
+2. 出現「Hooks need review」→ 選 **Trust all and continue**
+
+沒做這一步，`handoff-lint`、`dlp-gate`、`guideline-gate`、`build-check` 一條都不會跑 —— 流程照常進行、畫面上一切正常，只是沒有任何東西在擋。信任記在**你的** `~/.codex/config.toml`，所以換一台機器、專案搬了目錄、或升級改到 `hooks.json`，都要再信任一次。
+
+確認：`pwsh .codex/scripts/sdlc.ps1 doctor` —— 它會問 Codex 本人，回報「N 條都已信任」或哪幾條還沒。找不到 `codex` 執行檔時它會說查不到，不會假裝沒問題。（問的時候 Codex 連不到網路，這是刻意的。）
+
+**只在 VS Code 裡用 Codex 擴充的話**：信任一樣記在 `~/.codex/config.toml`，跟 CLI 共用。我們沒驗過擴充會不會跳出同一個審核畫面，所以最保險的做法是在專案目錄的終端機裡開一次 `codex` 把這一步做完，再用 `doctor` 確認。只裝了擴充、PATH 上沒有 `codex` 時，`doctor` 會說「無法確認」—— 用 `doctor -CodexPath <codex 的完整路徑>` 指給它。
 
 ### 已經用手動複製裝過了
 
@@ -65,15 +78,17 @@ pwsh .codex/scripts/sdlc.ps1 install -Adopt
 
 ## 升級
 
-**它會自己提醒你，但不會自己升。** 有新版時，每次委派子代理前會在訊息裡多一行：
+**它會自己提醒你，但不會自己升。** 有新版時，委派子代理前的 hook 會多帶一行通知（Codex 把它記在那次 hook 的輸出裡，orchestrator 也看得到）：
 
 ```
-[sdlc] 有新版 4.8.0（你在 4.7.0）。看變更：pwsh .codex/scripts/sdlc.ps1 whatsnew
+[sdlc] 有新版 4.9.0（你在 4.8.0）。看變更：pwsh .codex/scripts/sdlc.ps1 whatsnew
 ```
 
-那是通知，不是待辦 —— **它不會擋你、不會問你、也不會自己動手**。看過一次就不再提醒，直到下一版。（不想被提醒：把 `sdlc.config.json` 的 `update.check` 改成 `"never"`。）
+那是通知，不是待辦 —— **它不會擋你、不會問你、也不會自己動手**。看過一次就不再提醒，直到下一版；剛升級完、快取還是舊的時候也不會亂喊。（不想被提醒：把 `sdlc.config.json` 的 `update.check` 改成 `"never"`。）
 
-檢查更新讀的是 `sdlc.config.json` 的 `update.source`。它由發佈物帶進來，指向這套工作流自己的 repo；**連不到（離線、私有 repo、網址還沒設）時整件事完全靜默** —— 不影響任何流程，只是不會有人告訴你有新版。手動查一次：`pwsh .codex/scripts/sdlc.ps1 check-update`。
+「有新版」要先有人查過才知道。`check-update` 是你手動跑的；裝了 VS Code extension 的話它每天在背景替你查一次（`never` 時一次都不查）。
+
+檢查更新讀的是 `sdlc.config.json` 的 `update.source`。它由發佈物帶進來，指向這套工作流自己的 repo；**連不到（離線、私有 repo、網址還沒設）時整件事完全靜默** —— 不影響任何流程，只是不會有人告訴你有新版。手動查一次：`pwsh .codex/scripts/sdlc.ps1 check-update`。它說「不是可辨識的 GitHub repo」，就是這個值空著或不是 GitHub 網址：自己填上發佈這套工作流的 GitHub repo 網址 —— `update` 不會替你補。
 
 要升級：下載新版、解壓到別處，然後
 
@@ -93,6 +108,45 @@ pwsh <新版解壓目錄>/.codex/scripts/sdlc.ps1 update -Target C:\你的專案
 確認之後才動手。**`guidelines/` 一個字都不會被碰** —— 但它會順便告訴你三件事：新版的 agent 會讀哪些規範檔名而你缺了哪個、`rules.json` 在新版還驗不驗得過、`.gate-disabled` 是不是還躺在那裡（那個檔會活過每一次升級）。
 
 升級之後它會自動重跑一次 `apply` —— 新版的 agent 檔是原廠狀態，不重套的話你的 effort 設定就沒有生效，而那件事看不出來。
+
+**升級動到 `hooks.json` 時，Codex 會把改過的那幾條 hook 標成「待重新審核」，審核前不跑。** `update` 會提醒你；升級完開一次 codex，在「Hooks need review」選 Trust all，再用 `doctor` 確認。
+
+VS Code extension 不會被 `update` 重裝（它是整台機器共用的）；版本對不上時會多說一行怎麼換。
+
+---
+
+## 在 VS Code 裡（選用）
+
+發佈物附了一個 VS Code extension。**它只是殼** —— 它做的每一件事你在終端機跑 `sdlc.ps1` 都做得到，不裝它流程照常。
+
+它買到的是「現在靜默的幾件事變成看得見」：
+
+| 狀態列／Problems 會顯示 | 沒有它的話 |
+|---|---|
+| Codex 有沒有信任這個專案的 hooks | 只有主動跑 `doctor` 才知道 |
+| 改了 `sdlc.config.json` 但忘了 `apply` | 只有主動跑 `doctor`／`agent-lint` 才知道 |
+| 有新版（背景每天刷新一次；`update.check = never` 就一條連線都沒有） | 要你自己先跑過 `check-update`，通知才會開始出現 |
+| `guidelines/rules.json` 的違規、`bdd-docs/` 裡的敏感資料殘留（存檔時） | 只在 hook 的訊息裡捲過去 |
+
+點狀態列有選單：doctor、apply、調整某個 agent 的 effort／model（改 `sdlc.config.json`，再自動 apply）、調整審核修正輪上限、tune、whatsnew、立即檢查更新。
+
+裝：`install` 時加 `-WithEditor`，或自己 `code --install-extension <解壓目錄>/editor/codex-sdlc-{版本}.vsix`（Cursor／Windsurf／VSCodium 吃同一個檔）。需要 PowerShell 7；VS Code 找不到 `pwsh` 時它會說，並給安裝連結。
+
+**有兩種信任，別搞混。** VS Code 的「工作區信任」決定這個 extension 會不會啟動 —— 它會執行專案裡的 `.ps1`，所以受限模式下不啟動，**連狀態列都不會出現**。Codex 的 hooks 信任決定強制層會不會跑（見「裝好之後一定要做的一件事」）。在 VS Code 按了信任，不代表 Codex 那邊也好了；後者沒好時，狀態列會顯示「專案未信任」或「hooks 未信任」。
+
+**它是每台機器一份、所有專案共用 —— 刪掉專案不會移除它**，下次在別的專案裡它還會啟動。移除：
+
+```powershell
+code --uninstall-extension codex-sdlc.codex-sdlc
+```
+
+它刻意不做三件事：不猜你流程走到第幾步（那活在對話裡）、不自己判任何規則（一律跑腳本、讀腳本的結構化輸出）、不把工作流設定放進 VS Code settings（唯一真相是 `sdlc.config.json`）。
+
+已知限制：
+
+- **只在 Windows ＋ VS Code 上實測過。** macOS／Linux、Cursor／Windsurf／VSCodium 照理吃同一個 `.vsix`，但沒有實際跑過。
+- 查 hooks 信任要用到 `codex` 執行檔：設了 `codexSdlc.codexPath` 就用它，沒設就找 PATH，再試 OpenAI VS Code 擴充內附的那一支（那個位置沒實測過）。**都找不到時狀態列不會亮警示** —— 滑鼠移上去的說明裡寫「Codex hooks：無法確認」。所以綠勾不等於 hooks 已信任；要看那一行寫的是「N 條都已信任」。
+- 「有新版」要 `sdlc.config.json` 的 `update.source` 指向一個 GitHub repo 才查得到（見「升級」）。
 
 ---
 
@@ -129,9 +183,25 @@ pwsh .codex/scripts/sdlc.ps1 tune
 |---|---|---|
 | `sa-analyst` | repo 越大**越往下調** | 它的失敗模式是逾時，不是想得不夠深 |
 | `implementer` | 通常不動 | 成本在測試來回的次數，不在單次想多深 |
-| `reviewer` | **唯一值得調高的** | 輸入小、判斷密度高，而審核只有 3 輪額度，審得淺就是白付 |
+| `reviewer` | **唯一值得調高的** | 輸入小、判斷密度高，而審核的修正輪有上限，審得淺就是白付 |
 
 **orchestrator 那一格設了也沒用** —— 它沒有自己的設定檔（它就是 `AGENTS.md`，最上層那個對話本身）。那一格只是記錄，`install` 跟 `doctor` 會把它印成一行你可以自己下的啟動指令。
+
+### 審核最多修幾輪
+
+同一個檔：
+
+```jsonc
+"review": { "maxRounds": 3 }
+```
+
+⑤ 審核 FAIL 會回 ④ 修，這個數字是修正輪的上限，**只接受 1–5，預設 3**。到了上限還 FAIL，它會停下來交回你（接受現版本／指定重點再跑一輪／暫停）。
+
+- **改完不必 apply** —— 每次委派修正輪時 `handoff-lint` 都現讀，orchestrator 也會從它那裡拿到「第幾輪／上限幾輪」。
+- **偶爾想多跑一輪不用改這裡**：到上限交回你時選「指定重點跑最後一輪」就好。這個值是給「團隊一貫想要不同上限」用的。
+- 寫壞了（`0`、`6`、`"3"`）不會卡住流程 —— 照預設 3 輪算，但 `doctor` 與 `agent-lint` 會紅，免得你以為設了 5 其實還是 3。
+- 為什麼有上限、而且最多 5：實作↔審核的來回沒有自然終點，輪次又是 orchestrator 自己報的。上限太高等於沒有上限。
+- **已知缺口**：上限是在「開一個新的子代理」時檢查的。orchestrator 如果把修正交給一個已經存在的子代理（Codex 的 `send_input`，或先 `resume_agent` 再 `send_input`），那一次不會經過 `handoff-lint`，上限擋不到。流程規定子代理一律冷啟動、每一輪修正都帶著 `round` 重新委派，但這一點目前只靠 prompt。
 
 ---
 
@@ -155,7 +225,7 @@ pwsh .codex/scripts/sdlc.ps1 tune
 | **② SA** | 查規格／repo／schema，回 2–4 個做法 | `sa-analyst` | `project-map.md`；沒做完才有 `analysis.md` |
 | **③ 定案** | 選做法＋確認驗收條件（Gherkin） | 你 ＋ orchestrator | `spec.md` 補齊 |
 | **④ 實作** | test-first 寫到綠 | `implementer` | `.feature`、step definitions、程式碼與測試 |
-| **⑤ 審核** | 換一個乾淨的 context 獨立審 | `reviewer` | 無（PASS／FAIL，最多修 3 輪） |
+| **⑤ 審核** | 換一個乾淨的 context 獨立審 | `reviewer` | 無（PASS／FAIL，修正輪上限預設 3，可調） |
 | **⑥ 交付** | 回報改了什麼、怎麼驗的、殘留風險 | orchestrator | 無 |
 
 **能跳的就跳。** 純技術改動（重構、升套件、重現步驟明確的 bug）① 通常沒缺口，直接進 ②；改動小到「單一 commit 可 revert 且沒有要驗收的行為變更」，② 也跳過，它自己改完。
@@ -194,7 +264,7 @@ pwsh .codex/scripts/sdlc.ps1 tune
 
 查到原需求還有第二個好處你不會直接看到：當初那份 `spec.md` 寫著「驗收層」（這塊功能的測試該繫結在哪個介面），修 bug 時的回歸測試就寫在同一層。**這一行 bug 這條路本來生不出來**（它沒跑過 ②，沒有人決定過），而繫結錯層的後果是「回歸測試綠了，但 bug 還在」。
 
-原因是 bug 跟新功能的未知不一樣：新功能不知道「你要什麼」，bug 不知道「哪裡壞了」，而後者**靜態讀程式碼讀不出來**。先做出可靠地紅／綠的一行指令，原因才找得到 —— 沒有它，每一步都是猜，而猜錯會吃掉 ⑤ 只有 3 輪的修正額度。
+原因是 bug 跟新功能的未知不一樣：新功能不知道「你要什麼」，bug 不知道「哪裡壞了」，而後者**靜態讀程式碼讀不出來**。先做出可靠地紅／綠的一行指令，原因才找得到 —— 沒有它，每一步都是猜，而猜錯會吃掉 ⑤ 有限的修正輪。
 
 **做不出重現的時候它會回來問你**（缺哪一天的資料、要哪個環境、症狀本身就不穩）—— 那些是你答得出來、它答不出來的事。
 
@@ -300,7 +370,7 @@ pwsh .codex/scripts/sdlc.ps1 tune
 
 ### ④⑤⑥ 實作、審核、交付
 
-之後它自己跑：寫 `.feature` → 寫 step definitions → 看紅 → 寫程式 → 綠 → 換一個乾淨的 context 獨立審一遍 → 沒過就回去修（最多 3 輪）。
+之後它自己跑：寫 `.feature` → 寫 step definitions → 看紅 → 寫程式 → 綠 → 換一個乾淨的 context 獨立審一遍 → 沒過就回去修（預設最多 3 輪，見「審核最多修幾輪」）。
 
 交付時回報**改了什麼、怎麼驗的、殘留風險**。
 
@@ -510,7 +580,7 @@ guidelines/
 - 列表預設每頁 20 筆
 ```
 
-違反 MUST 審核會判 **[必修]**，違反 SHOULD 只給 [建議] 且**不會**因此打回。沒標的一律當 SHOULD。不標的話，每一條都變成打回候選，而修正只有 3 輪 —— 全被命名意見吃掉，真正的問題就沒人看了。
+違反 MUST 審核會判 **[必修]**，違反 SHOULD 只給 [建議] 且**不會**因此打回。沒標的一律當 SHOULD。不標的話，每一條都變成打回候選，而修正輪有上限（預設 3）—— 全被命名意見吃掉，真正的問題就沒人看了。
 
 ### 規範會刪掉做法，而它不會替你刪
 
@@ -537,9 +607,11 @@ pwsh -NoProfile -File .codex/scripts/guideline-gate.ps1 -Validate
 | 訊息 | 意思 | 通常怎麼辦 |
 |---|---|---|
 | `missing-spec-ref` | 要實作或審核，但沒帶 `spec.md` 的**路徑** | 還沒走完 ③，先定案 |
-| `review-loop-exceeded` | 已經第 4 輪修正 | 它會交回你裁定：接受現版本／指定重點跑最後一輪／暫停 |
+| `review-loop-exceeded` | 修正輪超過上限（預設 3，`sdlc.config.json` 的 `review.maxRounds`） | 它會交回你裁定：接受現版本／指定重點跑最後一輪／暫停 |
 | `handoff-too-long` | 委派超過 1200 字元 | 通常是它想貼全文；讓它改傳路徑 |
 | `connection-string`／`secret-literal` | prompt 裡有連線字串或密鑰 | **不要繞過**，把敏感值從來源拿掉 |
+| （沒有任何訊息）寫了違規的檔、沒帶 meta 的委派都照樣過 | Codex 沒信任這個專案的 hooks，強制層整層沒在跑 | 跑 `sdlc.ps1 doctor`，照它說的去 codex 裡信任 |
+| `doctor` 說「無法確認 Codex 是否信任了這個專案的 hooks」（狀態列說明裡是「Codex hooks：無法確認」） | 括號裡寫原因：找不到 `codex` 執行檔，或問了 15 秒沒回應。不代表沒信任，也不代表有 | 找不到：裝 Codex CLI，或 `doctor -CodexPath <完整路徑>`（VS Code 裡設 `codexSdlc.codexPath`）。沒回應：再跑一次 `doctor` |
 
 寫入 `bdd-docs/**` 之後還會掃一次敏感資料殘留。確定整個專案沒有敏感資料的話，建一個 `bdd-docs/.dlp-disabled` 可以整個關掉。
 
@@ -586,9 +658,29 @@ pwsh -NoProfile -File .codex/scripts/pack.ps1     # → dist/codex-sdlc-{version
 
 發佈前把 `bdd-workflow-version.json` 的 **`source`** 填成這個 repo 的網址 —— `install` 會把它寫進每個消費端的 `sdlc.config.json`，那是他們唯一的更新來源。沒填不會擋你出貨（第一版還沒推上去很正常），但 `pack` 每次都會喊：**沒有它，那些專案永遠不會有人告訴他們有新版，而症狀是零。**
 
-`pack` 自己會先跑 `agent-lint` 與 fixture 測試，**紅燈就不出貨** —— 一份設定不一致的發佈物，症狀會落在別人的專案裡，而且通常是靜默的。它同時產生 `manifest.json`（每個工具檔一個 sha256），那是升級能分辨「使用者改過」的唯一依據，也會清掉 agent 檔裡的 `SDLC-TUNING` 區塊（發佈物一律原廠狀態，別把自己的調校偷渡出去）。版本號改 `bdd-workflow-version.json` 的 `contract-version` 就好，`AGENTS.md` 與 `config.toml` 的標題由檢查 10 盯著。
+`pack` 自己會先跑 `agent-lint` 與 fixture 測試，**紅燈就不出貨** —— 一份設定不一致的發佈物，症狀會落在別人的專案裡，而且通常是靜默的。它同時產生 `manifest.json`（每個工具檔一個 sha256），那是升級能分辨「使用者改過」的唯一依據，也會清掉 agent 檔裡的 `SDLC-TUNING` 區塊（發佈物一律原廠狀態，別把自己的調校偷渡出去）。版本號改 `bdd-workflow-version.json` 的 `contract-version`，`AGENTS.md`、`config.toml` 的標題與 `vscode-extension/package.json` 由檢查 10／11 盯著（extension 那一處用 `npm version <版本> --no-git-tag-version` 改）。
 
-六條容易踩的規則：
+repo 裡有 `vscode-extension/` 時，`pack` 還會 `npm ci` ＋ 編譯 ＋ 跑 extension 的測試（需要 Node.js；這一版不帶編輯器那一層就加 `-SkipExtension`），產出的 `.vsix` 放進發佈物的 `editor/` —— **不進 manifest**，它不是工具那半也不是使用者那半。extension 的測試包含一支拿真的 `sdlc.ps1` 輸出來驗的合約測試，所以改了 `-Json` 的欄位卻沒同步 extension，這裡會紅。
+
+改了 extension 之後，另外在真的 VS Code 裡驗一次打包出來的 vsix（會開一個獨立的視窗，不碰你平常那一份）：
+
+```powershell
+cd vscode-extension
+npm ci; npm run build; npm test     # 不必等 pack 就能跑的那一套
+npm run test:host                   # 打包的是 out/ 現有的東西，所以先 build
+```
+
+`test:host` 在 Windows 上預設用 PATH 上 `code` 所在的那份 VS Code；那份正在背景更新時會拒絕再開一個實例，這時設 `$env:VSCODE_TEST_DOWNLOAD='1'` 改用下載的 stable（其他平台一律下載）。下載的放在 `vscode-extension/.vscode-test/`，約 1 GB，已 gitignore，不要了直接刪。
+
+發佈前的清單：
+
+1. 版本號：`contract-version` 與另外三處（見上；漏了會被檢查 10／11 擋下，先改省一輪）。
+2. `bdd-workflow-version.json` 加一個 `v{主次}-…` 說明，`source` 填好。
+3. README 補一節「從 v… 升上來」。
+4. 上一版之後 Codex 升過版 → 重跑一次 hook 實測（見下面第 7 條）。
+5. `pack`。
+
+七條容易踩的規則：
 
 1. **`AGENT-CORE` 區塊必須在 4 個檔之間逐字相同**（`.codex/agents/` 的 3 個 toml ＋ `AGENTS.md`）。重複是刻意的 —— prompt cache 只認逐字相同的前綴，跨 agent 不共用。改一個要改全部，`agent-lint` 檢查 1 會擋。
 2. **不要幫 orchestrator 補一個 `.codex/agents/bdd-orchestrator.toml`。** 它的指令屬於 `AGENTS.md`。有了 toml 它就會被當子代理 spawn 起來，而被 spawn 出來的 agent 拿不到 `agent` 工具 —— ② 到 ⑤ 全部委派不出去，症狀只是一句「工具不存在」。檢查 3 會擋。
@@ -596,8 +688,57 @@ pwsh -NoProfile -File .codex/scripts/pack.ps1     # → dist/codex-sdlc-{version
 4. **每個檢查都要有一個「刻意弄壞後必須紅燈」的測試。** 抓不到東西的檢查比沒有檢查更糟。
 5. **`guidelines/` 底下加了新的 `*.md`，就要有 agent 提到那個檔名。** 規範走「檔名即路由鍵」，沒有映射表（映射表是第二份會走鐘的名冊）。代價是沒有讀者的規範檔**完全靜默** —— 沒有錯誤、沒有警告，只是它不生效，而團隊以為有人在守。檢查 8 會擋。
 6. **不要把任何使用者會想改的東西放進 `.codex/`、`.agents/` 或 `AGENTS.md`。** 那三處升級時會被覆蓋，放進去的設定會**靜默消失**。使用者的東西只有兩個落點：`guidelines/`（團隊規範）與 `sdlc.config.json`（每個 agent 的 model／effort）。這條沒有機械強制 —— 唯一的護欄是記得它。
+7. **hook 腳本的測試一律餵 Codex 真的送出來的 payload**（`run-tests.ps1` 的 `New-CodexHookPayload`）。舊測試自己捏了一個 Codex 從來不送的形狀，三支 gate 對真的 `apply_patch` 完全失明，而測試一路全綠。工具名稱（`apply_patch`／`Bash`／`spawn_agent`）與 payload 形狀是**觀測值，不是合約** —— Codex 升版時照 `docs/vscode-extension-plan.md` 記的方法重跑一次實測（假模型驅動 `exec` 與 `app-server`），不要只讀文件。
 
 **為什麼是這樣設計**（哪些事該有自己的 context、為什麼無狀態、v4 砍掉了什麼、砍掉的代價）見 `docs/design-rationale.md`。那份只給人看，執行期不讀。
+
+### 還沒做完的事
+
+截至 v4.8.0。細節與證據在 `docs/vscode-extension-plan.md` 的「執行結果」。
+
+**要先做決定的**
+
+- **`send_input`／`resume_agent` 要不要也經過 `handoff-lint`。** 現在 matcher 只攔 `spawn_agent`；把修正交給已經存在的子代理不會被檢查，修正輪上限因此擋不到（見「審核最多修幾輪」）。要攔，就得先定義一次 `send_input` 什麼時候算一輪修正 —— 它也拿來追問、補資料，不能每一次都要求帶 `round`。
+- **extension 的 publisher ID。** 現在的 `codex-sdlc` 是佔位。上 Marketplace 之前要定案 —— 改 publisher 等於改 extension ID，已經裝過的人要重裝；repo 裡寫著這個 ID 的地方要一起改（`sdlc.ps1` 的 `$ExtensionId`、兩份 README 的移除指令、`test-host/suite.ts`、`test-sdlc.ps1` 的假 extensions.json）。
+- **找不到 `codex` 時狀態列要不要亮警示。** 現在不亮，只寫在說明裡（見「在 VS Code 裡」的已知限制）。亮的話，只用 Codex 擴充、沒裝 CLI 的人會一直看到警示；不亮的代價是「hooks 沒信任」這個最靜默的失效，在那台機器上也看不到。
+
+**計畫裡延後的**
+
+- **M2**：Marketplace ＋ OpenVSX 雙通道、`.vscode/extensions.json` 推薦（已經有這個檔的專案，`install` 後位元組不變）、CI 發佈的版號與 `contract-version` 一致。照計畫的判準，等有一批「你不知道他們裝了哪一版」的外部使用者再做。
+- **只用終端機的人的更新刷新**：沒裝 extension 就要自己跑 `check-update`，那行「有新版」才會出現。計畫裡的便宜替代只做了一半：`check-update -IfDue`（快取未滿一天不連網）有了，「由 `doctor`／`whatsnew` 順手觸發一次背景刷新」沒做。
+
+**做了、但沒在真實環境驗過的**
+
+- VS Code 工作區信任 → extension 啟動這條路（host 測試用了 `--disable-workspace-trust`）；選單裡的互動流程（調校、修正輪上限、tune、whatsnew、立即檢查更新）只有底層邏輯有自動測試；「工作流太舊」的提示。
+- macOS／Linux、Cursor／Windsurf／VSCodium、沒有 pwsh 或只有 Windows PowerShell 5.1 的機器、非繁中語系的 Windows（hook 的編碼問題是在 cp950 上查到並驗證修正的）。
+- OpenAI VS Code 擴充：內附 `codex` 的位置、它有沒有「Hooks need review」審核畫面。
+- `doctor` 問 Codex 信任狀態只在未登入的 Codex home 驗過；登入後 app-server 的啟動行為沒驗（15 秒沒回應就只說「無法確認」）。
+
+**已知、還沒修的**
+
+- 兩支會阻斷的 hook 同時命中時，Codex 合併後的回饋偶爾有一兩個字亂碼（約十二次一次，隔離環境重現不出來）。
+- **更新檢查目前在每個專案上都查不到東西。** `bdd-workflow-version.json` 的 `source` 還是空的，`install` 寫進每個專案的 `update.source` 也就是空的（extension 的背景檢查一樣）。而且 `update` 不會替已經裝好的專案補這個值 —— 填好之後只有新裝的專案拿得到，舊的要自己改 `sdlc.config.json`，或讓 `update` 補空值（還沒做）。
+
+### 從 v4.7 升上來
+
+**先講最重要的：v4.7 以前的機械強制層，在現行的 Codex（0.154 實測）上沒有在擋。** 不是規則寫錯，是 hook 跟 Codex 之間的四個接縫都鬆了，而且每一個的症狀都是零 —— hook 每次都跑、每次都「完成」。這一版修好它，**升級動作**：跑 `update`（或複製 `.codex/` 與 `AGENTS.md`），然後**在專案裡開一次 codex，信任資料夾、在「Hooks need review」選 Trust all**，再跑 `doctor` 確認 hooks 已信任。流程六步、產物路徑、handoff 合約都不變。
+
+修掉的東西（全部用本機的假模型驅動 Codex 實測過，CLI 與 IDE 的路徑一樣）：
+
+1. **Windows 上四支 hook 沒有一支擋得下來。** Codex 把 hook 包成 `pwsh -Command`，腳本的 `exit 2` 被回報成 1，Codex 當成「hook 失敗」—— 不阻斷，訊息也不交給模型。`hooks.json` 每一條加了 `commandWindows` 把 exit code 傳出去。
+2. **agent 寫的檔，三支寫檔後的 gate 幾乎全漏。** `apply_patch` 的路徑在 patch 標頭、沒有引號，gate 只認引號路徑；shell 工具在 Codex 裡叫 `Bash`，matcher 只有 `shell`。實測寫進 `bdd-docs/` 的 email、含 `NOLOCK` 的 `.sql`、改過的 `.cs`，DLP／規範／build 三支全部放行。
+3. **「不擋但要喊」的訊息全部被丟掉。** Codex 會丟掉成功結束的 hook 寫的 stderr —— kill switch 還關著、`rules.json` 寫壞、warn 級的規範命中、有新版，這些一句都沒到過任何人眼前。現在改走 Codex 會送進模型的那條管道。
+4. **中文 handoff 在 hook 裡被解錯編碼。** 一份 743 字的合法中文 handoff 會被算成 1772 字、而且抓不到 `mode:` —— 前三條修好之後如果不修這條，**每一次委派都會被擋**。所有會被程式呼叫的腳本現在一律用 UTF-8 讀寫。
+5. **hooks 要被信任才會跑**（見上面「裝好之後一定要做的一件事」）。`doctor` 現在會問 Codex 信任了沒。
+
+順帶：
+
+- **`doctor` 不再誤報「你缺 guidelines/spec.md」。** v4.7 起它每次都這樣報，而且因此永遠是紅的 —— 那不是你的問題，是章節切錯了，不要去建那個檔。
+- 剛升級完、更新快取還沒刷新時，不會再跟你說「有新版（你在舊版）」。
+- **審核最多修幾輪可以設了**：`sdlc.config.json` 的 `review.maxRounds`（1–5，預設 3，見「審核最多修幾輪」）。`update` 會替舊的設定檔補上這一節、值填 3，行為跟以前一模一樣。
+- 新增選用的 VS Code extension（見「在 VS Code 裡」），以及它需要的：`sdlc.ps1 -Json` 改成結構化輸出（有程式在讀它的人注意：外殼多了 `schema`、`data`、`warnings`，`output` 還在）；`check-update -IfDue`；`dlp-gate -Json`。
+
+殘留一件已知的事：兩支會阻斷的 hook **同時**命中時，Codex 合併後交給模型的訊息偶爾會有一兩個字變成亂碼（約十二次一次）。擋還是有擋，理由也還看得懂；我們這一側送出去的位元組是正確的。
 
 ### 從 v4.6 升上來
 

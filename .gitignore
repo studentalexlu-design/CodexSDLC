@@ -1,0 +1,3 @@
+# VS Code extension: dependencies and downloaded test VS Code instances
+vscode-extension/node_modules/
+vscode-extension/.vscode-test/

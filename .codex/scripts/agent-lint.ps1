@@ -22,6 +22,9 @@
 #   8. guidelines/ 底下每個規範檔都有 agent 讀（檔名即路由鍵，沒有讀者就是靜默失效）
 #   9. SDLC-TUNING 區塊與 sdlc.config.json 一致（改了設定卻沒 apply，症狀是零）
 #  10. 版本號單一真相：AGENTS.md 與 config.toml 的標題要對得上版本檔
+#  11. VS Code extension 的 package.json 版本 = 版本檔（repo 裡有 extension 原始碼時才檢查）
+#  12. hooks.json 的形狀在 Codex 上真的擋得住：exit code 傳得出來、matcher 對得上真正的工具名稱
+#  13. sdlc.config.json 的 review.maxRounds 是 1–5 的整數（寫壞時 hook 照預設算，症狀是「設定沒生效」）
 #
 # v4.0.0 移除的檢查：skill matrix 覆蓋、gate 定義完整性、回傳 shape 對 policy 檔、
 # tier 表對 route-profiles、findings 段落對 template、合併 mode 矛盾、文件 tier 預算。
@@ -38,10 +41,27 @@ param(
     [string]$GuidelineDir      = 'guidelines',
     [string]$ConfigFile        = 'sdlc.config.json',
     [string]$WorkflowConfig    = '.codex/config.toml',
+    [string]$ExtensionManifest = 'vscode-extension/package.json',
+    [string]$HooksFile         = '.codex/hooks.json',
     [switch]$Json
 )
 
 $ErrorActionPreference = 'Stop'
+
+# ---- 標準 I/O：被程式呼叫時一律 UTF-8 ----
+# Codex 送進來的 payload 是 UTF-8、也用 UTF-8 解讀 hook 的輸出；Windows 上 [Console] 的編碼卻跟著 console 的
+# code page 走（zh-TW 是 cp950；並行的 hook 共用同一個 console，偶爾連輸出端也是）。Codex 0.154.0 實測的後果：
+# 一份 743 字、meta 完整的中文 handoff 被解成 1772 字、JSON 解析失敗、抓不到 mode —— **每一次 spawn 都被擋**；
+# 阻斷理由的中文到模型手上是亂碼。只在被重導向時才換：人在終端機跑的時候照 console 的 code page 顯示。
+# 同一段在 handoff-lint／dlp-gate／guideline-gate／build-check／agent-lint／sdlc.ps1 各有一份。
+$Utf8NoBom = [Text.UTF8Encoding]::new($false)
+if ([Console]::IsOutputRedirected) { $w = [IO.StreamWriter]::new([Console]::OpenStandardOutput(), $Utf8NoBom); $w.AutoFlush = $true; [Console]::SetOut($w) }
+if ([Console]::IsErrorRedirected)  { $w = [IO.StreamWriter]::new([Console]::OpenStandardError(),  $Utf8NoBom); $w.AutoFlush = $true; [Console]::SetError($w) }
+function Read-StdinUtf8 {
+    if ([Console]::IsInputRedirected) { return [IO.StreamReader]::new([Console]::OpenStandardInput(), $Utf8NoBom).ReadToEnd() }
+    return [Console]::In.ReadToEnd()
+}
+
 $violations = @()
 function Add-V([string]$rule, [string]$detail, [string]$fix) {
     $script:violations += [pscustomobject]@{ rule = $rule; detail = $detail; fix = $fix }
@@ -366,6 +386,111 @@ if ($ver -and $ver.'contract-version') {
         if ($m.Success -and $m.Groups[1].Value -ne $truth) {
             Add-V 'version-drift' "$f 標題寫 v$($m.Groups[1].Value)，版本檔是 $truth" `
                   "改成 v$truth —— 版本檔是唯一真相"
+        }
+    }
+}
+
+# ---- 11. VS Code extension 的版本 = 版本檔 ----
+# extension 的 package.json.version 是版本號的第四處。它跟前三處（版本檔、AGENTS.md、config.toml）
+# 分岔的症狀跟檢查 10 一樣：`doctor` 的相容性判斷與使用者要不要重裝 extension 的決定，
+# 同時建立在一個錯的數字上。pack.ps1 出貨前跑本腳本，所以這裡紅 = 不出貨。
+# 只在 repo 裡真的有 extension 原始碼時檢查 —— 消費端專案不會有這個目錄。
+if ($ver -and $ver.'contract-version' -and (Test-Path $ExtensionManifest)) {
+    $truth = [string]$ver.'contract-version'
+    $pkg = $null
+    try { $pkg = Get-Content $ExtensionManifest -Raw -Encoding UTF8 | ConvertFrom-Json } catch { }
+    if (-not $pkg) {
+        Add-V 'extension-manifest-unparsable' $ExtensionManifest '修正 JSON 格式 —— 解析不了時 pack 產不出 vsix'
+    } elseif ([string]$pkg.version -ne $truth) {
+        Add-V 'extension-version-drift' "$ExtensionManifest 是 $($pkg.version)，版本檔是 $truth" `
+              "把 $ExtensionManifest 的 version 改成 $truth —— 版本檔是唯一真相"
+    }
+}
+
+# ---- 12. hooks.json 在 Codex 上真的擋得住 ----
+# 這道檢查守的三件事，全部是 Codex 0.154.0 用假模型實測出來的（版本檔 v48-enforcement），
+# 而且三件的症狀都是零 —— hook 每次都跑、每次都「完成」，只是什麼都沒擋：
+#
+#   (a) Windows 上 Codex 把 hook 指令包成 `pwsh -NoProfile -Command "<command>"`。內層腳本 `exit 2`，
+#       外層 `-Command` 回報的是 **1**，Codex 把 1 當成「hook 失敗」—— 不阻斷、stderr 也不交給模型。
+#       所以每一個 command hook 都要有 `commandWindows`，而且結尾要把 exit code 傳出去。
+#   (b) shell 工具在 hook payload 裡叫 **`Bash`**，不是 `shell`。matcher 沒有它，經 shell 寫的檔就不掃。
+#   (c) 引用的腳本要存在 —— 不存在時 hook 以 exit 1 收場，同樣是靜默的「失敗」。
+#
+# (b) 的工具名稱表是觀測值，不是 Codex 的合約。Codex 改名時這張表要跟著改，
+# 而那一天唯一會發現的方法是重跑一次實測（不是讀文件）。
+if (Test-Path $HooksFile) {
+    $hooksDoc = $null
+    try { $hooksDoc = Get-Content $HooksFile -Raw -Encoding UTF8 | ConvertFrom-Json } catch { }
+    if (-not $hooksDoc -or -not $hooksDoc.hooks) {
+        Add-V 'hooks-unparsable' $HooksFile '修正 JSON 格式 —— Codex 讀不到它時整個機械強制層都不存在，而且不會有任何提示'
+    } else {
+        # 腳本 → 它必須攔得到的工具名稱（實測的 hook payload tool_name）
+        $mustMatch = @{
+            'handoff-lint.ps1'   = @('spawn_agent')
+            'dlp-gate.ps1'       = @('apply_patch', 'Bash')
+            'guideline-gate.ps1' = @('apply_patch', 'Bash')
+            'build-check.ps1'    = @('apply_patch')
+        }
+        foreach ($ev in $hooksDoc.hooks.PSObject.Properties) {
+            foreach ($group in @($ev.Value)) {
+                foreach ($h in @($group.hooks)) {
+                    if ($h.type -ne 'command' -or -not $h.command) { continue }
+                    $sm = [regex]::Match([string]$h.command, '-File\s+(\S+\.ps1)')
+                    if (-not $sm.Success) { continue }
+                    $script = $sm.Groups[1].Value
+                    $label  = "$($ev.Name) → $(Split-Path $script -Leaf)"
+
+                    if (-not (Test-Path $script)) {
+                        Add-V 'hook-script-missing' "$label：$script" '修正路徑 —— 腳本不存在時 hook 以 exit 1 收場，Codex 當成失敗略過，什麼都不會擋'
+                    }
+                    $win = [string]$h.commandWindows
+                    if (-not $win) {
+                        Add-V 'hook-exit-code-swallowed' "$label 沒有 commandWindows" `
+                              "補上 `"commandWindows`": `"$($h.command); exit `$LASTEXITCODE`" —— Windows 上 Codex 用 pwsh -Command 包一層，沒有這句 exit 2 會變成 1，阻斷與回饋全部失效"
+                    } elseif ($win -notmatch ';\s*exit\s+\$LASTEXITCODE\s*$') {
+                        Add-V 'hook-exit-code-swallowed' "$label 的 commandWindows 沒有以 exit `$LASTEXITCODE 結尾" `
+                              "結尾加上 ; exit `$LASTEXITCODE —— 否則外層 pwsh -Command 把 exit 2 回報成 1"
+                    } elseif ($win -notmatch [regex]::Escape($script)) {
+                        Add-V 'hook-command-drift' "$label：commandWindows 跑的不是 $script" 'command 與 commandWindows 必須跑同一支腳本，只差結尾的 exit code 傳遞'
+                    }
+
+                    $leaf = Split-Path $script -Leaf
+                    if ($mustMatch.ContainsKey($leaf)) {
+                        $matcher = [string]$group.matcher
+                        foreach ($tool in $mustMatch[$leaf]) {
+                            $hit = $false
+                            if ($matcher) { try { $hit = [regex]::IsMatch($tool, $matcher) } catch { } }
+                            if (-not $hit) {
+                                Add-V 'hook-matcher-misses-tool' "$label：matcher /$matcher/ 攔不到 $tool" `
+                                      "matcher 加上 ^$tool$ —— Codex 回報的工具名稱是 $tool，攔不到就代表經它寫的檔完全不掃"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+# ---- 13. review.maxRounds 的型別與範圍 ----
+# 修正輪上限由 handoff-lint 每次現讀 sdlc.config.json。值寫壞時 hook 照預設 3 輪算、不擋 spawn ——
+# 所以寫壞的症狀是「設了 5，還是第 3 輪就停」，而且要等到真的跑到那一輪才看得出來。這道檢查讓它在 doctor 就紅。
+# 範圍規則跟 handoff-lint 的一份相同（lint 要能獨立驗），兩邊由 test-handoff-lint.ps1 的交叉測試綁在一起。
+# 設定檔整份解析不了的情況由檢查 9 報，這裡不重複。
+if (Test-Path $ConfigFile) {
+    $cfg13 = $null
+    try { $cfg13 = Get-Content $ConfigFile -Raw -Encoding UTF8 | ConvertFrom-Json } catch { }
+    if ($cfg13 -is [pscustomobject] -and $cfg13.PSObject.Properties['review']) {
+        $review13 = $cfg13.review
+        if ($review13 -isnot [pscustomobject]) {
+            Add-V 'review-config-invalid' "$ConfigFile 的 review 不是物件" '寫成 "review": { "maxRounds": 3 } —— 寫壞時 handoff-lint 照預設 3 輪算，設定等於沒生效'
+        } elseif ($review13.PSObject.Properties['maxRounds']) {
+            $v13 = $review13.maxRounds
+            if (-not (($v13 -is [int] -or $v13 -is [long]) -and $v13 -ge 1 -and $v13 -le 5)) {
+                Add-V 'review-max-rounds-invalid' "$ConfigFile 的 review.maxRounds 是 $(ConvertTo-Json -InputObject $v13 -Compress)" `
+                      '改成 1–5 的整數 —— 值不合法時 handoff-lint 照預設 3 輪算，設定等於沒生效'
+            }
         }
     }
 }

@@ -1,0 +1,120 @@
+{
+  "name": "codex-sdlc",
+  "displayName": "Codex SDLC",
+  "description": "Codex SDLC 工作流的駕駛艙：狀態列、Problems、一鍵 doctor／apply／whatsnew／tune。它只是 sdlc.ps1 與各 gate 的殼，真相仍在 sdlc.config.json 與腳本裡。",
+  "version": "4.8.0",
+  "publisher": "codex-sdlc",
+  "private": true,
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./out/src/extension.js",
+  "activationEvents": [
+    "workspaceContains:.codex/bdd-workflow/bdd-workflow-version.json"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "這個 extension 會執行工作區裡的 .codex/scripts/*.ps1，受限模式下不啟動。"
+    },
+    "virtualWorkspaces": false
+  },
+  "codexSdlc": {
+    "jsonSchema": 1
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "codexSdlc.menu",
+        "title": "選單",
+        "category": "Codex SDLC"
+      },
+      {
+        "command": "codexSdlc.refresh",
+        "title": "重新整理狀態",
+        "category": "Codex SDLC"
+      },
+      {
+        "command": "codexSdlc.doctor",
+        "title": "doctor —— 完整健檢",
+        "category": "Codex SDLC"
+      },
+      {
+        "command": "codexSdlc.apply",
+        "title": "apply —— 把 sdlc.config.json 套到 agent 定義",
+        "category": "Codex SDLC"
+      },
+      {
+        "command": "codexSdlc.editTuning",
+        "title": "調整某個 agent 的 effort／model",
+        "category": "Codex SDLC"
+      },
+      {
+        "command": "codexSdlc.tune",
+        "title": "tune —— 依 repo 現況給調校提議",
+        "category": "Codex SDLC"
+      },
+      {
+        "command": "codexSdlc.whatsnew",
+        "title": "whatsnew —— 變更說明",
+        "category": "Codex SDLC"
+      },
+      {
+        "command": "codexSdlc.checkUpdate",
+        "title": "立即檢查更新",
+        "category": "Codex SDLC"
+      },
+      {
+        "command": "codexSdlc.showOutput",
+        "title": "顯示輸出",
+        "category": "Codex SDLC"
+      }
+    ],
+    "configuration": {
+      "title": "Codex SDLC",
+      "properties": {
+        "codexSdlc.pwshPath": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "markdownDescription": "PowerShell 7（`pwsh`）的完整路徑。留空 = 先找 PATH，再找常見的安裝位置。**只放這台機器的東西** —— 工作流本身的設定（model／effort、更新檢查）一律在專案根的 `sdlc.config.json`，不在這裡。"
+        },
+        "codexSdlc.codexPath": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "markdownDescription": "`codex` 執行檔的完整路徑，用來問 Codex 這個專案的 hooks 有沒有被信任。留空 = PATH 上的 `codex`，沒有的話找 OpenAI 的 VS Code extension 內附的那一支。"
+        },
+        "codexSdlc.statusBar.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "在狀態列顯示工作流版本、調校漂移、hooks 信任狀態與新版提示。"
+        },
+        "codexSdlc.problems.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "存檔時跑 guideline-gate 與 dlp-gate，把命中放進 Problems 面板。"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsc -p .",
+    "test": "node scripts/run-node-tests.js",
+    "test:host": "node scripts/run-host-test.js",
+    "package": "vsce package --skip-license --allow-missing-repository"
+  },
+  "dependencies": {
+    "jsonc-parser": "3.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "18.19.130",
+    "@types/vscode": "1.85.0",
+    "@vscode/test-electron": "2.5.2",
+    "@vscode/vsce": "3.9.2",
+    "typescript": "5.9.3"
+  }
+}

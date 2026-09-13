@@ -23,12 +23,71 @@ param(
     [switch]$WhatIfPaths   # 只印出判定結果，不實際 build（測試用）
 )
 
-if (-not $Payload) { $Payload = [Console]::In.ReadToEnd() }
+# ---- hook payload → 這次寫出去的檔 ----
+# 三支 PostToolUse gate（dlp-gate／guideline-gate／build-check）各有一份**逐字相同**的副本：
+# gate 必須能獨立跑，少複製一支共用檔不該讓三支一起靜默失效。重複由 test-hook-payload.ps1 守住
+# （三支的 Read-HookPayload 必須逐字相同）。
+#
+# 形狀以 Codex 0.154.0 實測為準：
+#   apply_patch → tool_input.command 是整份 patch；路徑在 `*** Add File:`／`*** Update File:`／`*** Move to:`，**沒有引號**
+#   Bash        → tool_input.command 是 shell 指令；路徑通常帶引號
+# 舊版只認引號包住的路徑 —— apply_patch 寫的檔一個都抽不到，而那正是 agent 寫檔的主要途徑。症狀是零。
+#
+# 只看 tool_input（有的話）：其餘欄位裡的 transcript_path 是一個 .jsonl，那是對話紀錄，不是這次寫的檔。
+# patch 內文裡的引號字串是**檔案內容**，不算路徑。
+function Read-HookPayload([string]$raw) {
+    $result = [pscustomobject]@{ event = ''; paths = @() }
+    if (-not $raw) { return $result }
+    $texts = @()
+    try {
+        $doc = $raw | ConvertFrom-Json -ErrorAction Stop
+        if ($doc -is [pscustomobject] -and $doc.PSObject.Properties['hook_event_name']) { $result.event = [string]$doc.hook_event_name }
+        $scope = if ($doc -is [pscustomobject] -and $doc.PSObject.Properties['tool_input']) { $doc.tool_input } else { $doc }
+        $queue = [System.Collections.Generic.Queue[object]]::new()
+        $queue.Enqueue($scope)
+        while ($queue.Count -gt 0) {
+            $cur = $queue.Dequeue()
+            if ($null -eq $cur) { continue }
+            if ($cur -is [string]) { $texts += $cur; continue }
+            if ($cur -is [ValueType]) { continue }
+            if ($cur -is [System.Collections.IEnumerable]) { foreach ($i in $cur) { $queue.Enqueue($i) }; continue }
+            foreach ($p in $cur.PSObject.Properties) { $queue.Enqueue($p.Value) }
+        }
+    } catch { $texts = @($raw) }
+
+    $paths = @()
+    foreach ($t in $texts) {
+        if ($t -match '(?m)^\*\*\* Begin Patch') {
+            foreach ($m in [regex]::Matches($t, '(?m)^\*\*\* (?:Add File|Update File|Move to):[ \t]*(.+?)[ \t]*\r?$')) { $paths += $m.Groups[1].Value }
+            continue
+        }
+        foreach ($m in [regex]::Matches($t, '["'']([^"''\r\n]*?\.[A-Za-z0-9]{1,10})["'']')) { $paths += $m.Groups[1].Value }
+        foreach ($m in [regex]::Matches($t, '["''](bdd-docs[\\/][^"''\r\n]*)["'']')) { $paths += $m.Groups[1].Value }
+        foreach ($m in [regex]::Matches($t, '(?<![\w.\\/-])(bdd-docs[\\/][^\s"''`;|&<>(){}]+)')) { $paths += $m.Groups[1].Value }
+        if ($t -match '^[^"''\r\n*]+\.[A-Za-z0-9]{1,10}$') { $paths += $t }
+    }
+    $result.paths = @($paths | Where-Object { $_ } | ForEach-Object { $_.Trim() } | Sort-Object -Unique)
+    return $result
+}
+
+# ---- 標準 I/O：被程式呼叫時一律 UTF-8 ----
+# Codex 送進來的 payload 是 UTF-8、也用 UTF-8 解讀 hook 的輸出；Windows 上 [Console] 的編碼卻跟著 console 的
+# code page 走（zh-TW 是 cp950；並行的 hook 共用同一個 console，偶爾連輸出端也是）。Codex 0.154.0 實測的後果：
+# 一份 743 字、meta 完整的中文 handoff 被解成 1772 字、JSON 解析失敗、抓不到 mode —— **每一次 spawn 都被擋**；
+# 阻斷理由的中文到模型手上是亂碼。只在被重導向時才換：人在終端機跑的時候照 console 的 code page 顯示。
+# 同一段在 handoff-lint／dlp-gate／guideline-gate／build-check／agent-lint／sdlc.ps1 各有一份。
+$Utf8NoBom = [Text.UTF8Encoding]::new($false)
+if ([Console]::IsOutputRedirected) { $w = [IO.StreamWriter]::new([Console]::OpenStandardOutput(), $Utf8NoBom); $w.AutoFlush = $true; [Console]::SetOut($w) }
+if ([Console]::IsErrorRedirected)  { $w = [IO.StreamWriter]::new([Console]::OpenStandardError(),  $Utf8NoBom); $w.AutoFlush = $true; [Console]::SetError($w) }
+function Read-StdinUtf8 {
+    if ([Console]::IsInputRedirected) { return [IO.StreamReader]::new([Console]::OpenStandardInput(), $Utf8NoBom).ReadToEnd() }
+    return [Console]::In.ReadToEnd()
+}
+
+if (-not $Payload) { $Payload = Read-StdinUtf8 }
 if (-not $Payload) { exit 0 }
 
-# 抽出所有看起來像檔案路徑的字串
-$paths = [regex]::Matches($Payload, '[""]([^""\r\n]*?\.[A-Za-z0-9]{1,10})[""]') |
-    ForEach-Object { $_.Groups[1].Value }
+$paths = (Read-HookPayload $Payload).paths
 
 # 語言／建置命令：優先取自索引，退化為副檔名偵測
 $buildCmd = $null

@@ -145,26 +145,190 @@ Describe-Suite 'handoff-lint / 驗收依據與修正輪' {
         }
     }
 
+    # 修正輪的三條都指向一個不存在的設定檔：上限會讀 sdlc.config.json，而維護者本機的 repo 根可能真的有一份。
+    $NoConfig = 'hl-no-such-sdlc.config.json'
+
     It-Should 'mode: fix 缺 round 被阻斷' {
         $p = ($ValidBuild -replace 'mode: build', 'mode: fix')
-        $r = Invoke-Script $Script -Stdin (New-Payload -Prompt $p)
+        $r = Invoke-Script $Script -Stdin (New-Payload -Prompt $p) -Params @{ ConfigFile = $NoConfig }
         Assert-Equal 2 $r.exit
         Assert-Match 'missing-round' $r.stderr
     }
 
-    It-Should 'mode: fix 第 3 輪通過' {
+    It-Should 'mode: fix 第 3 輪通過（沒有設定時上限是 3）' {
         $p = ($ValidBuild -replace 'mode: build', "mode: fix`n- round: 3")
-        $r = Invoke-Script $Script -Stdin (New-Payload -Prompt $p)
+        $r = Invoke-Script $Script -Stdin (New-Payload -Prompt $p) -Params @{ ConfigFile = $NoConfig }
         Assert-Equal 0 $r.exit "stderr: $($r.stderr)"
     }
 
-    It-Should 'mode: fix 第 4 輪被阻斷' {
+    It-Should 'mode: fix 第 4 輪被阻斷（沒有設定時上限是 3）' {
         # doer↔reviewer 的 ping-pong 沒有自然終點。輪次由 orchestrator 自報，
-        # 但機械檢查讓「第 4 輪」變成一個會被擋下的事件，而不是沒人注意到的數字。
+        # 但機械檢查讓「超過上限的那一輪」變成一個會被擋下的事件，而不是沒人注意到的數字。
         $p = ($ValidBuild -replace 'mode: build', "mode: fix`n- round: 4")
-        $r = Invoke-Script $Script -Stdin (New-Payload -Prompt $p)
+        $r = Invoke-Script $Script -Stdin (New-Payload -Prompt $p) -Params @{ ConfigFile = $NoConfig }
         Assert-Equal 2 $r.exit
         Assert-Match 'review-loop-exceeded' $r.stderr
+    }
+}
+
+# ---- 修正輪上限可設定（sdlc.config.json 的 review.maxRounds）----
+$HlScratch = Join-Path ([IO.Path]::GetTempPath()) 'codex-handoff-lint-rounds'
+
+function New-HlConfig([string]$json) {
+    New-Item -ItemType Directory -Path $HlScratch -Force | Out-Null
+    $p = Join-Path $HlScratch ("sdlc.config.{0}.json" -f [guid]::NewGuid().ToString('N').Substring(0, 8))
+    [IO.File]::WriteAllText($p, $json, [Text.UTF8Encoding]::new($false))
+    return $p
+}
+function New-HlRoundsConfig([string]$maxRoundsLiteral) {
+    return New-HlConfig "{ `"agents`": {}, `"review`": { `"maxRounds`": $maxRoundsLiteral } }"
+}
+function Get-FixHandoff([int]$round) { return ($ValidBuild -replace 'mode: build', "mode: fix`n- round: $round") }
+function Invoke-Fix([int]$round, [string]$config, [switch]$Codex, [hashtable]$Extra = @{}) {
+    $stdin = if ($Codex) { New-CodexHookPayload -Event 'PreToolUse' -Tool 'spawn_agent' -ToolInput @{ message = (Get-FixHandoff $round) } }
+             else { New-Payload -Prompt (Get-FixHandoff $round) }
+    $p = @{ ConfigFile = $config }
+    foreach ($k in $Extra.Keys) { $p[$k] = $Extra[$k] }
+    return Invoke-Script $Script -Stdin $stdin -Params $p
+}
+
+Describe-Suite 'handoff-lint / 修正輪上限（sdlc.config.json 的 review.maxRounds）' {
+
+    It-Should 'maxRounds = 5 → 第 5 輪放行、第 6 輪擋，而且訊息帶實際上限' {
+        $cfg = New-HlRoundsConfig '5'
+        try {
+            Assert-Equal 0 (Invoke-Fix 5 $cfg).exit '設了 5 卻擋下第 5 輪 —— 設定沒生效'
+            $r = Invoke-Fix 6 $cfg
+            Assert-Equal 2 $r.exit
+            Assert-Match 'review-loop-exceeded' $r.stderr
+            Assert-Match '上限 5' $r.stderr '擋下時沒講實際上限，orchestrator 不知道自己被擋在哪一輪'
+        } finally { Remove-Item $HlScratch -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'maxRounds = 2 → 第 3 輪就擋' {
+        $cfg = New-HlRoundsConfig '2'
+        try {
+            Assert-Equal 0 (Invoke-Fix 2 $cfg).exit
+            Assert-Equal 2 (Invoke-Fix 3 $cfg).exit '設了 2 卻放行第 3 輪'
+        } finally { Remove-Item $HlScratch -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    foreach ($bad in @('0', '6', '"3"', '2.5', 'true', 'null')) {
+        It-Should "寫壞的值（$bad）→ 照預設 3 算、講出來，但不因此擋下合法的修正輪" {
+            $cfg = New-HlRoundsConfig $bad
+            try {
+                $ok = Invoke-Fix 3 $cfg
+                Assert-Equal 0 $ok.exit "設定寫壞就擋 spawn —— 擋下的理由跟他要做的事無關；stderr: $($ok.stderr)"
+                Assert-Match 'review\.maxRounds' $ok.stderr '值寫壞了卻安靜地退回預設 —— 使用者會以為設定有效'
+                Assert-Equal 2 (Invoke-Fix 4 $cfg).exit '值寫壞時沒有退回預設 3（保守的一側）'
+            } finally { Remove-Item $HlScratch -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+    }
+
+    It-Should 'review 不是物件、或設定檔整份壞掉 → 照預設 3 算，而且講出來' {
+        foreach ($json in @('{ "review": 5 }', '{ "review": ')) {
+            $cfg = New-HlConfig $json
+            try {
+                $r = Invoke-Fix 3 $cfg
+                Assert-Equal 0 $r.exit "json=$json；stderr: $($r.stderr)"
+                Assert-Match 'sdlc\.config\.json' $r.stderr "json=$json 壞掉卻沒講"
+                Assert-Equal 2 (Invoke-Fix 4 $cfg).exit
+            } finally { Remove-Item $HlScratch -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+    }
+
+    It-Should '沒有 review 這一節 → 預設 3，而且完全安靜（舊的設定檔是合法狀態）' {
+        $cfg = New-HlConfig '{ "agents": {} }'
+        try {
+            $r = Invoke-Fix 3 $cfg
+            Assert-Equal 0 $r.exit
+            Assert-True ($r.stderr -notmatch 'maxRounds') '沒設的值被當成寫壞'
+            Assert-Equal 2 (Invoke-Fix 4 $cfg).exit
+        } finally { Remove-Item $HlScratch -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '-MaxReviewRounds 明確給了就蓋過設定檔' {
+        $cfg = New-HlRoundsConfig '5'
+        try {
+            Assert-Equal 2 (Invoke-Fix 3 $cfg -Extra @{ MaxReviewRounds = 2 }).exit
+        } finally { Remove-Item $HlScratch -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '-Json 回報實際上限與它從哪來' {
+        $cfg = New-HlRoundsConfig '4'
+        try {
+            $j = (Invoke-Fix 2 $cfg -Extra @{ Json = $true }).stdout | ConvertFrom-Json
+            Assert-Equal 4 $j.max_review_rounds
+            Assert-Equal 'config' $j.max_review_rounds_source
+            Assert-Equal 2 $j.round
+        } finally { Remove-Item $HlScratch -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'Codex 形狀：放行時用 additionalContext 告訴 orchestrator 第幾輪、上限幾輪' {
+        # orchestrator 不讀設定檔。沒有這一行，設成 5 時它照 AGENTS.md 的預設在第 3 輪停下 —— 設定靜默無效。
+        $cfg = New-HlRoundsConfig '5'
+        try {
+            $r = Invoke-Fix 2 $cfg -Codex
+            Assert-Equal 0 $r.exit "stderr: $($r.stderr)"
+            Assert-True ([bool]$r.stdout.Trim()) '沒有輸出任何 additionalContext —— orchestrator 不會知道上限是 5'
+            $ctx = ($r.stdout.Trim() | ConvertFrom-Json).hookSpecificOutput
+            Assert-Equal 'PreToolUse' $ctx.hookEventName
+            Assert-Match '修正輪 2／上限 5' $ctx.additionalContext
+            Assert-True ($ctx.additionalContext -notmatch '最後一輪') '還沒到上限卻說是最後一輪'
+
+            $last = (Invoke-Fix 5 $cfg -Codex).stdout.Trim() | ConvertFrom-Json
+            Assert-Match '最後一輪' $last.hookSpecificOutput.additionalContext '到了上限沒有講明還 FAIL 就要停下交回'
+        } finally { Remove-Item $HlScratch -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '修正輪與更新通知同時要說 → 只輸出一個 JSON 物件，兩件事都在' {
+        # 同一次 hook 輸出兩個 JSON 物件，Codex 會把整段判成 invalid output —— 兩句話一起不見。
+        $cfg = New-HlRoundsConfig '3'
+        $cur = [string](Get-Content '.codex/bdd-workflow/bdd-workflow-version.json' -Raw -Encoding UTF8 | ConvertFrom-Json).'contract-version'
+        New-Item -ItemType Directory -Path 'bdd-docs/.sdlc' -Force | Out-Null
+        [IO.File]::WriteAllText((Join-Path (Get-Location) 'bdd-docs/.sdlc/update-cache.json'),
+            "{ `"newer`": true, `"latest`": `"99.0.0`", `"installed`": `"$cur`", `"seen`": `"`" }", [Text.UTF8Encoding]::new($false))
+        try {
+            $r = Invoke-Fix 1 $cfg -Codex
+            Assert-Equal 0 $r.exit
+            $lines = @($r.stdout -split "`r?`n" | Where-Object { $_.Trim() })
+            Assert-Equal 1 $lines.Count "stdout 有 $($lines.Count) 行 —— 必須是恰好一個 JSON 物件"
+            $ctx = ($lines[0] | ConvertFrom-Json).hookSpecificOutput.additionalContext
+            Assert-Match '修正輪 1／上限 3' $ctx
+            Assert-Match '有新版 99\.0\.0' $ctx
+        } finally {
+            Remove-Item 'bdd-docs/.sdlc' -Recurse -Force -ErrorAction SilentlyContinue
+            Remove-Item $HlScratch -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It-Should '擋下時只叫它停下交回，不叫它去改設定（上限歸使用者決定）' {
+        $cfg = New-HlRoundsConfig '2'
+        try {
+            $r = Invoke-Fix 3 $cfg
+            $fix = @($r.stderr -split "`r?`n" | Where-Object { $_ -match '^\s+fix:' })
+            Assert-True ($fix.Count -gt 0)
+            Assert-True (($fix -join ' ') -notmatch 'sdlc\.config|maxRounds') '擋下的修法在教 orchestrator 去改上限'
+            Assert-Match '交回使用者' ($fix -join ' ')
+        } finally { Remove-Item $HlScratch -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+Describe-Suite 'handoff-lint ↔ agent-lint：修正輪上限的範圍規則一致' {
+
+    # 範圍規則在兩支腳本各一份（hook 與 lint 都要能獨立跑）。一邊改了另一邊沒跟上的症狀：
+    # agent-lint 說合法、hook 卻照預設 3 算 —— doctor 綠燈，設定照樣沒生效。
+    foreach ($literal in @('1', '3', '5', '0', '6', '-1', '"3"', '2.5', 'true', 'null')) {
+        It-Should "review.maxRounds = $literal：hook 有沒有採用它，跟 lint 說它合不合法，必須一致" {
+            $cfg = New-HlRoundsConfig $literal
+            try {
+                $hook = (Invoke-Fix 1 $cfg -Extra @{ Json = $true }).stdout | ConvertFrom-Json
+                $lint = (Invoke-Script '.codex/scripts/agent-lint.ps1' -Params @{ ConfigFile = $cfg; Json = $true }).stdout | ConvertFrom-Json
+                $lintSaysInvalid = @($lint.violations | Where-Object { $_.rule -like 'review-*' }).Count -gt 0
+                $hookUsedIt = $hook.max_review_rounds_source -eq 'config'
+                Assert-True ($hookUsedIt -ne $lintSaysInvalid) "hook 採用=$hookUsedIt，lint 判不合法=$lintSaysInvalid —— 兩份範圍規則已分岔"
+            } finally { Remove-Item $HlScratch -Recurse -Force -ErrorAction SilentlyContinue }
+        }
     }
 }
 

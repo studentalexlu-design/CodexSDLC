@@ -1,0 +1,10 @@
+src/**
+test/**
+test-host/**
+scripts/**
+out/test/**
+out/test-host/**
+.vscode-test/**
+tsconfig.json
+**/*.map
+**/*.ts

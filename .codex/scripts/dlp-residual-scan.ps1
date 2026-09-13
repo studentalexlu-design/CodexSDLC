@@ -22,7 +22,8 @@
     未指定時掃描全部。
 
 .OUTPUTS
-    JSON: { residual_count, passed, categories:[{type,count}], line_refs:[int], scanned_chars }
+    JSON: { residual_count, passed, categories:[{type,count,lines:[int]}], line_refs:[int], scanned_chars }
+    每個類別的 `lines` 是給編輯器的 Problems 面板用的（哪一行是哪一類）—— 仍然只有行號，沒有值。
 
 .NOTES
     PowerShell 5.1 相容，零外部依賴。退出碼：殘留=0 -> 0；殘留>0 -> 2；錯誤 -> 1。
@@ -89,16 +90,18 @@ try {
     foreach ($type in $activeTypes) {
         $regex = [regex]$Patterns[$type]
         $count = 0
+        $typeLines = New-Object System.Collections.Generic.SortedSet[int]
         for ($i = 0; $i -lt $lines.Count; $i++) {
             $matches = $regex.Matches($lines[$i])
             foreach ($m in $matches) {
                 if ($AllowList -contains $m.Value) { continue }
                 $count++
                 [void]$lineRefSet.Add($i + 1)
+                [void]$typeLines.Add($i + 1)
             }
         }
         if ($count -gt 0) {
-            $categoryResults += [ordered]@{ type = $type; count = $count }
+            $categoryResults += [ordered]@{ type = $type; count = $count; lines = @($typeLines) }
             $totalResidual += $count
         }
     }

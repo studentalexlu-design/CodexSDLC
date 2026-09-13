@@ -24,7 +24,7 @@ function New-SdlcFile([string]$path, [string]$content) {
 # 缺席時要能安靜跳過（消費端若只複製了部分目錄，不該整支腳本炸掉）。
 function New-SdlcRelease {
     param([string]$Name, [string]$Version = '4.6.0', [string[]]$Agents = @('sa-analyst'), [string[]]$Extra = @(),
-          [string]$SourceUrl = '')
+          [string]$SourceUrl = '', [string]$AgentBody = '', [switch]$WithVsix, [switch]$WithHooks)
     $root = Join-Path $SdlcRoot $Name
     Remove-Item $root -Recurse -Force -ErrorAction SilentlyContinue
     New-SdlcFile (Join-Path $root '.codex/bdd-workflow/bdd-workflow-version.json') `
@@ -38,11 +38,53 @@ description = "scratch"
 sandbox_mode = "danger-full-access"
 developer_instructions = '''
 # $a
+$AgentBody
 '''
 "@
     }
     foreach ($e in $Extra) { New-SdlcFile (Join-Path $root $e) "# $e`n" }
+    if ($WithVsix)  { New-SdlcFile (Join-Path $root "editor/codex-sdlc-$Version.vsix") 'not really a vsix' }
+    if ($WithHooks) { New-SdlcFile (Join-Path $root '.codex/hooks.json') '{ "hooks": {} }' }
     return $root
+}
+
+# 形狀斷言：只看欄位名與型別，**不看任何句子**。改一句中文措辭不會紅；改欄位名一定紅。
+# 這就是 -Json 合約的全部意義 —— 讀的人只准讀 data，所以測試也只准斷言 data。
+function Assert-Shape {
+    param($Obj, [hashtable]$Shape, [string]$At = '$')
+    foreach ($k in $Shape.Keys) {
+        $prop = if ($null -ne $Obj) { $Obj.PSObject.Properties[$k] } else { $null }
+        if (-not $prop) { throw "缺欄位 $At.$k —— -Json 合約被改了（欄位改名要把 sdlc.ps1 的 `$JsonSchema 加一，並同步 extension）" }
+        $v = $prop.Value; $want = $Shape[$k]
+        if ($want -is [hashtable]) {
+            if ($null -eq $v) { throw "$At.$k 是 null，應為物件" }
+            Assert-Shape $v $want "$At.$k"; continue
+        }
+        $ok = switch ($want) {
+            'string'  { $v -is [string] }
+            'string?' { $null -eq $v -or $v -is [string] }
+            'bool'    { $v -is [bool] }
+            'int'     { $v -is [int] -or $v -is [long] }
+            'array'   { $v -is [array] }
+            'any'     { $true }
+        }
+        if (-not $ok) { throw "$At.$k 應為 $want，實際是 $(if ($null -eq $v) { 'null' } else { $v.GetType().Name })" }
+    }
+}
+
+$EnvelopeShape = @{ schema = 'int'; command = 'string'; exit = 'int'; data = 'any'; warnings = 'array'; output = 'array' }
+
+function Invoke-SdlcJson {
+    param([string]$Cmd, [hashtable]$Params = @{}, [hashtable]$Env = @{})
+    $p = @{ Command = $Cmd; Json = $true }
+    foreach ($k in $Params.Keys) { $p[$k] = $Params[$k] }
+    $r = Invoke-Script $Sdlc -Params $p -Env $Env
+    $j = $null
+    try { $j = $r.stdout.Trim() | ConvertFrom-Json } catch { throw "-Json 輸出不是 JSON：$($r.stdout) / stderr: $($r.stderr)" }
+    Assert-Shape $j $EnvelopeShape
+    Assert-Equal 1 $j.schema '-Json 的 schema 版本變了 —— extension 會拒絕讀它'
+    Assert-Equal $r.exit $j.exit 'JSON 裡的 exit 跟行程的 exit code 不一致'
+    return $j
 }
 
 function New-SdlcTarget([string]$Name) {
@@ -254,6 +296,8 @@ Describe-Suite 'sdlc / 更新通知（折進 handoff-lint）' {
     # 而「擋下的理由跟使用者要做的事無關」正是這套流程踩過兩次的失敗形狀。
     $Hl = '.codex/scripts/handoff-lint.ps1'
     $Ok = "mode: analyze`nfeature-id: cancel-order`n"
+    # 快取的 installed 必須是**現在**的版本 —— 對不上的快取是升級前留下來的，handoff-lint 刻意不喊。
+    $CurVer = [string](Get-Content '.codex/bdd-workflow/bdd-workflow-version.json' -Raw -Encoding UTF8 | ConvertFrom-Json).'contract-version'
 
     function Set-UpdateCache([string]$json) {
         New-Item -ItemType Directory -Path 'bdd-docs/.sdlc' -Force | Out-Null
@@ -261,20 +305,44 @@ Describe-Suite 'sdlc / 更新通知（折進 handoff-lint）' {
     }
 
     It-Should '有新版時印一行，但**不阻斷** spawn' {
-        Set-UpdateCache '{ "newer": true, "latest": "4.7.0", "installed": "4.6.0", "seen": "" }'
+        Set-UpdateCache "{ `"newer`": true, `"latest`": `"99.0.0`", `"installed`": `"$CurVer`", `"seen`": `"`" }"
         try {
             $r = Invoke-Script $Hl -Stdin $Ok
             Assert-Equal 0 $r.exit '更新通知擋住了 spawn'
-            Assert-Match '有新版 4\.7\.0' $r.stderr
+            Assert-Match '有新版 99\.0\.0' $r.stderr
         } finally { Remove-Item 'bdd-docs/.sdlc' -Recurse -Force -ErrorAction SilentlyContinue }
     }
 
     It-Should '看過（seen == latest）就不再提醒' {
-        Set-UpdateCache '{ "newer": true, "latest": "4.7.0", "installed": "4.6.0", "seen": "4.7.0" }'
+        Set-UpdateCache "{ `"newer`": true, `"latest`": `"99.0.0`", `"installed`": `"$CurVer`", `"seen`": `"99.0.0`" }"
         try {
             $r = Invoke-Script $Hl -Stdin $Ok
             Assert-Equal 0 $r.exit
             Assert-True ($r.stderr -notmatch '有新版') '看過之後還在每次 spawn 提醒'
+        } finally { Remove-Item 'bdd-docs/.sdlc' -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '升級完、快取還沒刷新時不喊（它會說你還在舊版）' {
+        # 快取記的是升級**前**查的：installed=舊版、latest=你剛升上去的那一版。
+        # 照唸就是「有新版 X（你在 舊版）」—— 而你已經在 X 上。一個會說謊的通知比沒有更糟。
+        Set-UpdateCache "{ `"newer`": true, `"latest`": `"$CurVer`", `"installed`": `"0.0.1`", `"seen`": `"`" }"
+        try {
+            $r = Invoke-Script $Hl -Stdin $Ok
+            Assert-Equal 0 $r.exit
+            Assert-True ($r.stderr -notmatch '有新版') '拿升級前的快取對已經升級完的專案喊有新版'
+        } finally { Remove-Item 'bdd-docs/.sdlc' -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'Codex 的 hook payload 下，通知走 additionalContext（exit 0 的 stderr 會被丟掉）' {
+        Set-UpdateCache "{ `"newer`": true, `"latest`": `"99.0.0`", `"installed`": `"$CurVer`", `"seen`": `"`" }"
+        try {
+            $handoff = "## meta`n- feature-id: cancel-order`n- mode: analyze`n"
+            $r = Invoke-Script $Hl -Stdin (New-CodexHookPayload -Event 'PreToolUse' -Tool 'spawn_agent' -ToolInput @{ message = $handoff })
+            Assert-Equal 0 $r.exit "stderr: $($r.stderr)"
+            Assert-True ([bool]$r.stdout.Trim()) '只寫了 stderr —— Codex 0.154 會整段丟掉，orchestrator 永遠看不到'
+            $ctx = ($r.stdout.Trim() | ConvertFrom-Json).hookSpecificOutput
+            Assert-Equal 'PreToolUse' $ctx.hookEventName
+            Assert-Match '有新版 99\.0\.0' $ctx.additionalContext
         } finally { Remove-Item 'bdd-docs/.sdlc' -Recurse -Force -ErrorAction SilentlyContinue }
     }
 
@@ -375,6 +443,478 @@ Describe-Suite 'sdlc / 更新來源跟著發佈物走' {
             Invoke-Sdlc install @{ Source = $rel; Target = $t } | Out-Null
             $r = Invoke-Sdlc check-update @{ Target = $t }
             Assert-Equal 0 $r.exit '查不到更新竟然變成錯誤 —— 那不是使用者要處理的事'
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+# 不碰這台機器上真正的東西：沒有 codex、編輯器家目錄指向 scratch。
+function Get-IsolatedDoctorParams([string]$t) {
+    return @{ Target = $t; CodexPath = (Join-Path $t 'no-such-codex.exe'); EditorHome = (Join-Path $SdlcRoot 'editor-home') }
+}
+
+Describe-Suite 'sdlc / -Json 是結構化合約（改措辭不紅、改欄位名必紅）' {
+
+    # VS Code extension 只讀 data。它要是從 output 的中文句子裡撈狀態，改一句話就會讓它靜默地顯示錯的東西 ——
+    # 所以下面每一條只斷言欄位名與型別，一個句子都不看。
+
+    It-Should 'doctor 的 data 形狀' {
+        $rel = New-SdlcRelease 'r-jd'; $t = New-SdlcTarget 't-jd'
+        try {
+            Invoke-Sdlc install @{ Source = $rel; Target = $t } | Out-Null
+            $j = Invoke-SdlcJson doctor (Get-IsolatedDoctorParams $t)
+            Assert-Shape $j.data @{
+                version    = @{ contract = 'string'; minCompatible = 'string' }
+                config     = @{ exists = 'bool'; parsable = 'bool' }
+                tuning     = @{ status = 'string'; stale = 'array' }
+                unverifiedModel = 'array'
+                baseline   = @{ exists = 'bool'; version = 'string?'; fileCount = 'int' }
+                guidelines = 'array'
+                lint       = @{ ran = 'bool'; passed = 'bool'; violations = 'array' }
+                review     = @{ maxRounds = 'int'; source = 'string'; valid = 'bool' }
+                hooks      = @{ status = 'string' }
+                update     = @{ cached = 'bool'; stale = 'bool'; newer = 'bool'; latest = 'string?'; seen = 'bool'; checkedAt = 'any'; check = 'string' }
+                editor     = @{ installed = 'array' }
+                problems   = 'int'
+            }
+            Assert-Equal 'in-sync' $j.data.tuning.status
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '改了設定沒 apply → doctor 的 data.tuning 說 stale 並列出檔名（extension 的漂移顯示靠這個）' {
+        $rel = New-SdlcRelease 'r-jst'; $t = New-SdlcTarget 't-jst'
+        try {
+            Invoke-Sdlc install @{ Source = $rel; Target = $t } | Out-Null
+            Set-SdlcEffort $t 'sa-analyst' 'high'
+            $j = Invoke-SdlcJson doctor (Get-IsolatedDoctorParams $t)
+            Assert-Equal 2 $j.exit
+            Assert-Equal 'stale' $j.data.tuning.status
+            Assert-Equal 'sa-analyst.toml' @($j.data.tuning.stale)[0]
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'install 的 data 形狀' {
+        $rel = New-SdlcRelease 'r-ji'; $t = New-SdlcTarget 't-ji'
+        try {
+            $j = Invoke-SdlcJson install @{ Source = $rel; Target = $t }
+            Assert-Shape $j.data @{
+                mode = 'string'; target = 'string'; version = 'string'; written = 'int'; needsMerge = 'array'
+                guidelinesSkeleton = 'bool'; config = @{ created = 'bool' }; tuning = @{ changed = 'array'; warnings = 'array' }
+                guidelines = 'array'; lint = @{ passed = 'bool' }; hooksWritten = 'bool'; orchestratorHint = 'string?'
+                editor = @{ requested = 'bool'; installed = 'bool' }
+            }
+            Assert-Equal 'install' $j.data.mode
+            Assert-True $j.data.config.created
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'update 的 data 形狀' {
+        $r1 = New-SdlcRelease 'r1-ju' -Extra @('.codex/scripts/a.ps1'); $t = New-SdlcTarget 't-ju'
+        try {
+            Invoke-Sdlc install @{ Source = $r1; Target = $t } | Out-Null
+            $r2 = New-SdlcRelease 'r2-ju' -Version '4.7.0' -Extra @('.codex/scripts/a.ps1', '.codex/scripts/b.ps1')
+            $j = Invoke-SdlcJson update @{ Source = $r2; Target = $t; Yes = $true; EditorHome = (Join-Path $SdlcRoot 'editor-home') }
+            Assert-Shape $j.data @{
+                from = 'string?'; to = 'string'; breaking = 'bool'; degraded = 'bool'
+                unchanged = 'array'; modified = 'array'; added = 'array'; removed = 'array'; notes = 'array'; result = 'string'
+                editor = @{ installed = 'array'; mismatch = 'bool' }
+            }
+            Assert-Equal 'applied' $j.data.result
+            Assert-True ('.codex/scripts/b.ps1' -in @($j.data.added)) '新增的檔沒有出現在 data.added'
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'apply／tune／whatsnew／check-update 的 data 形狀' {
+        $rel = New-SdlcRelease 'r-jx'; $t = New-SdlcTarget 't-jx'
+        try {
+            Invoke-Sdlc install @{ Source = $rel; Target = $t } | Out-Null
+            $a = Invoke-SdlcJson apply @{ Target = $t }
+            Assert-Shape $a.data @{ changed = 'array'; warnings = 'array' }
+
+            $tu = Invoke-SdlcJson tune @{ Target = $t }
+            Assert-Shape $tu.data @{ signals = 'any'; proposal = 'array'; applied = 'bool' }
+            Assert-Shape @($tu.data.proposal)[0] @{ agent = 'string'; current = 'string'; proposed = 'string'; reason = 'string'; signal = 'string' }
+
+            $w = Invoke-SdlcJson whatsnew @{ Target = $t }
+            Assert-Shape $w.data @{ source = 'string'; installed = 'string'; entries = 'array' }
+
+            $c = Invoke-SdlcJson check-update @{ Target = $t }
+            Assert-Shape $c.data @{ status = 'string'; installed = 'string' }
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+Describe-Suite 'sdlc / doctor 問 Codex：hooks 到底有沒有被信任' {
+
+    # Codex（0.154.0 實測）要專案與每一條 hook 都被信任才會跑 hooks.json，沒信任時**一條都不跑、也不提示**。
+    # 信任狀態只有 Codex 自己知道，所以 doctor 問它（app-server 的 hooks/list）。這裡用一支假的 codex 回答，
+    # 順便記下它收到的 proxy 設定 —— doctor 啟動 app-server 時必須從構造上碰不到網路。
+
+    $FakeCodexBody = @'
+$log = $env:FAKE_CODEX_LOG
+if ($log) { Add-Content $log "args=$($args -join ' ') HTTPS_PROXY=$env:HTTPS_PROXY" }
+while ($null -ne ($line = [Console]::In.ReadLine())) {
+    $msg = $line | ConvertFrom-Json
+    if (-not $msg.PSObject.Properties['id']) { continue }
+    if ($msg.id -eq 1) { [Console]::Out.WriteLine('{"id":1,"result":{"userAgent":"fake"}}'); continue }
+    if ($msg.id -ne 2) { continue }
+    $cwd = @($msg.params.cwds)[0]
+    $src = Join-Path $cwd '.codex\hooks.json'
+    $trust = @($env:FAKE_TRUST -split ',' | Where-Object { $_ -and $_ -ne 'none' })
+    $hooks = @(for ($i = 0; $i -lt $trust.Count; $i++) {
+        [ordered]@{ key = "${src}:post_tool_use:${i}:0"; eventName = 'postToolUse'; sourcePath = $src; source = 'project'; enabled = $true; trustStatus = $trust[$i] }
+    })
+    [Console]::Out.WriteLine(([ordered]@{ id = 2; result = [ordered]@{ data = @([ordered]@{ cwd = $cwd; hooks = $hooks; warnings = @(); errors = @() }) } } | ConvertTo-Json -Depth 8 -Compress))
+}
+'@
+
+    function New-FakeCodex([string]$dir) {
+        New-SdlcFile (Join-Path $dir 'fake-codex.ps1') $FakeCodexBody
+        $cmd = Join-Path $dir 'codex.cmd'
+        [IO.File]::WriteAllText($cmd, "@pwsh -NoProfile -ExecutionPolicy Bypass -File `"%~dp0fake-codex.ps1`" %*`r`n", [Text.Encoding]::ASCII)
+        return $cmd
+    }
+
+    function Invoke-TrustDoctor([string]$trust) {
+        $rel = New-SdlcRelease 'r-ht' -WithHooks; $t = New-SdlcTarget 't-ht'
+        Invoke-Sdlc install @{ Source = $rel; Target = $t } | Out-Null
+        $codex = New-FakeCodex (Join-Path $SdlcRoot 'fake')
+        $log = Join-Path $SdlcRoot 'fake/calls.log'
+        $p = Get-IsolatedDoctorParams $t
+        $p.CodexPath = $codex
+        $j = Invoke-SdlcJson doctor $p -Env @{ FAKE_TRUST = $trust; FAKE_CODEX_LOG = $log }
+        return [pscustomobject]@{ json = $j; log = $(if (Test-Path $log) { Get-Content $log -Raw } else { '' }) }
+    }
+
+    It-Should '全部信任 → trusted，不算問題' {
+        try {
+            $r = Invoke-TrustDoctor 'trusted,trusted,trusted,trusted'
+            Assert-Equal 'trusted' $r.json.data.hooks.status
+            Assert-Equal 4 $r.json.data.hooks.counts.trusted
+            Assert-Equal 0 $r.json.exit "warnings: $($r.json.warnings -join ' | ')"
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '有沒信任或改過待重審的 → untrusted，doctor 紅燈並說去哪裡按' {
+        try {
+            $r = Invoke-TrustDoctor 'trusted,untrusted,modified,trusted'
+            Assert-Equal 'untrusted' $r.json.data.hooks.status
+            Assert-Equal 1 $r.json.data.hooks.counts.untrusted
+            Assert-Equal 1 $r.json.data.hooks.counts.modified
+            Assert-Equal 2 $r.json.exit '強制層有一半沒在跑，doctor 卻是綠的'
+            Assert-True ((@($r.json.warnings) -match 'Hooks need review').Count -gt 0) '沒有告訴使用者要去哪裡按信任'
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'hooks.json 在、Codex 一條都沒列 → 專案本身沒被信任' {
+        try {
+            $r = Invoke-TrustDoctor 'none'
+            Assert-Equal 'project-untrusted' $r.json.data.hooks.status
+            Assert-Equal 2 $r.json.exit
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '問 Codex 的時候 proxy 指向一個連不上的位址（doctor 從構造上碰不到網路）' {
+        # 實測 app-server 一啟動就會去連 chatgpt.com 與 github.com。拿掉這個保護，
+        # 「update.check = never」的使用者跑一次 doctor 就連網了，而且沒有人會知道。
+        try {
+            $r = Invoke-TrustDoctor 'trusted'
+            Assert-Match 'args=app-server' $r.log '沒有用 app-server 問'
+            Assert-Match 'HTTPS_PROXY=http://127\.0\.0\.1:9' $r.log '啟動 Codex 時沒有把網路擋掉'
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '找不到 codex → unknown，不算問題（查不到不等於有問題，但要講出來）' {
+        $rel = New-SdlcRelease 'r-hn' -WithHooks; $t = New-SdlcTarget 't-hn'
+        try {
+            Invoke-Sdlc install @{ Source = $rel; Target = $t } | Out-Null
+            $j = Invoke-SdlcJson doctor (Get-IsolatedDoctorParams $t)
+            Assert-Equal 'unknown' $j.data.hooks.status
+            Assert-Equal 'codex-not-found' $j.data.hooks.reason
+            Assert-Equal 0 $j.exit
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'install 寫出 hooks.json 時記下來並提醒要去 Codex 信任' {
+        $rel = New-SdlcRelease 'r-hw' -WithHooks; $t = New-SdlcTarget 't-hw'
+        try {
+            $j = Invoke-SdlcJson install @{ Source = $rel; Target = $t }
+            Assert-True $j.data.hooksWritten 'hooks.json 寫出去了卻沒有記下來 —— 使用者不會知道要去信任'
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+Describe-Suite 'sdlc / guidelines 檢查只讀「專案規範」那一節' {
+
+    It-Should '### 層級的專案規範一節，不會一路讀進下一節' {
+        # 回歸：sa-analyst 的「專案規範」是 ###，舊版只停在下一個 ##，於是讀進「精度是事實」那一節的 spec.md，
+        # 每一次 install／update／doctor 都報「你缺 spec.md」，doctor 永遠是紅的。
+        $body = "## 分析`n`n### 專案規範會刪掉做法`n`n讀 ``api.md``。`n`n### 精度是事實`n`n``spec.md`` 已經談定。`n"
+        $rel = New-SdlcRelease 'r-gs' -AgentBody $body; $t = New-SdlcTarget 't-gs'
+        New-SdlcFile (Join-Path $t 'guidelines/api.md') "## MUST`n- x`n"
+        try {
+            $j = Invoke-SdlcJson install @{ Source = $rel; Target = $t }
+            $missing = @($j.data.guidelines | Where-Object code -eq 'missing')
+            Assert-Equal 0 $missing.Count "把別的章節的檔名當成規範了：$(@($missing | ForEach-Object text) -join ' ')"
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '真的缺規範檔時照樣報（證明上一條不是把檢查整個關掉）' {
+        $body = "### 專案規範`n`n讀 ``api.md`` 與 ``sql.md``。`n"
+        $rel = New-SdlcRelease 'r-gm' -AgentBody $body; $t = New-SdlcTarget 't-gm'
+        New-SdlcFile (Join-Path $t 'guidelines/api.md') "## MUST`n- x`n"
+        try {
+            $j = Invoke-SdlcJson install @{ Source = $rel; Target = $t }
+            $missing = @($j.data.guidelines | Where-Object code -eq 'missing')
+            Assert-Equal 1 $missing.Count
+            Assert-Match 'sql\.md' $missing[0].text
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+Describe-Suite 'sdlc / check-update 的頻率與網路' {
+
+    # 一個一定回 403 的假 proxy。子行程的 HTTPS_PROXY 指向它，連線企圖就一條不漏地記下來 ——
+    # 「update.check = never 完全不碰網路」只有這樣驗得出來（計畫裡寫的是「用防火牆驗」）。
+    function Start-ProxyTrap {
+        $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
+        $listener.Start()
+        $port = ([Net.IPEndPoint]$listener.LocalEndpoint).Port
+        $log = Join-Path ([IO.Path]::GetTempPath()) "codex-sdlc-proxytrap-$port.log"
+        Remove-Item $log -ErrorAction SilentlyContinue
+        $job = Start-ThreadJob -ArgumentList $listener, $log -ScriptBlock {
+            param($listener, $log)
+            while ($true) {
+                try { $c = $listener.AcceptTcpClient() } catch { break }
+                try {
+                    $s = $c.GetStream(); $buf = [byte[]]::new(2048); $n = $s.Read($buf, 0, $buf.Length)
+                    [IO.File]::AppendAllText($log, (([Text.Encoding]::ASCII.GetString($buf, 0, $n)) -split "`r`n")[0] + "`n")
+                    $resp = [Text.Encoding]::ASCII.GetBytes("HTTP/1.1 403 Forbidden`r`nContent-Length: 0`r`nConnection: close`r`n`r`n")
+                    $s.Write($resp, 0, $resp.Length)
+                } catch { } finally { $c.Close() }
+            }
+        }
+        $url = "http://127.0.0.1:$port"
+        return [pscustomobject]@{ listener = $listener; job = $job; log = $log; env = @{ HTTPS_PROXY = $url; HTTP_PROXY = $url; ALL_PROXY = $url } }
+    }
+    function Stop-ProxyTrap($trap) {
+        $trap.listener.Stop()
+        $null = Wait-Job $trap.job -Timeout 5
+        Remove-Job $trap.job -Force -ErrorAction SilentlyContinue
+        $lines = @(if (Test-Path $trap.log) { Get-Content $trap.log })
+        Remove-Item $trap.log -ErrorAction SilentlyContinue
+        return $lines
+    }
+    function New-CheckTarget([string]$check) {
+        $rel = New-SdlcRelease 'r-cu' -SourceUrl 'https://github.com/acme/flow'; $t = New-SdlcTarget 't-cu'
+        Invoke-Sdlc install @{ Source = $rel; Target = $t } | Out-Null
+        $p = Join-Path $t 'sdlc.config.json'
+        $c = Get-Content $p -Raw -Encoding UTF8 | ConvertFrom-Json
+        $c.update.check = $check
+        [IO.File]::WriteAllText($p, ($c | ConvertTo-Json -Depth 8), $Utf8)
+        return $t
+    }
+
+    It-Should '對照組：daily 而且沒有快取 → 真的去連（證明陷阱抓得到連線）' {
+        $t = New-CheckTarget 'daily'; $trap = Start-ProxyTrap
+        try {
+            $j = Invoke-SdlcJson check-update @{ Target = $t; IfDue = $true } -Env $trap.env
+            $seen = Stop-ProxyTrap $trap; $trap = $null
+            Assert-Equal 'unreachable' $j.data.status
+            Assert-Match 'CONNECT api\.github\.com' ($seen -join "`n") '對照組沒有連線 —— 下面「never 不連網」那條就證明不了任何事'
+        } finally { if ($trap) { Stop-ProxyTrap $trap | Out-Null }; Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'update.check = never → 一條連線都沒有' {
+        $t = New-CheckTarget 'never'; $trap = Start-ProxyTrap
+        try {
+            $j = Invoke-SdlcJson check-update @{ Target = $t; IfDue = $true } -Env $trap.env
+            $seen = Stop-ProxyTrap $trap; $trap = $null
+            Assert-Equal 'disabled' $j.data.status
+            Assert-Equal 0 $seen.Count "設定 never 卻連網了：$($seen -join ' | ')"
+        } finally { if ($trap) { Stop-ProxyTrap $trap | Out-Null }; Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '-IfDue：一天內查過就不連網' {
+        $t = New-CheckTarget 'daily'; $trap = Start-ProxyTrap
+        try {
+            $cur = (Get-Content (Join-Path $t '.codex/bdd-workflow/bdd-workflow-version.json') -Raw | ConvertFrom-Json).'contract-version'
+            New-SdlcFile (Join-Path $t 'bdd-docs/.sdlc/update-cache.json') "{ `"checked-at`": `"$((Get-Date).ToString('o'))`", `"installed`": `"$cur`", `"latest`": `"$cur`", `"newer`": false, `"seen`": `"`" }"
+            $j = Invoke-SdlcJson check-update @{ Target = $t; IfDue = $true } -Env $trap.env
+            $seen = Stop-ProxyTrap $trap; $trap = $null
+            Assert-Equal 'not-due' $j.data.status
+            Assert-Equal 0 $seen.Count 'daily 的快取還新鮮卻又連網了 —— 每開一次視窗就打一次 API'
+        } finally { if ($trap) { Stop-ProxyTrap $trap | Out-Null }; Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '-IfDue：快取是升級前留下的（installed 對不上）→ 視為到期' {
+        $t = New-CheckTarget 'daily'; $trap = Start-ProxyTrap
+        try {
+            New-SdlcFile (Join-Path $t 'bdd-docs/.sdlc/update-cache.json') "{ `"checked-at`": `"$((Get-Date).ToString('o'))`", `"installed`": `"0.0.1`", `"latest`": `"4.6.0`", `"newer`": true, `"seen`": `"`" }"
+            Invoke-SdlcJson check-update @{ Target = $t; IfDue = $true } -Env $trap.env | Out-Null
+            $seen = Stop-ProxyTrap $trap; $trap = $null
+            Assert-True ($seen.Count -gt 0) '拿升級前的快取當作「今天查過了」'
+        } finally { if ($trap) { Stop-ProxyTrap $trap | Out-Null }; Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '-IfDue：離線查失敗後一小時內不重試' {
+        $t = New-CheckTarget 'daily'; $trap = Start-ProxyTrap
+        try {
+            Invoke-SdlcJson check-update @{ Target = $t; IfDue = $true } -Env $trap.env | Out-Null
+            $j2 = Invoke-SdlcJson check-update @{ Target = $t; IfDue = $true } -Env $trap.env
+            $seen = Stop-ProxyTrap $trap; $trap = $null
+            Assert-Equal 'not-due' $j2.data.status '離線的人每開一次視窗就等一次逾時'
+            Assert-Equal 1 @($seen | Where-Object { $_ -match 'CONNECT' }).Count
+        } finally { if ($trap) { Stop-ProxyTrap $trap | Out-Null }; Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+Describe-Suite 'sdlc / VS Code extension（每台機器一份，不屬於任何專案）' {
+
+    # 測試絕不碰這台機器上真正的編輯器：PATH 只放一支假的 code.cmd，編輯器家目錄指向 scratch。
+    function New-FakeEditorCli([string]$dir) {
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+        [IO.File]::WriteAllText((Join-Path $dir 'code.cmd'), "@echo %* >> `"%~dp0code.calls`"`r`n@exit /b 0`r`n", [Text.Encoding]::ASCII)
+        return (Join-Path $dir 'code.calls')
+    }
+    function Get-IsolatedPath([string]$extra) {
+        return (@($extra, (Split-Path ([Environment]::ProcessPath) -Parent), [Environment]::SystemDirectory) | Where-Object { $_ }) -join ';'
+    }
+    function New-InstalledExtension([string]$editorHome, [string]$version, [int]$schema = 1) {
+        $dirName = "codex-sdlc.codex-sdlc-$version"
+        New-SdlcFile (Join-Path $editorHome ".vscode/extensions/$dirName/package.json") "{ `"name`": `"codex-sdlc`", `"version`": `"$version`", `"codexSdlc`": { `"jsonSchema`": $schema } }"
+        New-SdlcFile (Join-Path $editorHome '.vscode/extensions/extensions.json') "[ { `"identifier`": { `"id`": `"codex-sdlc.codex-sdlc`" }, `"version`": `"$version`", `"relativeLocation`": `"$dirName`" } ]"
+    }
+
+    It-Should '沒給 -WithEditor：一行提示，不動編輯器' {
+        $rel = New-SdlcRelease 'r-e1' -WithVsix; $t = New-SdlcTarget 't-e1'
+        $calls = New-FakeEditorCli (Join-Path $SdlcRoot 'bin')
+        try {
+            $j = Invoke-SdlcJson install @{ Source = $rel; Target = $t; EditorHome = (Join-Path $SdlcRoot 'editor-home') } -Env @{ PATH = (Get-IsolatedPath (Join-Path $SdlcRoot 'bin')) }
+            Assert-True (-not $j.data.editor.requested)
+            Assert-True (-not (Test-Path $calls)) '沒有明確同意就動了使用者的編輯器'
+            Assert-Match 'codex-sdlc-4\.6\.0\.vsix' ([string]$j.data.editor.vsix)
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '-WithEditor：用找得到的編輯器指令裝，而且 vsix 不進基準線、不進專案' {
+        $rel = New-SdlcRelease 'r-e2' -WithVsix; $t = New-SdlcTarget 't-e2'
+        $calls = New-FakeEditorCli (Join-Path $SdlcRoot 'bin')
+        try {
+            $j = Invoke-SdlcJson install @{ Source = $rel; Target = $t; WithEditor = $true; EditorHome = (Join-Path $SdlcRoot 'editor-home') } -Env @{ PATH = (Get-IsolatedPath (Join-Path $SdlcRoot 'bin')) }
+            Assert-Equal 0 $j.exit "warnings: $($j.warnings -join ' | ')"
+            Assert-True $j.data.editor.installed
+            Assert-Match '--install-extension .*codex-sdlc-4\.6\.0\.vsix --force' (Get-Content $calls -Raw)
+            $bl = Get-Content (Join-Path $t 'bdd-docs/.sdlc/installed-manifest.json') -Raw | ConvertFrom-Json
+            Assert-Equal 0 @($bl.files.PSObject.Properties.Name | Where-Object { $_ -match 'vsix|^editor/' }).Count 'vsix 進了基準線 —— 它不是這個專案的檔'
+            Assert-True (-not (Test-Path (Join-Path $t 'editor'))) 'vsix 被複製進專案了'
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '-WithEditor 但找不到任何編輯器指令：說怎麼手動裝，工作流照常裝好（不丟例外）' {
+        $rel = New-SdlcRelease 'r-e3' -WithVsix; $t = New-SdlcTarget 't-e3'
+        try {
+            $r = Invoke-Script $Sdlc -Params @{ Command = 'install'; Source = $rel; Target = $t; WithEditor = $true; EditorHome = (Join-Path $SdlcRoot 'editor-home') } -Env @{ PATH = (Get-IsolatedPath '') }
+            Assert-Equal 0 $r.exit "擋下的理由跟他要做的事無關，而且他修不了；stderr: $($r.stderr)"
+            Assert-Match 'Install from VSIX' $r.stderr
+            Assert-True (Test-Path (Join-Path $t 'AGENTS.md')) '工作流本身沒裝好'
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'update 不替你重裝 extension，版本對不上只說一行' {
+        $r1 = New-SdlcRelease 'r1-e4'; $t = New-SdlcTarget 't-e4'
+        $eh = Join-Path $SdlcRoot 'editor-home'
+        $calls = New-FakeEditorCli (Join-Path $SdlcRoot 'bin')
+        try {
+            Invoke-Sdlc install @{ Source = $r1; Target = $t } | Out-Null
+            New-InstalledExtension $eh '4.6.0'
+            $r2 = New-SdlcRelease 'r2-e4' -Version '4.7.0' -WithVsix
+            $j = Invoke-SdlcJson update @{ Source = $r2; Target = $t; Yes = $true; EditorHome = $eh } -Env @{ PATH = (Get-IsolatedPath (Join-Path $SdlcRoot 'bin')) }
+            Assert-True $j.data.editor.mismatch '裝的是舊版 extension 卻沒有說'
+            Assert-True (-not (Test-Path $calls)) '一個專案的升級動到了整台機器共用的編輯器'
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'doctor 用 extension 宣告的 -Json 形狀判斷相容，而且不算專案的問題' {
+        $rel = New-SdlcRelease 'r-e5'; $t = New-SdlcTarget 't-e5'
+        try {
+            Invoke-Sdlc install @{ Source = $rel; Target = $t } | Out-Null
+            $p = Get-IsolatedDoctorParams $t
+            New-InstalledExtension $p.EditorHome '9.9.9' -schema 99
+            $j = Invoke-SdlcJson doctor $p
+            $x = @($j.data.editor.installed)[0]
+            Assert-Equal '9.9.9' $x.version
+            Assert-True (-not $x.compatible) '形狀對不上卻說相容'
+            Assert-Equal 0 $j.exit '編輯器那一層不是這個專案的健康狀態，不該讓 doctor 紅'
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+Describe-Suite 'sdlc / 修正輪上限（review.maxRounds）' {
+
+    function Get-Cfg([string]$t) { return Get-Content (Join-Path $t 'sdlc.config.json') -Raw -Encoding UTF8 | ConvertFrom-Json }
+    function Set-Cfg([string]$t, $cfg) { [IO.File]::WriteAllText((Join-Path $t 'sdlc.config.json'), ($cfg | ConvertTo-Json -Depth 8), $Utf8) }
+
+    It-Should 'install 寫入的預設值，就是 handoff-lint 在沒有設定時用的值' {
+        # 兩處各寫一次「3」。設定檔寫 3、hook 預設卻是別的數字的話，刪掉那一行就會悄悄改變行為。
+        $rel = New-SdlcRelease 'r-rv1'; $t = New-SdlcTarget 't-rv1'
+        try {
+            Invoke-Sdlc install @{ Source = $rel; Target = $t } | Out-Null
+            $written = (Get-Cfg $t).review.maxRounds
+            Assert-Equal 3 $written 'install 沒有寫出 review.maxRounds = 3'
+            $hook = (Invoke-Script '.codex/scripts/handoff-lint.ps1' -Stdin "## meta`n- feature-id: f`n- mode: analyze`n" -Params @{ ConfigFile = 'no-such-config.json'; Json = $true }).stdout | ConvertFrom-Json
+            Assert-Equal $written $hook.max_review_rounds 'install 的預設值跟 handoff-lint 的預設值分岔了'
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'update 替沒有 review 的舊設定檔補上 3，其他值一個字不動' {
+        $r1 = New-SdlcRelease 'r1-rv2'; $t = New-SdlcTarget 't-rv2'
+        try {
+            Invoke-Sdlc install @{ Source = $r1; Target = $t } | Out-Null
+            $cfg = Get-Cfg $t
+            $cfg.PSObject.Properties.Remove('review')
+            $cfg.agents.'sa-analyst'.effort = 'medium'
+            Set-Cfg $t $cfg
+            $r2 = New-SdlcRelease 'r2-rv2' -Version '4.7.0' -Extra @('.codex/scripts/new.ps1')
+            $j = Invoke-SdlcJson update @{ Source = $r2; Target = $t; Yes = $true; EditorHome = (Join-Path $SdlcRoot 'editor-home') }
+            Assert-True $j.data.reviewAdded 'data 沒記下補了 review'
+            $after = Get-Cfg $t
+            Assert-Equal 3 $after.review.maxRounds
+            Assert-Equal 'medium' $after.agents.'sa-analyst'.effort '補 review 的時候動到了使用者的其他設定'
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '已經有 review 的設定檔，update 不碰它' {
+        $r1 = New-SdlcRelease 'r1-rv3'; $t = New-SdlcTarget 't-rv3'
+        try {
+            Invoke-Sdlc install @{ Source = $r1; Target = $t } | Out-Null
+            $cfg = Get-Cfg $t; $cfg.review.maxRounds = 5; Set-Cfg $t $cfg
+            $r2 = New-SdlcRelease 'r2-rv3' -Version '4.7.0' -Extra @('.codex/scripts/new.ps1')
+            $j = Invoke-SdlcJson update @{ Source = $r2; Target = $t; Yes = $true; EditorHome = (Join-Path $SdlcRoot 'editor-home') }
+            Assert-True (-not $j.data.reviewAdded)
+            Assert-Equal 5 (Get-Cfg $t).review.maxRounds '升級把使用者設的上限蓋回預設了'
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'doctor 顯示實際生效的上限；寫壞時照 agent-lint 的結論退回 3' {
+        $rel = New-SdlcRelease 'r-rv4'; $t = New-SdlcTarget 't-rv4'
+        try {
+            Invoke-Sdlc install @{ Source = $rel; Target = $t } | Out-Null
+            # 範圍由 agent-lint 檢查 13 判（doctor 不寫第三份規則），所以這裡要有真的 agent-lint。
+            New-Item -ItemType Directory -Path (Join-Path $t '.codex/scripts') -Force | Out-Null
+            Copy-Item '.codex/scripts/agent-lint.ps1' (Join-Path $t '.codex/scripts/agent-lint.ps1') -Force
+
+            $cfg = Get-Cfg $t; $cfg.review.maxRounds = 5; Set-Cfg $t $cfg
+            $ok = Invoke-SdlcJson doctor (Get-IsolatedDoctorParams $t)
+            Assert-Equal 5 $ok.data.review.maxRounds
+            Assert-Equal 'config' $ok.data.review.source
+            Assert-True $ok.data.review.valid
+
+            $cfg.review.maxRounds = 7; Set-Cfg $t $cfg
+            $bad = Invoke-SdlcJson doctor (Get-IsolatedDoctorParams $t)
+            Assert-True (-not $bad.data.review.valid) '寫壞的上限被當成合法'
+            Assert-Equal 3 $bad.data.review.maxRounds 'doctor 顯示的上限跟 hook 實際用的不一樣'
+            Assert-Equal 'default' $bad.data.review.source
+            Assert-Equal 2 $bad.exit
         } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
     }
 }

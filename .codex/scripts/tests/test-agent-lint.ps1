@@ -71,12 +71,16 @@ $ScratchGuidelines = Join-Path $Scratch 'guidelines'
 $ScratchConfig     = Join-Path $Scratch 'sdlc.config.json'
 $ScratchWfConfig   = Join-Path $Scratch 'config.toml'
 $ScratchVersion    = Join-Path $Scratch 'version.json'
+# 檢查 11／12 同理：不指的話 scratch 案例會拿本 repo 真正的 extension 與 hooks.json 來驗。
+$ScratchExtension  = Join-Path $Scratch 'package.json'
+$ScratchHooks      = Join-Path $Scratch 'hooks.json'
 
 function Invoke-Lint {
     param([hashtable]$Extra = @{})
     $p = @{
         AgentDir = $Scratch; OrchestratorFile = $ScratchOrchFile; GuidelineDir = $ScratchGuidelines
         ConfigFile = $ScratchConfig; WorkflowConfig = $ScratchWfConfig
+        ExtensionManifest = $ScratchExtension; HooksFile = $ScratchHooks
     }
     foreach ($k in $Extra.Keys) { $p[$k] = $Extra[$k] }
     return Invoke-Script $Script -Params $p
@@ -567,5 +571,172 @@ Describe-Suite 'agent-lint / 檢查 10：版本號單一真相' {
             $r = Invoke-Lint -Extra @{ VersionFile = $ScratchVersion }
             Assert-Equal 0 $r.exit "stderr: $($r.stderr)"
         } finally { Remove-Item $Scratch -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+Describe-Suite 'agent-lint / 檢查 11：extension 版本 = 版本檔' {
+
+    function Set-ScratchVersion([string]$v) {
+        [IO.File]::WriteAllText($ScratchVersion, "{ `"contract-version`": `"$v`", `"min-compatible-version`": `"4.2.0`" }", [Text.UTF8Encoding]::new($false))
+    }
+    function Set-ScratchExtension([string]$v) {
+        [IO.File]::WriteAllText($ScratchExtension, "{ `"name`": `"codex-sdlc`", `"version`": `"$v`" }", [Text.UTF8Encoding]::new($false))
+    }
+
+    It-Should 'package.json 的版本跟版本檔分岔 → 紅燈' {
+        # 版本號的第四處。分岔的症狀跟檢查 10 一樣：doctor 的相容性判斷與「要不要重裝 extension」
+        # 的決定建立在錯的數字上。pack 出貨前跑 lint，所以這裡紅 = 那一版不出貨。
+        New-CleanScratch | Out-Null
+        Set-ScratchVersion '4.8.0'; Set-ScratchExtension '4.7.0'
+        try {
+            $r = Invoke-Lint -Extra @{ VersionFile = $ScratchVersion }
+            Assert-Equal 2 $r.exit
+            Assert-Match 'extension-version-drift' $r.stderr
+        } finally { Remove-Item $Scratch -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '對得上就綠燈' {
+        New-CleanScratch | Out-Null
+        Set-ScratchVersion '4.8.0'; Set-ScratchExtension '4.8.0'
+        try {
+            $r = Invoke-Lint -Extra @{ VersionFile = $ScratchVersion }
+            Assert-Equal 0 $r.exit "stderr: $($r.stderr)"
+        } finally { Remove-Item $Scratch -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '沒有 extension 原始碼的專案（所有消費端）不受影響' {
+        New-CleanScratch | Out-Null
+        Set-ScratchVersion '4.8.0'
+        try {
+            $r = Invoke-Lint -Extra @{ VersionFile = $ScratchVersion }
+            Assert-Equal 0 $r.exit "消費端專案被一個它不會有的目錄擋住了；stderr: $($r.stderr)"
+        } finally { Remove-Item $Scratch -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+Describe-Suite 'agent-lint / 檢查 12：hooks.json 在 Codex 上真的擋得住' {
+
+    # 起點是正式的 hooks.json（它必須是乾淨的），每個紅燈案例只弄壞一處。
+    function New-ScratchHooks([scriptblock]$Mutate = {}) {
+        New-Item -ItemType Directory -Path $Scratch -Force | Out-Null
+        $h = Get-Content '.codex/hooks.json' -Raw -Encoding UTF8 | ConvertFrom-Json
+        & $Mutate $h
+        [IO.File]::WriteAllText($ScratchHooks, ($h | ConvertTo-Json -Depth 10), [Text.UTF8Encoding]::new($false))
+    }
+
+    It-Should '正式的 hooks.json 通過（前提）' {
+        New-CleanScratch | Out-Null
+        New-ScratchHooks
+        try {
+            $r = Invoke-Lint
+            Assert-Equal 0 $r.exit "stderr: $($r.stderr)"
+        } finally { Remove-Item $Scratch -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '沒有 commandWindows → 紅燈（Windows 上 exit 2 會被 pwsh -Command 吃成 1）' {
+        # 實測：Codex 0.154 在 Windows 把 hook 包成 pwsh -Command，內層 exit 2 回報成 1，
+        # Codex 當成「hook 失敗」—— 不阻斷、stderr 也不交給模型。四支 hook 全部等於不存在。
+        New-CleanScratch | Out-Null
+        New-ScratchHooks { param($h) $h.hooks.PreToolUse[0].hooks[0].PSObject.Properties.Remove('commandWindows') }
+        try {
+            $r = Invoke-Lint
+            Assert-Equal 2 $r.exit
+            Assert-Match 'hook-exit-code-swallowed' $r.stderr
+        } finally { Remove-Item $Scratch -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'commandWindows 沒有把 exit code 傳出去 → 紅燈' {
+        New-CleanScratch | Out-Null
+        New-ScratchHooks { param($h) $x = $h.hooks.PostToolUse[0].hooks[0]; $x.commandWindows = $x.command }
+        try {
+            $r = Invoke-Lint
+            Assert-Equal 2 $r.exit
+            Assert-Match 'hook-exit-code-swallowed' $r.stderr
+        } finally { Remove-Item $Scratch -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'matcher 攔不到 Bash → 紅燈（經 shell 寫的檔完全不掃）' {
+        New-CleanScratch | Out-Null
+        New-ScratchHooks { param($h) $h.hooks.PostToolUse[1].matcher = 'Edit|Write|^apply_patch$|^shell$' }
+        try {
+            $r = Invoke-Lint
+            Assert-Equal 2 $r.exit
+            Assert-Match 'hook-matcher-misses-tool' $r.stderr
+            Assert-Match 'Bash' $r.stderr
+        } finally { Remove-Item $Scratch -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'handoff-lint 的 matcher 攔不到 spawn_agent → 紅燈' {
+        New-CleanScratch | Out-Null
+        New-ScratchHooks { param($h) $h.hooks.PreToolUse[0].matcher = '^agent$|^task$' }
+        try {
+            $r = Invoke-Lint
+            Assert-Equal 2 $r.exit
+            Assert-Match 'spawn_agent' $r.stderr
+        } finally { Remove-Item $Scratch -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '引用的腳本不存在 → 紅燈' {
+        New-CleanScratch | Out-Null
+        New-ScratchHooks { param($h)
+            $x = $h.hooks.PostToolUse[2].hooks[0]
+            $x.command = $x.command -replace 'build-check', 'no-such-check'
+            $x.commandWindows = $x.commandWindows -replace 'build-check', 'no-such-check'
+        }
+        try {
+            $r = Invoke-Lint
+            Assert-Equal 2 $r.exit
+            Assert-Match 'hook-script-missing' $r.stderr
+        } finally { Remove-Item $Scratch -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+Describe-Suite 'agent-lint / 檢查 13：review.maxRounds 是 1–5 的整數' {
+
+    # 設定檔要能過檢查 9（有產生區塊、sha 對得上），每個案例才只差 review 那一處。
+    function New-ReviewScratch([string]$reviewJson) {
+        New-CleanScratch | Out-Null
+        $review = if ($reviewJson) { ", `"review`": $reviewJson" } else { '' }
+        [IO.File]::WriteAllText($ScratchConfig,
+            "{ `"workflow-version`": `"4.8.0`", `"agents`": { `"sa-analyst`": { `"model`": `"inherit`", `"effort`": `"inherit`" } }$review }",
+            [Text.UTF8Encoding]::new($false))
+        Add-ScratchTuningBlock -Sha (Get-ExpectedSha)
+    }
+
+    It-Should '超出範圍 → 紅燈（寫壞時 hook 照預設 3 算，症狀是「設了 6 還是第 3 輪就停」）' {
+        New-ReviewScratch '{ "maxRounds": 6 }'
+        try {
+            $r = Invoke-Lint
+            Assert-Equal 2 $r.exit
+            Assert-Match 'review-max-rounds-invalid' $r.stderr
+        } finally { Remove-Item $Scratch -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '字串 "3" → 紅燈（看起來對，hook 不採用）' {
+        New-ReviewScratch '{ "maxRounds": "3" }'
+        try {
+            $r = Invoke-Lint
+            Assert-Equal 2 $r.exit
+            Assert-Match 'review-max-rounds-invalid' $r.stderr
+        } finally { Remove-Item $Scratch -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'review 不是物件 → 紅燈' {
+        New-ReviewScratch '5'
+        try {
+            $r = Invoke-Lint
+            Assert-Equal 2 $r.exit
+            Assert-Match 'review-config-invalid' $r.stderr
+        } finally { Remove-Item $Scratch -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '合法的值、或沒有 review 這一節（舊設定檔）→ 綠燈' {
+        foreach ($json in @('{ "maxRounds": 1 }', '{ "maxRounds": 5 }', '')) {
+            New-ReviewScratch $json
+            try {
+                $r = Invoke-Lint
+                Assert-Equal 0 $r.exit "review=$json；stderr: $($r.stderr)"
+            } finally { Remove-Item $Scratch -Recurse -Force -ErrorAction SilentlyContinue }
+        }
     }
 }
