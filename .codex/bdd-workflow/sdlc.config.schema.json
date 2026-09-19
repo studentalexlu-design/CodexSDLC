@@ -1,0 +1,127 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "sdlc.config.json",
+  "description": "Codex SDLC 工作流的專案設定（你的，升級永遠不覆蓋）。改 agents.* 之後要套用：pwsh .codex/scripts/sdlc.ps1 apply，或直接用 sdlc.ps1 set … -Apply。其餘設定下一次委派就生效。這個檔不支援註解 —— 說明寫進 _note。",
+  "x-codex-sdlc": "合法值的唯一真相。sdlc.ps1 set、VS Code extension 的設定面板、VS Code 的補全與波浪線都讀這一份；hook 與 lint 各留的常數由 agent-lint 檢查 14 綁在這裡。",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "讓編輯器找到這份 schema。由 install／update 寫入，不要改。"
+    },
+    "_note": {
+      "type": "string",
+      "description": "給人看的說明。這個檔不支援註解（sdlc.ps1 改寫時會把註解吃掉），要寫說明就寫在這裡。"
+    },
+    "workflow-version": {
+      "type": "string",
+      "description": "建立或上次升級這份設定時的工作流版本。由 install／update 維護，不要手改。"
+    },
+    "update": {
+      "type": "object",
+      "description": "更新檢查。只影響「有新版」的通知，不影響任何流程。",
+      "properties": {
+        "source": {
+          "type": "string",
+          "title": "來源",
+          "description": "這套工作流發佈的 GitHub repo 網址，例如 https://github.com/<owner>/<repo>。由發佈物帶進來；空字串 = 不會有更新通知。",
+          "pattern": "^$|github\\.com/([^/]+)/([^/\\s]+?)(\\.git)?/?$",
+          "patternErrorMessage": "要是 GitHub repo 的網址（https://github.com/<owner>/<repo>），或留空。"
+        },
+        "check": {
+          "title": "檢查頻率",
+          "description": "多久查一次有沒有新版。",
+          "enum": ["daily", "never"],
+          "enumDescriptions": [
+            "每天最多查一次（VS Code extension 在背景替你查；沒裝 extension 就要自己跑 check-update）",
+            "永遠不查，一條連線都沒有"
+          ],
+          "x-labels": ["每天", "不檢查"],
+          "default": "daily"
+        },
+        "channel": {
+          "description": "已棄用：沒有任何一方讀這個值。",
+          "deprecationMessage": "update.channel 沒有作用，可以刪掉。"
+        }
+      },
+      "additionalProperties": false
+    },
+    "review": {
+      "type": "object",
+      "description": "⑤ 審核。handoff-lint 每次委派時現讀，不必 apply。",
+      "properties": {
+        "maxRounds": {
+          "title": "修正輪上限",
+          "description": "⑤ 審核最多修幾輪。到了上限還 FAIL，流程會停下來交回你決定（可以選「指定重點再跑一輪」）。不必 apply，下一次委派就生效。",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5,
+          "default": 3
+        }
+      },
+      "additionalProperties": false
+    },
+    "agents": {
+      "type": "object",
+      "title": "Agent 調校",
+      "description": "每個 agent 的 model／effort。改完要套用（sdlc.ps1 apply）—— 不套用的話流程用的是舊值，而畫面上看不出來。orchestrator 沒有 agent 定義檔，它的值只是記錄，強制不了。",
+      "additionalProperties": { "$ref": "#/definitions/agent" }
+    }
+  },
+  "additionalProperties": false,
+  "definitions": {
+    "agent": {
+      "type": "object",
+      "properties": {
+        "model": { "$ref": "#/definitions/model" },
+        "effort": { "$ref": "#/definitions/effort" }
+      },
+      "additionalProperties": false
+    },
+    "model": {
+      "type": "string",
+      "title": "model",
+      "minLength": 1,
+      "pattern": "^\\S+$",
+      "patternErrorMessage": "模型名稱不能有空白。不想釘就寫 inherit。",
+      "default": "inherit",
+      "description": "模型名稱。inherit = agent 定義裡不寫這一行，交給 Codex CLI。⚠ 這個 key 尚未在本工作流驗證過 —— Codex 若忽略它，會靜默地用預設模型跑。",
+      "examples": ["inherit", "gpt-5.5", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-5.6-luna", "gpt-6-astra", "gpt-5.2"],
+      "x-examples-source": "Codex 0.154.0 內建模型清單裡列出來的模型（觀測值；Codex 升版時重查）"
+    },
+    "effort": {
+      "title": "effort",
+      "description": "推理深度。inherit = agent 定義裡不寫這一行，交給 Codex CLI 決定。能用哪幾個值由模型決定，Codex 本身不檢查 —— 寫了模型不支援的值，要到呼叫 API 時才出事。",
+      "enum": ["inherit", "low", "medium", "high", "xhigh", "max", "ultra"],
+      "enumDescriptions": [
+        "不釘，交給 Codex CLI 決定。每個 agent 的預設；大型 repo 維持這個",
+        "淺",
+        "中",
+        "深",
+        "更深。Codex 0.154 內建清單裡每個模型都支援",
+        "要模型支援 —— Codex 0.154 內建清單裡只有 gpt-5.6 系列與 gpt-6-astra",
+        "要模型支援 —— Codex 0.154 內建清單裡只有 gpt-5.6-sol、gpt-5.6-terra、gpt-6-astra"
+      ],
+      "default": "inherit",
+      "x-values-source": "Codex 0.154.0 內建模型清單的 reasoning effort（觀測值；Codex 升版時重查）。minimal 不在任何一個模型的清單裡，所以不列。",
+      "x-agent-hints": {
+        "sa-analyst": {
+          "low": "repo 很大時的建議值 —— 它的失敗模式是逾時，不是想得不夠深",
+          "high": "⚠ sa-analyst 釘 high 正是大型 legacy repo 分析逾時的成因",
+          "xhigh": "⚠ 比 high 更容易逾時",
+          "max": "⚠ 比 high 更容易逾時",
+          "ultra": "⚠ 比 high 更容易逾時"
+        },
+        "implementer": {
+          "inherit": "建議值 —— 成本在測試回圈的次數，不在單次推理深度"
+        },
+        "reviewer": {
+          "high": "建議值 —— 輸入小、判斷密度高，而且修正輪有上限"
+        },
+        "orchestrator": {
+          "inherit": "它沒有 agent 定義檔，這裡的值只是記錄，強制不了"
+        }
+      }
+    }
+  }
+}

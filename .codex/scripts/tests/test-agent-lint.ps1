@@ -740,3 +740,108 @@ Describe-Suite 'agent-lint / 檢查 13：review.maxRounds 是 1–5 的整數' {
         }
     }
 }
+
+Describe-Suite 'agent-lint / 檢查 13：update.check 是認得的值' {
+
+    function New-UpdateScratch([string]$updateJson) {
+        New-CleanScratch | Out-Null
+        [IO.File]::WriteAllText($ScratchConfig,
+            "{ `"workflow-version`": `"4.9.0`", `"update`": $updateJson, `"agents`": { `"sa-analyst`": { `"model`": `"inherit`", `"effort`": `"inherit`" } } }",
+            [Text.UTF8Encoding]::new($false))
+        Add-ScratchTuningBlock -Sha (Get-ExpectedSha)
+    }
+
+    It-Should '打錯字 → 紅燈（不認得的值照 daily 算，以為關掉了其實每天連網）' {
+        New-UpdateScratch '{ "source": "", "check": "nevr" }'
+        try {
+            $r = Invoke-Lint
+            Assert-Equal 2 $r.exit
+            Assert-Match 'update-check-invalid' $r.stderr
+        } finally { Remove-Item $Scratch -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'daily／never、或沒有 check 這個 key → 綠燈' {
+        foreach ($json in @('{ "check": "daily" }', '{ "check": "never" }', '{ "source": "" }')) {
+            New-UpdateScratch $json
+            try {
+                $r = Invoke-Lint
+                Assert-Equal 0 $r.exit "update=$json；stderr: $($r.stderr)"
+            } finally { Remove-Item $Scratch -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+    }
+}
+
+Describe-Suite 'agent-lint / 檢查 14：schema 與各腳本的常數一致' {
+
+    # 真的 schema 與三支腳本各複製一份到 scratch，每個案例只改其中一處 ——
+    # 這樣「原樣必須綠」與「改一處必須紅」量的是同一組檔。
+    $SchemaScratch = Join-Path $Scratch 'schema-case'
+    function New-SchemaScratch {
+        New-CleanScratch | Out-Null
+        foreach ($d in @('bdd', 'scripts')) { New-Item -ItemType Directory -Path (Join-Path $SchemaScratch $d) -Force | Out-Null }
+        foreach ($f in @('sdlc.config.schema.json', 'rules.schema.json')) { Copy-Item ".codex/bdd-workflow/$f" (Join-Path $SchemaScratch 'bdd') }
+        foreach ($f in @('sdlc.ps1', 'handoff-lint.ps1', 'guideline-gate.ps1')) { Copy-Item ".codex/scripts/$f" (Join-Path $SchemaScratch 'scripts') }
+    }
+    function Edit-SchemaScratch([string]$rel, [string]$from, [string]$to) {
+        $p = Join-Path $SchemaScratch $rel
+        $t = [IO.File]::ReadAllText($p)
+        if (-not $t.Contains($from)) { throw "錨點不在 $rel 裡：$from" }
+        [IO.File]::WriteAllText($p, $t.Replace($from, $to), [Text.UTF8Encoding]::new($false))
+    }
+    function Invoke-SchemaLint {
+        Invoke-Lint @{
+            ConfigSchema = (Join-Path $SchemaScratch 'bdd/sdlc.config.schema.json')
+            RulesSchema  = (Join-Path $SchemaScratch 'bdd/rules.schema.json')
+            ScriptDir    = (Join-Path $SchemaScratch 'scripts')
+        }
+    }
+
+    It-Should '原樣 → 綠燈（這一組檔本來就要一致）' {
+        New-SchemaScratch
+        try {
+            $r = Invoke-SchemaLint
+            Assert-Equal 0 $r.exit "stderr: $($r.stderr)"
+        } finally { Remove-Item $Scratch -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    $cases = @(
+        @{ name = 'schema 少了一個 effort 值（UI 不給選、apply 卻當成已知）'; rel = 'bdd/sdlc.config.schema.json'; from = ', "max", "ultra"]'; to = ', "max"]' }
+        @{ name = 'sdlc.ps1 的 $KnownEfforts 多一個值（apply 不警告、UI 卻說不合法）'; rel = 'scripts/sdlc.ps1'; from = "'max', 'ultra')"; to = "'max', 'ultra', 'mega')" }
+        @{ name = 'handoff-lint 的修正輪上限改成 6（UI 只給選到 5）'; rel = 'scripts/handoff-lint.ps1'; from = '$MaxAllowedReviewRounds = 5'; to = '$MaxAllowedReviewRounds = 6' }
+        @{ name = 'schema 的修正輪預設改成 2（hook 還是照 3 算）'; rel = 'bdd/sdlc.config.schema.json'; from = '"default": 3'; to = '"default": 2' }
+        @{ name = 'schema 的 update.check 多一個 weekly（腳本不認得，照 daily 算）'; rel = 'bdd/sdlc.config.schema.json'; from = '"enum": ["daily", "never"]'; to = '"enum": ["daily", "never", "weekly"]' }
+        @{ name = 'schema 的 update.source 格式跟 check-update 認的不一樣'; rel = 'bdd/sdlc.config.schema.json'; from = '"^$|github'; to = '"^$|gitlab' }
+        @{ name = 'guideline-gate 多認一個 severity（schema 會把它標成錯）'; rel = 'scripts/guideline-gate.ps1'; from = "`$Severities = @('block', 'warn')"; to = "`$Severities = @('block', 'warn', 'info')" }
+    )
+    foreach ($c in $cases) {
+        It-Should "$($c.name) → 紅燈" {
+            New-SchemaScratch
+            Edit-SchemaScratch $c.rel $c.from $c.to
+            try {
+                $r = Invoke-SchemaLint
+                Assert-Equal 2 $r.exit
+                Assert-Match 'schema-drift' $r.stderr
+            } finally { Remove-Item $Scratch -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+    }
+
+    It-Should 'schema 不見了（工具那半缺檔）→ 紅燈' {
+        New-SchemaScratch
+        Remove-Item (Join-Path $SchemaScratch 'bdd/sdlc.config.schema.json')
+        try {
+            $r = Invoke-SchemaLint
+            Assert-Equal 2 $r.exit
+            Assert-Match 'schema-missing' $r.stderr
+        } finally { Remove-Item $Scratch -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'schema 不是合法的 JSON → 紅燈' {
+        New-SchemaScratch
+        Edit-SchemaScratch 'bdd/rules.schema.json' '"type": "object",' '"type": "object",,'
+        try {
+            $r = Invoke-SchemaLint
+            Assert-Equal 2 $r.exit
+            Assert-Match 'schema-unparsable' $r.stderr
+        } finally { Remove-Item $Scratch -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}

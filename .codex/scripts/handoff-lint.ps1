@@ -58,7 +58,8 @@ try {
 #
 # 範圍 1–5：這個上限存在，是因為 doer↔reviewer 的來回沒有自然終點，而輪次是 orchestrator 自報的。
 # 值不合法 → 照預設 3 算（保守的一側）並講出來；**不因為設定寫壞就擋 spawn** —— 擋下的理由跟他要做的事無關。
-# agent-lint 檢查 13 有一份相同的範圍規則（lint 要能獨立驗），兩邊由 test-handoff-lint.ps1 的交叉測試綁在一起。
+# agent-lint 檢查 13 有一份相同的範圍規則（lint 要能獨立驗），兩邊由 test-handoff-lint.ps1 的交叉測試綁在一起；
+# 這三個常數跟 sdlc.config.schema.json 的 review.maxRounds 由 agent-lint 檢查 14 綁在一起（hook 不讀 schema：它要快，也要在 schema 不在時照跑）。
 $DefaultReviewRounds    = 3
 $MinReviewRounds        = 1
 $MaxAllowedReviewRounds = 5

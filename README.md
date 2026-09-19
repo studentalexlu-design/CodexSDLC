@@ -88,7 +88,12 @@ pwsh .codex/scripts/sdlc.ps1 install -Adopt
 
 「有新版」要先有人查過才知道。`check-update` 是你手動跑的；裝了 VS Code extension 的話它每天在背景替你查一次（`never` 時一次都不查）。
 
-檢查更新讀的是 `sdlc.config.json` 的 `update.source`。它由發佈物帶進來，指向這套工作流自己的 repo；**連不到（離線、私有 repo、網址還沒設）時整件事完全靜默** —— 不影響任何流程，只是不會有人告訴你有新版。手動查一次：`pwsh .codex/scripts/sdlc.ps1 check-update`。它說「不是可辨識的 GitHub repo」，就是這個值空著或不是 GitHub 網址：自己填上發佈這套工作流的 GitHub repo 網址 —— `update` 不會替你補。
+檢查更新讀的是 `sdlc.config.json` 的 `update.source`。它由發佈物帶進來，指向這套工作流自己的 repo；**連不到（離線、私有 repo、網址還沒設）時整件事完全靜默** —— 不影響任何流程，只是不會有人告訴你有新版。手動查一次：`pwsh .codex/scripts/sdlc.ps1 check-update`。它說「不是可辨識的 GitHub repo」，就是這個值空著或不是 GitHub 網址：自己填上發佈這套工作流的 GitHub repo 網址 —— `update` 不會替你補：
+
+```powershell
+pwsh .codex/scripts/sdlc.ps1 set update.source=https://github.com/<owner>/<repo>
+pwsh .codex/scripts/sdlc.ps1 set update.check=never    # 不想被提醒（只接受 daily／never，打錯字會被擋）
+```
 
 要升級：下載新版、解壓到別處，然後
 
@@ -119,18 +124,19 @@ VS Code extension 不會被 `update` 重裝（它是整台機器共用的）；�
 
 發佈物附了一個 VS Code extension。**它只是殼** —— 它做的每一件事你在終端機跑 `sdlc.ps1` 都做得到，不裝它流程照常。
 
-它買到的是「現在靜默的幾件事變成看得見」：
+它買到兩件事：「現在靜默的幾件事變成看得見」，以及「改設定不必記 key、不必記得 apply」。
 
-| 狀態列／Problems 會顯示 | 沒有它的話 |
-|---|---|
-| Codex 有沒有信任這個專案的 hooks | 只有主動跑 `doctor` 才知道 |
-| 改了 `sdlc.config.json` 但忘了 `apply` | 只有主動跑 `doctor`／`agent-lint` 才知道 |
-| 有新版（背景每天刷新一次；`update.check = never` 就一條連線都沒有） | 要你自己先跑過 `check-update`，通知才會開始出現 |
-| `guidelines/rules.json` 的違規、`bdd-docs/` 裡的敏感資料殘留（存檔時） | 只在 hook 的訊息裡捲過去 |
+| 在哪裡 | 看得到／做得到什麼 | 沒有它的話 |
+|---|---|---|
+| **活動列的 Codex SDLC 圖示 → 設定面板** | 一眼看到全部設定的現值；點一下就改（選項與說明來自 schema）；需要套用的標 ●，改完按一次「套用」；hooks 沒信任時有按鈕在終端機開 Codex；預設組合、tune 建議、規範機械層開關、pwsh／codex 的位置 | `sdlc.ps1 set` 或手改 JSON，再記得 apply |
+| 狀態列左下角的 **SDLC** | 版本、Codex 有沒有信任 hooks、改了沒套用、有新版（背景每天刷新一次；`update.check = never` 就一條連線都沒有）。點它是選單 | 只有主動跑 `doctor`／`check-update` 才知道 |
+| `sdlc.config.json` 上方 | 「套用（N 個 agent 未套用）」、tune 建議「採用」（只套那一個） | 切去終端機 |
+| Problems 面板（存檔時） | `guidelines/rules.json` 的違規、`bdd-docs/` 裡的敏感資料殘留、**`rules.json` 自己寫壞的那一條** | 只在 hook 的訊息裡捲過去 |
+| Get Started（第一次啟動自動打開） | 四步：信任 hooks → 選預設組合 → 跑 doctor → 設定在哪裡改 | 讀這份 README |
 
-點狀態列有選單：doctor、apply、調整某個 agent 的 effort／model（改 `sdlc.config.json`，再自動 apply）、調整審核修正輪上限、tune、whatsnew、立即檢查更新。
+面板裡的每一次修改都經過 `sdlc.ps1 set` —— 先驗完才寫，寫錯一個字都不動（見下面「每個 agent 用哪個模型」）。工作流還是 4.8 的專案，面板只顯示、不給改。
 
-裝：`install` 時加 `-WithEditor`，或自己 `code --install-extension <解壓目錄>/editor/codex-sdlc-{版本}.vsix`（Cursor／Windsurf／VSCodium 吃同一個檔）。需要 PowerShell 7；VS Code 找不到 `pwsh` 時它會說，並給安裝連結。
+裝：`install` 時加 `-WithEditor`，或自己 `code --install-extension <解壓目錄>/editor/codex-sdlc-{版本}.vsix`（Cursor／Windsurf／VSCodium 吃同一個檔）。需要 PowerShell 7；VS Code 找不到 `pwsh` 時它會說，並讓你直接選檔。
 
 **有兩種信任，別搞混。** VS Code 的「工作區信任」決定這個 extension 會不會啟動 —— 它會執行專案裡的 `.ps1`，所以受限模式下不啟動，**連狀態列都不會出現**。Codex 的 hooks 信任決定強制層會不會跑（見「裝好之後一定要做的一件事」）。在 VS Code 按了信任，不代表 Codex 那邊也好了；後者沒好時，狀態列會顯示「專案未信任」或「hooks 未信任」。
 
@@ -145,7 +151,8 @@ code --uninstall-extension codex-sdlc.codex-sdlc
 已知限制：
 
 - **只在 Windows ＋ VS Code 上實測過。** macOS／Linux、Cursor／Windsurf／VSCodium 照理吃同一個 `.vsix`，但沒有實際跑過。
-- 查 hooks 信任要用到 `codex` 執行檔：設了 `codexSdlc.codexPath` 就用它，沒設就找 PATH，再試 OpenAI VS Code 擴充內附的那一支（那個位置沒實測過）。**都找不到時狀態列不會亮警示** —— 滑鼠移上去的說明裡寫「Codex hooks：無法確認」。所以綠勾不等於 hooks 已信任；要看那一行寫的是「N 條都已信任」。
+- 查 hooks 信任要用到 `codex` 執行檔：設了 `codexSdlc.codexPath` 就用它（設定面板「這台機器 → codex」可以直接選檔），沒設就找 PATH，再試 OpenAI VS Code 擴充內附的那一支（那個位置沒實測過）。**都找不到時狀態列不會亮警示** —— 設定面板的「狀態」那一行是黃的「無法確認」。所以狀態列的綠勾不等於 hooks 已信任。
+- 「在終端機開 Codex 信任 hooks」這個按鈕沒有在真的 Codex 上試過（這台開發機沒有登入的 Codex）。畫面不對的話，照「裝好之後一定要做的一件事」手動做。
 - 「有新版」要 `sdlc.config.json` 的 `update.source` 指向一個 GitHub repo 才查得到（見「升級」）。
 
 ---
@@ -154,7 +161,7 @@ code --uninstall-extension codex-sdlc.codex-sdlc
 
 寫在專案根的 `sdlc.config.json`：
 
-```jsonc
+```json
 "agents": {
   "orchestrator": { "model": "inherit", "effort": "inherit" },
   "sa-analyst":   { "model": "inherit", "effort": "inherit" },
@@ -163,9 +170,25 @@ code --uninstall-extension codex-sdlc.codex-sdlc
 }
 ```
 
-改完跑 `pwsh .codex/scripts/sdlc.ps1 apply`。**忘記跑會被 `agent-lint` 擋下來** —— 不擋的話症狀是零：檔案看起來改好了，跑起來是舊值。
+**改值最省事的方法**（VS Code 裡就用設定面板，走的是同一條路）：
+
+```powershell
+pwsh .codex/scripts/sdlc.ps1 set agents.reviewer.effort=high agents.sa-analyst.effort=low -Apply
+```
+
+- **先驗完才寫。** 任何一組不合法 —— 值不在清單裡、key 打錯、agent 名稱打錯 —— 一個字都不動，並告訴你最接近的那個（`agents.reviewer.effort=hgih` → 「是不是要 …=high？」）。
+- **`-Apply` 讓寫與套用是同一個動作**，改幾個值都只套用一次。不加的話它會提醒你還沒套用。
+- `-Preview` 只列出會改什麼；`-Preset fast|balanced|deep` 換一整組（先列差異，確認才寫；裝完之後也能換）。
+
+手改也可以：檔案第一行的 `$schema` 讓編輯器有補全、錯字波浪線與說明（VS Code 不裝 extension 也有）。手改之後要跑 `pwsh .codex/scripts/sdlc.ps1 apply` —— **忘記跑會被 `agent-lint` 擋下來**，不擋的話症狀是零：檔案看起來改好了，跑起來是舊值。
+
+**這個檔不支援註解。** `set`、`update`、`tune` 都會整份改寫它；有註解時 `set` 會先停下來問（加 `-Yes` 才寫，原檔先備份到 `bdd-docs/.sdlc/`），`update` 會先備份再告訴你。要寫說明就寫在 `_note`。
+
+**沒有這個檔也是合法狀態**：全部 `inherit`、修正輪照預設 3 輪，`doctor` 會說明而不是報錯。你第一次用 `set`（或在設定面板改任何一個值）時，它會替你建一份預設的 —— 內容跟 `install` 建的一樣，所以「建檔」本身不改變任何行為，只是讓你有地方放那個值。
 
 **`"inherit"` 是預設，意思是「不釘」** —— 那個 agent 的設定裡連這一行都不會寫出去，交給 Codex CLI 決定。這不是偷懶，是這套工作流付過學費的地方：曾經把四個 agent 全部釘成 `high`，結果大型舊專案的分析**逾時**。所以除非你有理由，就讓它 `inherit`。
+
+effort 能填的值：`inherit`、`low`、`medium`、`high`、`xhigh`、`max`、`ultra`。這份清單取自 Codex 0.154 內建的模型清單 —— **能不能用由模型決定，Codex 本身不檢查**：`xhigh` 每個內建模型都有，`max`／`ultra` 只有較新的模型才有，寫了模型不支援的值要到呼叫 API 時才出事。舊版清單裡的 `minimal` 已經不在任何一個模型的清單裡，`apply` 會警告。
 
 一開始就想設好：`install -Preset fast|balanced|deep`。
 
@@ -175,7 +198,14 @@ code --uninstall-extension codex-sdlc.codex-sdlc
 pwsh .codex/scripts/sdlc.ps1 tune
 ```
 
-它會看你的 repo 有多大、是什麼語言、有沒有在逆推舊系統，然後**提議**一組值，每一條都附理由跟訊號來源。你看過覺得可以再套用（`tune -ApplyProposal`），或自己改設定檔。**它不會自己套。**
+它會看你的 repo 有多大、是什麼語言、有沒有在逆推舊系統，然後**提議**一組值，每一條都附理由跟訊號來源。**它不會自己套。** 你看過覺得可以再套用：
+
+```powershell
+pwsh .codex/scripts/sdlc.ps1 tune -ApplyProposal                 # 全部
+pwsh .codex/scripts/sdlc.ps1 tune -ApplyProposal -Only reviewer  # 只套這幾個（逗號分隔）
+```
+
+套用的是**剛才存下來的那一份**提議，不會重算 —— 你看到什麼就套什麼。VS Code 裡：設定面板的「tune」讓你勾選要套用哪幾個，`sdlc.config.json` 上方也會在那個 agent 旁邊掛一個「採用」。
 
 跟直覺相反、但這是它會建議的方向：
 
@@ -195,7 +225,7 @@ pwsh .codex/scripts/sdlc.ps1 tune
 "review": { "maxRounds": 3 }
 ```
 
-⑤ 審核 FAIL 會回 ④ 修，這個數字是修正輪的上限，**只接受 1–5，預設 3**。到了上限還 FAIL，它會停下來交回你（接受現版本／指定重點再跑一輪／暫停）。
+⑤ 審核 FAIL 會回 ④ 修，這個數字是修正輪的上限，**只接受 1–5，預設 3**。到了上限還 FAIL，它會停下來交回你（接受現版本／指定重點再跑一輪／暫停）。改法：`pwsh .codex/scripts/sdlc.ps1 set review.maxRounds=4`，或設定面板的「審核」。
 
 - **改完不必 apply** —— 每次委派修正輪時 `handoff-lint` 都現讀，orchestrator 也會從它那裡拿到「第幾輪／上限幾輪」。
 - **偶爾想多跑一輪不用改這裡**：到上限交回你時選「指定重點跑最後一輪」就好。這個值是給「團隊一貫想要不同上限」用的。
@@ -612,6 +642,11 @@ pwsh -NoProfile -File .codex/scripts/guideline-gate.ps1 -Validate
 | `connection-string`／`secret-literal` | prompt 裡有連線字串或密鑰 | **不要繞過**，把敏感值從來源拿掉 |
 | （沒有任何訊息）寫了違規的檔、沒帶 meta 的委派都照樣過 | Codex 沒信任這個專案的 hooks，強制層整層沒在跑 | 跑 `sdlc.ps1 doctor`，照它說的去 codex 裡信任 |
 | `doctor` 說「無法確認 Codex 是否信任了這個專案的 hooks」（狀態列說明裡是「Codex hooks：無法確認」） | 括號裡寫原因：找不到 `codex` 執行檔，或問了 15 秒沒回應。不代表沒信任，也不代表有 | 找不到：裝 Codex CLI，或 `doctor -CodexPath <完整路徑>`（VS Code 裡設 `codexSdlc.codexPath`）。沒回應：再跑一次 `doctor` |
+| `doctor` 說 `.codex/hooks.json` 不在 | 工具檔缺了（被刪掉，或當初只複製了一部分）—— 四支 hook 一支都不會跑，寫檔與委派完全沒有人擋 | 把發佈物解壓到別處，跑 `update -Target <這個專案>` 把工具檔補回來，然後在 codex 裡重新信任 |
+| `apply` 說「沒有 sdlc.config.json —— 沒有東西要套用」 | 沒有設定檔是合法狀態（全部 inherit），所以沒有東西要套 | 要開始調校就用 `set …`（它會替你建設定檔）；不想調校就不必理它 |
+| `set` 說「設定檔裡有註解」，一個字都沒寫 | `sdlc.config.json` 不支援註解，整份改寫會把它們吃掉 | 把說明搬進 `_note` 再跑；或加 `-Yes` 照寫（原檔先備份到 `bdd-docs/.sdlc/sdlc.config.with-comments.json`）。VS Code 面板會跳出同一個選擇 |
+| `set` 說某個值「不是合法值」或「不認得的設定」 | 值不在 schema 的清單裡，或 key 打錯了 —— 整批都沒寫 | 照它給的「是不是要 …」改；合法值與說明也可以在設定面板或編輯器的補全裡看到 |
+| 裝了工作流，VS Code 裡卻沒有任何介面（左下角沒有 `SDLC`、活動列沒有 Codex SDLC、命令面板找不到 `Codex SDLC`） | 最常見：extension 根本沒裝 —— `install` 沒加 `-WithEditor` 時只會提示、不會裝。其次：打開的資料夾不是裝了工作流的那個，或工作區沒被信任 | `doctor` 會說這台機器有沒有裝；沒裝就 `code --install-extension <發佈物>/editor/codex-sdlc-{版本}.vsix`，然後 `Developer: Reload Window`。打開有 `.codex/bdd-workflow/` 的那個資料夾，信任它 |
 
 寫入 `bdd-docs/**` 之後還會掃一次敏感資料殘留。確定整個專案沒有敏感資料的話，建一個 `bdd-docs/.dlp-disabled` 可以整個關掉。
 
@@ -677,10 +712,10 @@ npm run test:host                   # 打包的是 out/ 現有的東西，所以
 1. 版本號：`contract-version` 與另外三處（見上；漏了會被檢查 10／11 擋下，先改省一輪）。
 2. `bdd-workflow-version.json` 加一個 `v{主次}-…` 說明，`source` 填好。
 3. README 補一節「從 v… 升上來」。
-4. 上一版之後 Codex 升過版 → 重跑一次 hook 實測（見下面第 7 條）。
+4. 上一版之後 Codex 升過版 → 重跑一次 hook 實測，並重查 effort 的合法值（見下面第 7、8 條）。
 5. `pack`。
 
-七條容易踩的規則：
+八條容易踩的規則：
 
 1. **`AGENT-CORE` 區塊必須在 4 個檔之間逐字相同**（`.codex/agents/` 的 3 個 toml ＋ `AGENTS.md`）。重複是刻意的 —— prompt cache 只認逐字相同的前綴，跨 agent 不共用。改一個要改全部，`agent-lint` 檢查 1 會擋。
 2. **不要幫 orchestrator 補一個 `.codex/agents/bdd-orchestrator.toml`。** 它的指令屬於 `AGENTS.md`。有了 toml 它就會被當子代理 spawn 起來，而被 spawn 出來的 agent 拿不到 `agent` 工具 —— ② 到 ⑤ 全部委派不出去，症狀只是一句「工具不存在」。檢查 3 會擋。
@@ -689,18 +724,20 @@ npm run test:host                   # 打包的是 out/ 現有的東西，所以
 5. **`guidelines/` 底下加了新的 `*.md`，就要有 agent 提到那個檔名。** 規範走「檔名即路由鍵」，沒有映射表（映射表是第二份會走鐘的名冊）。代價是沒有讀者的規範檔**完全靜默** —— 沒有錯誤、沒有警告，只是它不生效，而團隊以為有人在守。檢查 8 會擋。
 6. **不要把任何使用者會想改的東西放進 `.codex/`、`.agents/` 或 `AGENTS.md`。** 那三處升級時會被覆蓋，放進去的設定會**靜默消失**。使用者的東西只有兩個落點：`guidelines/`（團隊規範）與 `sdlc.config.json`（每個 agent 的 model／effort）。這條沒有機械強制 —— 唯一的護欄是記得它。
 7. **hook 腳本的測試一律餵 Codex 真的送出來的 payload**（`run-tests.ps1` 的 `New-CodexHookPayload`）。舊測試自己捏了一個 Codex 從來不送的形狀，三支 gate 對真的 `apply_patch` 完全失明，而測試一路全綠。工具名稱（`apply_patch`／`Bash`／`spawn_agent`）與 payload 形狀是**觀測值，不是合約** —— Codex 升版時照 `docs/vscode-extension-plan.md` 記的方法重跑一次實測（假模型驅動 `exec` 與 `app-server`），不要只讀文件。
+8. **設定的合法值只改 schema 一處，再讓檢查 14 告訴你還有哪裡要跟。** `.codex/bdd-workflow/sdlc.config.schema.json`／`rules.schema.json` 是 `set`、VS Code 設定面板與編輯器補全讀的那一份；hook 與 lint 必須在 schema 不在時照跑，所以各留了一份常數（`sdlc.ps1` 的 `$KnownEfforts`／`$UpdateChecks`／`$GitHubSourcePattern`、`handoff-lint` 的修正輪範圍、`guideline-gate` 的 `$Severities`、`agent-lint` 自己的兩個），由檢查 14 綁在一起。effort 清單是**觀測值**（Codex 0.154 內建模型清單的 reasoning effort；Codex 本身不檢查這個值）—— Codex 升版時用 `strings` 查一次它的模型清單（`docs/settings-ux-plan.md` 的執行結果有方法）。
 
 **為什麼是這樣設計**（哪些事該有自己的 context、為什麼無狀態、v4 砍掉了什麼、砍掉的代價）見 `docs/design-rationale.md`。那份只給人看，執行期不讀。
 
 ### 還沒做完的事
 
-截至 v4.8.0。細節與證據在 `docs/vscode-extension-plan.md` 的「執行結果」。
+截至 v4.9.0。細節與證據在 `docs/vscode-extension-plan.md` 與 `docs/settings-ux-plan.md` 的「執行結果」。
 
 **要先做決定的**
 
 - **`send_input`／`resume_agent` 要不要也經過 `handoff-lint`。** 現在 matcher 只攔 `spawn_agent`；把修正交給已經存在的子代理不會被檢查，修正輪上限因此擋不到（見「審核最多修幾輪」）。要攔，就得先定義一次 `send_input` 什麼時候算一輪修正 —— 它也拿來追問、補資料，不能每一次都要求帶 `round`。
 - **extension 的 publisher ID。** 現在的 `codex-sdlc` 是佔位。上 Marketplace 之前要定案 —— 改 publisher 等於改 extension ID，已經裝過的人要重裝；repo 裡寫著這個 ID 的地方要一起改（`sdlc.ps1` 的 `$ExtensionId`、兩份 README 的移除指令、`test-host/suite.ts`、`test-sdlc.ps1` 的假 extensions.json）。
-- **找不到 `codex` 時狀態列要不要亮警示。** 現在不亮，只寫在說明裡（見「在 VS Code 裡」的已知限制）。亮的話，只用 Codex 擴充、沒裝 CLI 的人會一直看到警示；不亮的代價是「hooks 沒信任」這個最靜默的失效，在那台機器上也看不到。
+- **找不到 `codex` 時狀態列要不要亮警示。** 現在狀態列不亮，設定面板那一行是黃的（見「在 VS Code 裡」的已知限制）。亮的話，只用 Codex 擴充、沒裝 CLI 的人會一直看到警示；不亮的代價是不開面板的人看不到「hooks 沒信任」這個最靜默的失效。
+- **網頁式設定頁（`docs/settings-ux-plan.md` 的 S5）。** 照計畫的判準：側邊欄上線之後回饋仍然是「不好設定」，或要設定的人不是開發者，才做。
 
 **計畫裡延後的**
 
@@ -709,7 +746,10 @@ npm run test:host                   # 打包的是 out/ 現有的東西，所以
 
 **做了、但沒在真實環境驗過的**
 
-- VS Code 工作區信任 → extension 啟動這條路（host 測試用了 `--disable-workspace-trust`）；選單裡的互動流程（調校、修正輪上限、tune、whatsnew、立即檢查更新）只有底層邏輯有自動測試；「工作流太舊」的提示。
+- VS Code 工作區信任 → extension 啟動這條路（host 測試用了 `--disable-workspace-trust`）；「工作流太舊」的提示。
+- 設定面板裡要人點的那一段：選值的彈出框、換預設組合與關閉機械層的確認框、選檔對話框、tune 的勾選清單。host 測試驗的是它們後面那一條路（`set` 寫入 → 標未套用 → 一次套用 → CodeLens 採用），畫面本身沒有自動測試。
+- 設定面板在「沒有工作流的資料夾」與受限模式下不出現：靠 `when: codexSdlc.active`，只驗了「有工作流時會出現」。
+- 「在終端機開 Codex 信任 hooks」：沒有在真的（登入的）Codex 上試過。
 - macOS／Linux、Cursor／Windsurf／VSCodium、沒有 pwsh 或只有 Windows PowerShell 5.1 的機器、非繁中語系的 Windows（hook 的編碼問題是在 cp950 上查到並驗證修正的）。
 - OpenAI VS Code 擴充：內附 `codex` 的位置、它有沒有「Hooks need review」審核畫面。
 - `doctor` 問 Codex 信任狀態只在未登入的 Codex home 驗過；登入後 app-server 的啟動行為沒驗（15 秒沒回應就只說「無法確認」）。
@@ -718,6 +758,18 @@ npm run test:host                   # 打包的是 out/ 現有的東西，所以
 
 - 兩支會阻斷的 hook 同時命中時，Codex 合併後的回饋偶爾有一兩個字亂碼（約十二次一次，隔離環境重現不出來）。
 - **更新檢查目前在每個專案上都查不到東西。** `bdd-workflow-version.json` 的 `source` 還是空的，`install` 寫進每個專案的 `update.source` 也就是空的（extension 的背景檢查一樣）。而且 `update` 不會替已經裝好的專案補這個值 —— 填好之後只有新裝的專案拿得到，舊的要自己改 `sdlc.config.json`，或讓 `update` 補空值（還沒做）。
+
+### 從 v4.8 升上來
+
+**非破壞性** —— 流程六步、產物路徑、handoff 合約、hooks 都沒動（不必重新信任）。升級動作：跑 `update`。這一版改的是「改設定」這件事：
+
+- **新的入口 `sdlc.ps1 set`**（見「每個 agent 用哪個模型」）：先依 schema 驗完才寫，`-Apply` 一次套用，`-Preset` 裝完也能換組合。`tune -ApplyProposal` 改成套用**存下來的那份**提議（不重算），可以 `-Only` 只套幾個。
+- **設定檔有了 `$schema`**：`update` 會替你的 `sdlc.config.json` 補上第一行，編輯器從此有補全與錯字波浪線（VS Code 不裝 extension 也有）。`guidelines/rules.json` 在你那半，升級不碰 —— 想要同樣的提示，自己在第一個 key 前加一行 `"$schema": "../.codex/bdd-workflow/rules.schema.json",`。
+- **effort 的合法值換成 Codex 0.154 模型清單裡的值**：多了 `xhigh`、`max`、`ultra`，拿掉 `minimal`（沒有任何一個模型支援它）。設定檔裡還有 `minimal` 的話，`apply` 會警告 —— 用 `set` 改成別的值。
+- **`sdlc.config.json` 不支援註解**（以前就會被 `update` 靜默吃掉，現在講明）。有註解時 `update` 先把原檔備份到 `bdd-docs/.sdlc/backup-4.8.0/` 再警告；把說明搬進 `_note`。
+- 新裝的設定檔不再寫 `update.channel`（從來沒有人讀它；舊檔留著不影響）。`update.check` 打錯字（例如 `nevr`）現在 `doctor` 會紅、`check-update` 會講 —— 以前是靜默地照 `daily` 算。
+- VS Code extension 換成這一版附的 vsix：活動列多了設定面板、`sdlc.config.json` 上方有「套用」與 tune 建議、`rules.json` 存檔即驗、第一次啟動會打開四步引導。它**需要專案的工作流也是 4.9.0** 才能改設定；還在 4.8 的專案照樣有狀態列，面板只顯示。
+- `guideline-gate -Validate -Json` 多了 `rule_problems`（第幾條、哪個欄位）；`problems` 還在。
 
 ### 從 v4.7 升上來
 

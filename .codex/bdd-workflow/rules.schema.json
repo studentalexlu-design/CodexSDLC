@@ -1,0 +1,65 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "guidelines/rules.json",
+  "description": "團隊規範裡「機器判得出對錯」的那一半。guideline-gate 在每次寫檔後用這些規則掃剛寫出去的檔。這份 schema 只管形狀；regex 能不能編譯由 guideline-gate -Validate 判（VS Code extension 存檔時會替你跑）。",
+  "x-codex-sdlc": "severity 的合法值跟 guideline-gate.ps1 的 $Severities 一致，由 agent-lint 檢查 14 守。",
+  "type": "object",
+  "required": ["rules"],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "讓編輯器找到這份 schema。"
+    },
+    "note": {
+      "type": "string",
+      "description": "給人看的說明。"
+    },
+    "rules": {
+      "type": "array",
+      "description": "規則清單。一條寫壞只會讓那一條失效，其餘照常。",
+      "items": { "$ref": "#/definitions/rule" }
+    }
+  },
+  "definitions": {
+    "rule": {
+      "type": "object",
+      "required": ["id", "pattern"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "規則代號。命中時訊息裡會帶它，Problems 面板也用它標示。"
+        },
+        "applies-to": {
+          "type": "array",
+          "description": "要掃哪些檔（glob，例如 **/*.sql）。省略 = 所有未被排除的檔。",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "pattern": {
+          "type": "string",
+          "minLength": 1,
+          "description": ".NET regex。命中一行就算違規。(?i) 開頭 = 不分大小寫。"
+        },
+        "severity": {
+          "enum": ["block", "warn"],
+          "enumDescriptions": [
+            "擋下那次寫檔 —— 要明確寫出來",
+            "只提醒，不擋（省略時的預設）"
+          ],
+          "default": "warn",
+          "description": "命中時要不要擋。"
+        },
+        "message": {
+          "type": "string",
+          "description": "命中時告訴 agent 哪裡不對。"
+        },
+        "fix": {
+          "type": "string",
+          "description": "告訴 agent 怎麼改。"
+        }
+      },
+      "additionalProperties": false,
+      "x-why-closed": "guideline-gate 會略過不認得的 key。把 severity 拼成 severty 的規則會靜默地變成 warn —— 該擋的沒擋。"
+    }
+  }
+}

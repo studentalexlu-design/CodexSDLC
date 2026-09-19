@@ -24,7 +24,7 @@ function New-SdlcFile([string]$path, [string]$content) {
 # 缺席時要能安靜跳過（消費端若只複製了部分目錄，不該整支腳本炸掉）。
 function New-SdlcRelease {
     param([string]$Name, [string]$Version = '4.6.0', [string[]]$Agents = @('sa-analyst'), [string[]]$Extra = @(),
-          [string]$SourceUrl = '', [string]$AgentBody = '', [switch]$WithVsix, [switch]$WithHooks)
+          [string]$SourceUrl = '', [string]$AgentBody = '', [switch]$WithVsix, [switch]$WithHooks, [switch]$WithSchema)
     $root = Join-Path $SdlcRoot $Name
     Remove-Item $root -Recurse -Force -ErrorAction SilentlyContinue
     New-SdlcFile (Join-Path $root '.codex/bdd-workflow/bdd-workflow-version.json') `
@@ -45,6 +45,12 @@ $AgentBody
     foreach ($e in $Extra) { New-SdlcFile (Join-Path $root $e) "# $e`n" }
     if ($WithVsix)  { New-SdlcFile (Join-Path $root "editor/codex-sdlc-$Version.vsix") 'not really a vsix' }
     if ($WithHooks) { New-SdlcFile (Join-Path $root '.codex/hooks.json') '{ "hooks": {} }' }
+    # set 靠 schema 驗值、靠 tuning-profiles 換預設組合 —— 用真的那兩份，測的才是會出貨的合法值。
+    if ($WithSchema) {
+        foreach ($f in @('sdlc.config.schema.json', 'rules.schema.json', 'tuning-profiles.json')) {
+            Copy-Item ".codex/bdd-workflow/$f" (Join-Path $root ".codex/bdd-workflow/$f")
+        }
+    }
     return $root
 }
 
@@ -75,10 +81,10 @@ function Assert-Shape {
 $EnvelopeShape = @{ schema = 'int'; command = 'string'; exit = 'int'; data = 'any'; warnings = 'array'; output = 'array' }
 
 function Invoke-SdlcJson {
-    param([string]$Cmd, [hashtable]$Params = @{}, [hashtable]$Env = @{})
+    param([string]$Cmd, [hashtable]$Params = @{}, [hashtable]$Env = @{}, [string[]]$Rest = @())
     $p = @{ Command = $Cmd; Json = $true }
     foreach ($k in $Params.Keys) { $p[$k] = $Params[$k] }
-    $r = Invoke-Script $Sdlc -Params $p -Env $Env
+    $r = Invoke-Script $Sdlc -Params $p -Env $Env -Positional $Rest
     $j = $null
     try { $j = $r.stdout.Trim() | ConvertFrom-Json } catch { throw "-Json 輸出不是 JSON：$($r.stdout) / stderr: $($r.stderr)" }
     Assert-Shape $j $EnvelopeShape
@@ -95,10 +101,10 @@ function New-SdlcTarget([string]$Name) {
 }
 
 function Invoke-Sdlc {
-    param([string]$Cmd, [hashtable]$Params = @{})
+    param([string]$Cmd, [hashtable]$Params = @{}, [string[]]$Rest = @())
     $p = @{ Command = $Cmd }
     foreach ($k in $Params.Keys) { $p[$k] = $Params[$k] }
-    return Invoke-Script $Sdlc -Params $p
+    return Invoke-Script $Sdlc -Params $p -Positional $Rest
 }
 
 function Get-Toml([string]$target, [string]$agent) {
@@ -154,11 +160,12 @@ Describe-Suite 'sdlc / 調校：inherit 必須真的留白' {
         } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
     }
 
-    It-Should '未知的 effort 值照寫但要喊（不擋在門口）' {
+    It-Should '未知的 effort 值照寫但要喊（手改的人不擋在門口；擋的是 set）' {
         $rel = New-SdlcRelease 'r-unknown'; $t = New-SdlcTarget 't-unknown'
         try {
             Invoke-Sdlc install @{ Source = $rel; Target = $t } | Out-Null
-            Set-SdlcEffort $t 'sa-analyst' 'ultra'
+            # minimal：4.8 以前的清單裡有，Codex 0.154 的模型清單裡沒有 —— 舊設定檔裡留著的人要聽到這一句。
+            Set-SdlcEffort $t 'sa-analyst' 'minimal'
             $r = Invoke-Sdlc apply @{ Target = $t }
             Assert-Equal 0 $r.exit '未知值不該讓 apply 失敗 —— 值域是 Codex 的，不是這支腳本的'
             Assert-Match '不在已知值' $r.stderr
@@ -793,6 +800,8 @@ Describe-Suite 'sdlc / VS Code extension（每台機器一份，不屬於任何�
             Assert-True (-not $j.data.editor.requested)
             Assert-True (-not (Test-Path $calls)) '沒有明確同意就動了使用者的編輯器'
             Assert-Match 'codex-sdlc-4\.6\.0\.vsix' ([string]$j.data.editor.vsix)
+            # 那一行排在「裝好了」後面；不明講沒裝，使用者會以為 extension 也裝好了。
+            Assert-Match '沒有裝' (@($j.output) -join "`n") '沒加 -WithEditor 卻沒說 extension 沒裝'
         } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
     }
 
@@ -835,7 +844,8 @@ Describe-Suite 'sdlc / VS Code extension（每台機器一份，不屬於任何�
     }
 
     It-Should 'doctor 用 extension 宣告的 -Json 形狀判斷相容，而且不算專案的問題' {
-        $rel = New-SdlcRelease 'r-e5'; $t = New-SdlcTarget 't-e5'
+        # 帶 hooks.json：這兩條量的是「編輯器那一層不該讓 doctor 紅」，缺工具檔是另一回事（它現在會紅，見「檔不在的時候」）。
+        $rel = New-SdlcRelease 'r-e5' -WithHooks; $t = New-SdlcTarget 't-e5'
         try {
             Invoke-Sdlc install @{ Source = $rel; Target = $t } | Out-Null
             $p = Get-IsolatedDoctorParams $t
@@ -845,6 +855,17 @@ Describe-Suite 'sdlc / VS Code extension（每台機器一份，不屬於任何�
             Assert-Equal '9.9.9' $x.version
             Assert-True (-not $x.compatible) '形狀對不上卻說相容'
             Assert-Equal 0 $j.exit '編輯器那一層不是這個專案的健康狀態，不該讓 doctor 紅'
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'doctor：這台機器沒裝 extension 也說一行，但不算問題' {
+        $rel = New-SdlcRelease 'r-e6' -WithHooks; $t = New-SdlcTarget 't-e6'
+        try {
+            Invoke-Sdlc install @{ Source = $rel; Target = $t } | Out-Null
+            $j = Invoke-SdlcJson doctor (Get-IsolatedDoctorParams $t)
+            Assert-Equal 0 @($j.data.editor.installed).Count
+            Assert-Match 'VS Code extension：這台機器沒裝' (@($j.output) -join "`n") '在 VS Code 裡找不到介面的人跑 doctor，卻沒人告訴他 extension 沒裝'
+            Assert-Equal 0 $j.exit '選用的東西沒裝，不該讓 doctor 紅'
         } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
     }
 }
@@ -915,6 +936,349 @@ Describe-Suite 'sdlc / 修正輪上限（review.maxRounds）' {
             Assert-Equal 3 $bad.data.review.maxRounds 'doctor 顯示的上限跟 hook 實際用的不一樣'
             Assert-Equal 'default' $bad.data.review.source
             Assert-Equal 2 $bad.exit
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+Describe-Suite 'sdlc / schema：編輯器與 set 的單一來源' {
+
+    It-Should 'install 寫出 $schema（放第一個），不再寫沒人讀的 update.channel' {
+        $rel = New-SdlcRelease 'r-sc1' -WithSchema; $t = New-SdlcTarget 't-sc1'
+        try {
+            Invoke-Sdlc install @{ Source = $rel; Target = $t } | Out-Null
+            $cfg = Get-Content (Join-Path $t 'sdlc.config.json') -Raw | ConvertFrom-Json
+            Assert-Equal '$schema' @($cfg.PSObject.Properties.Name)[0] '編輯器只看 $schema；放第一個是給人看的'
+            Assert-Equal './.codex/bdd-workflow/sdlc.config.schema.json' $cfg.'$schema'
+            Assert-True (Test-Path (Join-Path $t '.codex/bdd-workflow/sdlc.config.schema.json')) '$schema 指向的檔沒有被裝進去 —— 編輯器找不到它，也不會說'
+            Assert-True (-not $cfg.update.PSObject.Properties['channel']) 'update.channel 沒有任何一方讀，新裝的不該再寫'
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'update 替舊設定檔補上 $schema，其餘值一個字不動' {
+        $r1 = New-SdlcRelease 'r1-sc2' -Version '4.8.0'; $t = New-SdlcTarget 't-sc2'
+        try {
+            Invoke-Sdlc install @{ Source = $r1; Target = $t } | Out-Null
+            # 4.8 的設定檔長這樣：沒有 $schema，有 channel。
+            $p = Join-Path $t 'sdlc.config.json'
+            $old = Get-Content $p -Raw | ConvertFrom-Json
+            $old.PSObject.Properties.Remove('$schema')
+            $old.update | Add-Member -NotePropertyName channel -NotePropertyValue 'stable' -Force
+            $old.agents.'sa-analyst'.effort = 'low'
+            [IO.File]::WriteAllText($p, ($old | ConvertTo-Json -Depth 8), $Utf8)
+
+            $r2 = New-SdlcRelease 'r2-sc2' -Version '4.9.0' -WithSchema
+            $j = Invoke-SdlcJson update @{ Source = $r2; Target = $t; Yes = $true }
+            Assert-True $j.data.schemaAdded
+            $cfg = Get-Content $p -Raw | ConvertFrom-Json
+            Assert-Equal '$schema' @($cfg.PSObject.Properties.Name)[0]
+            Assert-Equal 'low' $cfg.agents.'sa-analyst'.effort '升級動到了使用者的值'
+            Assert-Equal 'stable' $cfg.update.channel '升級不刪使用者檔裡的 key（棄用的也一樣）'
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'update 遇到有註解的設定檔：先備份原檔、再說一聲' {
+        $r1 = New-SdlcRelease 'r1-sc3' -Version '4.8.0'; $t = New-SdlcTarget 't-sc3'
+        try {
+            Invoke-Sdlc install @{ Source = $r1; Target = $t } | Out-Null
+            $p = Join-Path $t 'sdlc.config.json'
+            $text = [IO.File]::ReadAllText($p) -replace '^\{', "{`n  // 團隊約定：reviewer 固定 high"
+            [IO.File]::WriteAllText($p, $text, $Utf8)
+            $r2 = New-SdlcRelease 'r2-sc3' -Version '4.9.0' -WithSchema
+            $j = Invoke-SdlcJson update @{ Source = $r2; Target = $t; Yes = $true }
+            Assert-True ($null -ne $j.data.configCommentsBackup) '註解被吃掉卻沒有備份'
+            Assert-Match '團隊約定' ([IO.File]::ReadAllText((Join-Path $t $j.data.configCommentsBackup))) '備份的不是原檔'
+            Assert-Match '註解' ($j.warnings -join "`n") '註解被吃掉卻沒說'
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'check-update：update.check 打錯字要講（照 daily 算，會連網）' {
+        $rel = New-SdlcRelease 'r-sc4'; $t = New-SdlcTarget 't-sc4'
+        try {
+            Invoke-Sdlc install @{ Source = $rel; Target = $t } | Out-Null
+            $p = Join-Path $t 'sdlc.config.json'
+            $cfg = Get-Content $p -Raw | ConvertFrom-Json
+            $cfg.update.check = 'nevr'
+            [IO.File]::WriteAllText($p, ($cfg | ConvertTo-Json -Depth 8), $Utf8)
+            $j = Invoke-SdlcJson check-update @{ Target = $t }
+            Assert-Match 'nevr' ($j.warnings -join "`n") '以為關掉了其實照樣連網，卻沒有人說'
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'doctor 回報設定檔裡有沒有註解（不算問題）' {
+        $rel = New-SdlcRelease 'r-sc5' -WithSchema; $t = New-SdlcTarget 't-sc5'
+        try {
+            Invoke-Sdlc install @{ Source = $rel; Target = $t } | Out-Null
+            $p = Join-Path $t 'sdlc.config.json'
+            $j0 = Invoke-SdlcJson doctor (Get-IsolatedDoctorParams $t)
+            Assert-True (-not $j0.data.config.comments)
+            Assert-True $j0.data.config.schemaRef
+            [IO.File]::WriteAllText($p, ([IO.File]::ReadAllText($p) -replace '^\{', '{ /* note */'), $Utf8)
+            $j = Invoke-SdlcJson doctor (Get-IsolatedDoctorParams $t)
+            Assert-True $j.data.config.comments
+            Assert-Equal $j0.data.problems $j.data.problems '註解本身不是問題，不該讓 doctor 多紅一項'
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+Describe-Suite 'sdlc / set：改設定的單一入口（先驗完才寫）' {
+
+    function New-SetTarget([string]$name) {
+        $rel = New-SdlcRelease "r-$name" -Agents @('sa-analyst', 'implementer', 'reviewer') -WithSchema
+        $t = New-SdlcTarget "t-$name"
+        Invoke-Sdlc install @{ Source = $rel; Target = $t } | Out-Null
+        return $t
+    }
+    function Get-ConfigText([string]$t) { [IO.File]::ReadAllText((Join-Path $t 'sdlc.config.json')) }
+    function Get-Config([string]$t) { Get-ConfigText $t | ConvertFrom-Json }
+
+    It-Should '一組錯、一組對 → 檔案位元組不變，錯的那組附上建議' {
+        $t = New-SetTarget 's1'
+        try {
+            $before = Get-ConfigText $t
+            $j = Invoke-SdlcJson set @{ Target = $t } -Rest @('review.maxRounds=4', 'agents.reviewer.effort=hgih')
+            Assert-Equal 2 $j.exit
+            Assert-Equal 'invalid' $j.data.error
+            Assert-Equal $before (Get-ConfigText $t) '有一組不合法卻寫了另一組 —— 使用者會以為兩個都沒生效，其實一半生效了'
+            $e = @($j.data.errors)[0]
+            Assert-Equal 'agents.reviewer.effort' $e.key
+            Assert-Equal 'agents.reviewer.effort=high' $e.suggestion
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '打錯 key、打錯 agent 名、大小寫不對 → 不寫，提示最接近的那個' {
+        $t = New-SetTarget 's2'
+        try {
+            $j = Invoke-SdlcJson set @{ Target = $t } -Rest @('review.maxRound=4', 'agents.reveiwer.effort=high', 'Review.maxRounds=2')
+            Assert-Equal 2 $j.exit
+            $byKey = @{}; foreach ($e in @($j.data.errors)) { $byKey[$e.key] = $e }
+            Assert-Equal 'review.maxRounds' $byKey['review.maxRound'].suggestion '打錯的 key 會被寫成一個沒有人讀的設定'
+            Assert-Equal 'agents.reviewer.effort' $byKey['agents.reveiwer.effort'].suggestion
+            Assert-True ($byKey.ContainsKey('Review.maxRounds')) '大小寫不同的 key 在 JSON 裡是另一個 key，不能照收'
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '範圍外、型別錯、格式錯、已棄用、由工具維護的 key → 一律擋' {
+        $t = New-SetTarget 's3'
+        try {
+            foreach ($bad in @('review.maxRounds=6', 'review.maxRounds=three', 'update.source=https://gitlab.com/o/r',
+                               'update.check=weekly', 'update.channel=beta', 'workflow-version=9.9.9', 'agents.reviewer.model=gpt 5',
+                               'agents.reviewer.effort=minimal')) {
+                $j = Invoke-SdlcJson set @{ Target = $t } -Rest @($bad)
+                Assert-Equal 2 $j.exit "$bad 竟然被收了"
+            }
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '合法的值：寫進去、整數存成整數、-Apply 只套用一次，每一項說清楚要不要 apply' {
+        $t = New-SetTarget 's4'
+        try {
+            $j = Invoke-SdlcJson set @{ Target = $t; Apply = $true } -Rest @('agents.reviewer.effort=high', 'agents.sa-analyst.effort=low', 'review.maxRounds=4', 'update.source=https://github.com/o/r')
+            Assert-Equal 0 $j.exit "warnings: $($j.warnings -join ' | ')"
+            Assert-Shape $j.data @{ changes = 'array'; errors = 'array'; written = 'bool'; applied = 'bool'; preview = 'bool'; backup = 'string?' }
+            Assert-True $j.data.written
+            Assert-True $j.data.applied
+            Assert-Equal 2 @($j.data.changed).Count 'apply 應該在同一次呼叫裡把兩個 agent 一起套掉'
+            $cfg = Get-Config $t
+            Assert-True ($cfg.review.maxRounds -is [long] -or $cfg.review.maxRounds -is [int]) 'review.maxRounds 被寫成字串 —— handoff-lint 不採用，設定等於沒生效'
+            Assert-Equal 4 $cfg.review.maxRounds
+            Assert-Match 'model_reasoning_effort = "high"' (Get-Toml $t 'reviewer')
+            $c = @($j.data.changes | Where-Object key -eq 'review.maxRounds')[0]
+            Assert-True (-not $c.needsApply) '修正輪是 hook 現讀的，不該叫人 apply'
+            $a = @($j.data.changes | Where-Object key -eq 'agents.reviewer.effort')[0]
+            Assert-True $a.needsApply
+            $dj = Invoke-SdlcJson doctor (Get-IsolatedDoctorParams $t)
+            Assert-Equal 'in-sync' $dj.data.tuning.status 'set -Apply 之後調校區塊應該跟設定檔一致'
+            # 網址裡的 // 不是註解：來源設好之後，下一次 set 不該被當成「有註解」擋下來。
+            Assert-True (-not $dj.data.config.comments) '把 update.source 網址裡的 // 當成註解了'
+            Assert-Equal 0 (Invoke-SdlcJson set @{ Target = $t } -Rest @('update.check=never')).exit '來源設成網址之後，set 就再也寫不進去了'
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '值跟現在一樣 → 不寫檔；沒加 -Apply → 留在未套用狀態' {
+        $t = New-SetTarget 's5'
+        try {
+            $before = Get-ConfigText $t
+            $j = Invoke-SdlcJson set @{ Target = $t } -Rest @('review.maxRounds=3')
+            Assert-Equal 0 $j.exit
+            Assert-True (-not $j.data.written)
+            Assert-Equal $before (Get-ConfigText $t)
+            $j2 = Invoke-SdlcJson set @{ Target = $t } -Rest @('agents.implementer.effort=medium')
+            Assert-True $j2.data.written
+            Assert-True (-not $j2.data.applied)
+            Assert-Equal 'stale' (Invoke-SdlcJson doctor (Get-IsolatedDoctorParams $t)).data.tuning.status '沒 apply 就該是漂移狀態 —— 設定面板靠這個標「未套用」'
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '設定檔有註解：沒同意就不寫；-Yes 先備份再寫' {
+        $t = New-SetTarget 's6'
+        try {
+            $p = Join-Path $t 'sdlc.config.json'
+            [IO.File]::WriteAllText($p, ((Get-ConfigText $t) -replace '^\{', "{`n  // 我們的約定"), $Utf8)
+            $before = Get-ConfigText $t
+            $j = Invoke-SdlcJson set @{ Target = $t } -Rest @('update.check=never')
+            Assert-Equal 2 $j.exit
+            Assert-Equal 'has-comments' $j.data.error
+            Assert-Equal $before (Get-ConfigText $t) '沒同意就把註解吃掉了'
+            $j2 = Invoke-SdlcJson set @{ Target = $t; Yes = $true } -Rest @('update.check=never')
+            Assert-Equal 0 $j2.exit
+            Assert-Match '我們的約定' ([IO.File]::ReadAllText((Join-Path $t $j2.data.backup)))
+            Assert-Equal 'never' (Get-Config $t).update.check
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '-Preset -Preview 只列差異不寫；-Preset -Yes 才寫；後面指定的值蓋過預設組合' {
+        $t = New-SetTarget 's7'
+        try {
+            $before = Get-ConfigText $t
+            $pv = Invoke-SdlcJson set @{ Target = $t; Preset = 'deep'; Preview = $true }
+            Assert-Equal 0 $pv.exit
+            Assert-True $pv.data.preview
+            Assert-Equal $before (Get-ConfigText $t) '預覽寫了檔'
+            Assert-True (@($pv.data.changes | Where-Object { $_.changed }).Count -gt 0)
+            $no = Invoke-SdlcJson set @{ Target = $t; Preset = 'deep' }
+            Assert-Equal 2 $no.exit '非互動又沒有 -Yes，一次換掉一整組不該默默發生'
+            Assert-Equal $before (Get-ConfigText $t)
+            $ok = Invoke-SdlcJson set @{ Target = $t; Preset = 'deep'; Yes = $true; Apply = $true } -Rest @('agents.reviewer.effort=xhigh')
+            Assert-Equal 0 $ok.exit
+            $cfg = Get-Config $t
+            Assert-Equal 'medium' $cfg.agents.'sa-analyst'.effort
+            Assert-Equal 'xhigh' $cfg.agents.reviewer.effort '個別指定的值應該蓋過預設組合'
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'schema 不在 → 一個字都不寫（驗不了就不寫）' {
+        $t = New-SetTarget 's8'
+        try {
+            Remove-Item (Join-Path $t '.codex/bdd-workflow/sdlc.config.schema.json')
+            $before = Get-ConfigText $t
+            $j = Invoke-SdlcJson set @{ Target = $t } -Rest @('review.maxRounds=4')
+            Assert-Equal 2 $j.exit
+            Assert-Equal 'schema-unreadable' $j.data.error
+            Assert-Equal $before (Get-ConfigText $t)
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'tune -ApplyProposal 套的是存下來的那一份，不重算；-Only 只套指定的 agent' {
+        $t = New-SetTarget 's9'
+        try {
+            Assert-Equal 'no-proposal' (Invoke-SdlcJson tune @{ Target = $t; ApplyProposal = $true }).data.error '沒看過提議就套用，不該默默重算一份'
+            Invoke-SdlcJson tune @{ Target = $t } | Out-Null
+            # 模擬「看提議與按套用之間 repo 變了」：重算會得到別的值，存下來的那份才是使用者看到的。
+            $pp = Join-Path $t 'bdd-docs/.sdlc/tuning-proposal.json'
+            $stored = Get-Content $pp -Raw | ConvertFrom-Json
+            foreach ($i in $stored.proposal) { if ($i.agent -eq 'implementer') { $i.effort = 'max' } }
+            [IO.File]::WriteAllText($pp, ($stored | ConvertTo-Json -Depth 8), $Utf8)
+
+            $only = Invoke-SdlcJson tune @{ Target = $t; ApplyProposal = $true; Only = 'reviewer' }
+            Assert-Equal 0 $only.exit "warnings: $($only.warnings -join ' | ')"
+            $cfg = Get-Config $t
+            Assert-Equal 'high' $cfg.agents.reviewer.effort
+            Assert-Equal 'inherit' $cfg.agents.implementer.effort '-Only reviewer 卻動到了 implementer'
+            Assert-Equal 1 @($only.data.proposal).Count
+
+            $all = Invoke-SdlcJson tune @{ Target = $t; ApplyProposal = $true }
+            Assert-Equal 0 $all.exit
+            Assert-True $all.data.applied
+            Assert-Equal 'max' (Get-Config $t).agents.implementer.effort '套的不是存下來的那份 —— 畫面上看到的跟寫進去的不一樣'
+
+            Assert-Equal 'unknown-agent' (Invoke-SdlcJson tune @{ Target = $t; ApplyProposal = $true; Only = 'reveiwer' }).data.error
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+Describe-Suite 'sdlc / 檔不在的時候：哪一個該吵、哪一個給預設' {
+
+    function New-DefaultsTarget([string]$name) {
+        $rel = New-SdlcRelease "r-$name" -Agents @('sa-analyst', 'implementer', 'reviewer') -WithSchema -WithHooks
+        $t = New-SdlcTarget "t-$name"
+        Invoke-Sdlc install @{ Source = $rel; Target = $t } | Out-Null
+        return $t
+    }
+
+    It-Should 'hooks.json 不在 → doctor 算問題並說怎麼補（整層強制沒了，症狀是零）' {
+        $t = New-DefaultsTarget 'd1'
+        try {
+            Assert-True (Test-Path (Join-Path $t '.codex/hooks.json')) '這份發佈物沒有 hooks.json，這個案例就沒在驗它'
+            $before = Invoke-SdlcJson doctor (Get-IsolatedDoctorParams $t)
+            Assert-Equal 0 $before.data.problems "刪之前就已經有問題了，這個案例量不到 hooks.json 的那一項：$($before.warnings -join ' | ')"
+            Remove-Item (Join-Path $t '.codex/hooks.json')
+            $j = Invoke-SdlcJson doctor (Get-IsolatedDoctorParams $t)
+            Assert-Equal 'no-hooks' $j.data.hooks.status
+            Assert-Equal 2 $j.exit 'hooks.json 不在卻說這個專案是健康的 —— 四支 hook 一支都不會跑'
+            Assert-True ($j.data.problems -ge 1)
+            Assert-Match 'hooks.json' ($j.warnings -join "`n")
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '沒有 sdlc.config.json：doctor 說這是合法狀態，不算問題（＝全部 inherit）' {
+        $t = New-DefaultsTarget 'd2'
+        try {
+            Remove-Item (Join-Path $t 'sdlc.config.json')
+            $j = Invoke-SdlcJson doctor (Get-IsolatedDoctorParams $t)
+            Assert-Equal 'no-config' $j.data.tuning.status
+            Assert-True (-not $j.data.config.exists)
+            Assert-Equal 0 $j.data.problems '沒有設定檔是合法狀態，不該紅'
+            Assert-Equal 3 $j.data.review.maxRounds
+            Assert-Equal 'default' $j.data.review.source
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '沒有設定檔時 set 替你建一份預設的，再寫你要的值（不叫你去跑 install）' {
+        $t = New-DefaultsTarget 'd3'
+        try {
+            Remove-Item (Join-Path $t 'sdlc.config.json')
+            $j = Invoke-SdlcJson set @{ Target = $t; Apply = $true } -Rest @('agents.reviewer.effort=high')
+            Assert-Equal 0 $j.exit "warnings: $($j.warnings -join ' | ')"
+            Assert-True $j.data.configCreated
+            Assert-True $j.data.written
+            $cfg = Get-Content (Join-Path $t 'sdlc.config.json') -Raw | ConvertFrom-Json
+            Assert-Equal '$schema' @($cfg.PSObject.Properties.Name)[0] '建出來的檔要跟 install 建的一樣'
+            Assert-Equal 3 $cfg.review.maxRounds '建檔本身不該改變任何行為 —— 修正輪還是預設 3'
+            Assert-Equal 'high' $cfg.agents.reviewer.effort
+            Assert-Equal 'inherit' $cfg.agents.'sa-analyst'.effort '其他 agent 要留在 inherit'
+            Assert-Match 'model_reasoning_effort = "high"' (Get-Toml $t 'reviewer')
+            Assert-Equal 'in-sync' (Invoke-SdlcJson doctor (Get-IsolatedDoctorParams $t)).data.tuning.status
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '沒有設定檔時 -Preview 不建檔（預覽不留痕跡）' {
+        $t = New-DefaultsTarget 'd4'
+        try {
+            Remove-Item (Join-Path $t 'sdlc.config.json')
+            $j = Invoke-SdlcJson set @{ Target = $t; Preset = 'deep'; Preview = $true }
+            Assert-Equal 0 $j.exit
+            Assert-True (-not $j.data.configCreated)
+            Assert-True (-not (Test-Path (Join-Path $t 'sdlc.config.json'))) '預覽建了檔'
+            Assert-True (@($j.data.changes | Where-Object { $_.changed }).Count -gt 0)
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '沒裝工作流的資料夾 → set 不建檔，說「先跑 install」' {
+        $t = New-SdlcTarget 't-d5'
+        try {
+            $j = Invoke-SdlcJson set @{ Target = $t } -Rest @('review.maxRounds=4')
+            Assert-Equal 2 $j.exit
+            Assert-Equal 'not-installed' $j.data.error
+            Assert-True (-not (Test-Path (Join-Path $t 'sdlc.config.json'))) '在一個沒裝工作流的資料夾裡建了設定檔'
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '沒有設定檔時 apply 與 tune 指向 set，不指向 install（專案已經裝好了）' {
+        $t = New-DefaultsTarget 'd6'
+        try {
+            Remove-Item (Join-Path $t 'sdlc.config.json')
+            $a = Invoke-SdlcJson apply @{ Target = $t }
+            Assert-Equal 'no-config' $a.data.error
+            Assert-Match 'set ' ($a.warnings -join "`n") 'apply 沒告訴他下一步該用什麼'
+            $tu = Invoke-SdlcJson tune @{ Target = $t }
+            Assert-Equal 0 $tu.exit "沒有設定檔照樣要能給建議；warnings: $($tu.warnings -join ' | ')"
+            Assert-True (@($tu.data.proposal).Count -gt 0)
+            Assert-Equal 'inherit' @($tu.data.proposal)[0].current '沒有設定檔時現值一律是 inherit'
+            # 套用建議時才建檔
+            $ap = Invoke-SdlcJson tune @{ Target = $t; ApplyProposal = $true; Only = 'reviewer' }
+            Assert-Equal 0 $ap.exit "warnings: $($ap.warnings -join ' | ')"
+            Assert-True $ap.data.configCreated
+            Assert-Equal 'high' (Get-Content (Join-Path $t 'sdlc.config.json') -Raw | ConvertFrom-Json).agents.reviewer.effort
         } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
     }
 }

@@ -59,3 +59,46 @@ const envelope = (command, data, extra = {}) => JSON.stringify({ schema: contrac
     strict_1.default.equal((0, contract_1.compareVersions)('4.10.0', contract_1.MIN_WORKFLOW_VERSION), 1, '字串比的話 4.10 會小於 4.8');
     strict_1.default.equal((0, contract_1.compareVersions)('5.0', '4.99.99'), 1);
 });
+(0, node_test_1.test)('4.8 的 doctor（沒有 config.comments／schemaRef）照樣讀得懂，讀成 false', () => {
+    const d = (0, contract_1.parseDoctor)((0, contract_1.parseEnvelope)(envelope('doctor', (0, fixtures_1.doctorFixture)()), 'doctor'));
+    strict_1.default.equal(d.config.comments, false);
+    strict_1.default.equal(d.config.schemaRef, false);
+    const data = (0, fixtures_1.doctorFixture)();
+    data.config = { exists: true, parsable: true, comments: true, schemaRef: true };
+    strict_1.default.equal((0, contract_1.parseDoctor)((0, contract_1.parseEnvelope)(envelope('doctor', data), 'doctor')).config.comments, true);
+    data.config.comments = 'yes';
+    strict_1.default.throws(() => (0, contract_1.parseDoctor)((0, contract_1.parseEnvelope)(envelope('doctor', data), 'doctor')), /config\.comments/);
+});
+(0, node_test_1.test)('set 的結果：變更、錯誤、有沒有寫、有沒有套用；整數值讀成字串給畫面用', () => {
+    const ok = (0, contract_1.parseSet)((0, contract_1.parseEnvelope)(envelope('set', {
+        changes: [
+            { key: 'review.maxRounds', from: 3, to: 4, changed: true, needsApply: false },
+            { key: 'agents.reviewer.effort', from: null, to: 'high', changed: true, needsApply: true },
+        ],
+        errors: [], written: true, applied: false, preview: false, backup: null,
+    }), 'set'));
+    strict_1.default.equal(ok.error, null);
+    strict_1.default.deepEqual(ok.changes.map((c) => [c.from, c.to]), [['3', '4'], [null, 'high']]);
+    strict_1.default.equal(ok.written, true);
+    const bad = (0, contract_1.parseSet)((0, contract_1.parseEnvelope)(envelope('set', {
+        error: 'invalid', changes: [], written: false, applied: false, preview: false, backup: null,
+        errors: [{ key: 'agents.reviewer.effort', value: 'hgih', message: '不是合法值', suggestion: 'agents.reviewer.effort=high' }],
+    }, { exit: 2 }), 'set'));
+    strict_1.default.equal(bad.error, 'invalid');
+    strict_1.default.equal(bad.errors[0].suggestion, 'agents.reviewer.effort=high');
+    // 在讀設定檔之前就停下來的錯誤沒有 changes／errors —— 不該因此解析失敗。
+    const early = (0, contract_1.parseSet)((0, contract_1.parseEnvelope)(envelope('set', { error: 'schema-unreadable' }, { exit: 2 }), 'set'));
+    strict_1.default.equal(early.error, 'schema-unreadable');
+    strict_1.default.deepEqual(early.changes, []);
+    strict_1.default.throws(() => (0, contract_1.parseSet)((0, contract_1.parseEnvelope)(envelope('set', { changes: [{ key: 'x', from: true, to: 'y', changed: true, needsApply: false }] }), 'set')), /from/);
+});
+(0, node_test_1.test)('rules.json 的驗證結果：新版帶「第幾條、哪個欄位」；舊版只有句子 → 一律當檔案層級（不從句子裡猜）', () => {
+    const v = (0, contract_1.parseRulesValidation)(JSON.stringify({
+        passed: false, rules_file: 'guidelines/rules.json', exists: true, rule_count: 1, block_count: 0,
+        problems: ['b: severity 必須是 block 或 warn'],
+        rule_problems: [{ index: 2, id: 'b', field: 'severity', message: 'b: severity 必須是 block 或 warn' }],
+    }));
+    strict_1.default.deepEqual(v.ruleProblems[0], { index: 2, id: 'b', field: 'severity', message: 'b: severity 必須是 block 或 warn' });
+    const old = (0, contract_1.parseRulesValidation)(JSON.stringify({ passed: false, rules_file: 'r', exists: true, rule_count: 1, block_count: 0, problems: ['b: 缺 pattern'] }));
+    strict_1.default.deepEqual(old.ruleProblems, [{ index: null, id: null, field: null, message: 'b: 缺 pattern' }]);
+});

@@ -3,7 +3,8 @@
 // 這一層不判斷任何規則：哪些檔要掃、哪一行算違規，全部是 guideline-gate／dlp-gate 說了算。
 // extension 自己判規則的那一天，就是兩份實作開始分岔、而沒有人知道的那一天。
 
-import type { DlpGateResult, GuidelineGateResult } from './contract';
+import { ruleLine } from './config';
+import type { DlpGateResult, GuidelineGateResult, RulesValidation } from './contract';
 
 export interface DiagnosticRecord {
   file: string;          // 相對專案根、正斜線 —— gate 回的就是這個形狀
@@ -71,4 +72,23 @@ export function groupByFile(outcome: ScanOutcome, requested: string[]): Map<stri
     map.set(r.file, list);
   }
   return map;
+}
+
+// rules.json 自己的問題（guideline-gate -Validate -Json）→ Problems。
+// 對錯全由 gate 判；這裡只負責把「第幾條、哪個欄位」放到那一行。找不到位置就放第一行 —— 不丟掉。
+export const RULES_REL = 'guidelines/rules.json';
+
+export function rulesOutcome(v: RulesValidation, text: string): ScanOutcome {
+  const records = v.ruleProblems.map<DiagnosticRecord>((p) => {
+    const at = p.index !== null ? ruleLine(text, p.index, p.field) : undefined;
+    return {
+      file: RULES_REL,
+      line: (at ?? 0) + 1,
+      severity: 'error',
+      message: p.index !== null ? `${p.message}（這一條規則沒有生效，其餘照常）` : `${p.message}（整份規則都沒有生效）`,
+      code: p.field ? `rules-${p.field}` : 'rules-file',
+      source: 'SDLC 規範',
+    };
+  });
+  return { scanned: [RULES_REL], records };
 }

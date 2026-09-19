@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { compareVersions, ContractError, MIN_WORKFLOW_VERSION, parseDlpGate, parseDoctor, parseEnvelope, parseGuidelineGate, SUPPORTED_SCHEMA } from '../src/contract';
+import {
+  compareVersions, ContractError, MIN_WORKFLOW_VERSION, parseDlpGate, parseDoctor, parseEnvelope, parseGuidelineGate, parseRulesValidation, parseSet, SUPPORTED_SCHEMA,
+} from '../src/contract';
 import { doctorFixture } from './fixtures';
 
 const envelope = (command: string, data: unknown, extra: Record<string, unknown> = {}) =>
@@ -66,4 +68,53 @@ test('版本比較：4.7.0 太舊、4.8.0 與之後可以（數字比，不是�
   assert.equal(compareVersions('4.8.0', MIN_WORKFLOW_VERSION), 0);
   assert.equal(compareVersions('4.10.0', MIN_WORKFLOW_VERSION), 1, '字串比的話 4.10 會小於 4.8');
   assert.equal(compareVersions('5.0', '4.99.99'), 1);
+});
+
+test('4.8 的 doctor（沒有 config.comments／schemaRef）照樣讀得懂，讀成 false', () => {
+  const d = parseDoctor(parseEnvelope(envelope('doctor', doctorFixture()), 'doctor'));
+  assert.equal(d.config.comments, false);
+  assert.equal(d.config.schemaRef, false);
+  const data = doctorFixture() as Record<string, any>;
+  data.config = { exists: true, parsable: true, comments: true, schemaRef: true };
+  assert.equal(parseDoctor(parseEnvelope(envelope('doctor', data), 'doctor')).config.comments, true);
+  data.config.comments = 'yes';
+  assert.throws(() => parseDoctor(parseEnvelope(envelope('doctor', data), 'doctor')), /config\.comments/);
+});
+
+test('set 的結果：變更、錯誤、有沒有寫、有沒有套用；整數值讀成字串給畫面用', () => {
+  const ok = parseSet(parseEnvelope(envelope('set', {
+    changes: [
+      { key: 'review.maxRounds', from: 3, to: 4, changed: true, needsApply: false },
+      { key: 'agents.reviewer.effort', from: null, to: 'high', changed: true, needsApply: true },
+    ],
+    errors: [], written: true, applied: false, preview: false, backup: null,
+  }), 'set'));
+  assert.equal(ok.error, null);
+  assert.deepEqual(ok.changes.map((c) => [c.from, c.to]), [['3', '4'], [null, 'high']]);
+  assert.equal(ok.written, true);
+
+  const bad = parseSet(parseEnvelope(envelope('set', {
+    error: 'invalid', changes: [], written: false, applied: false, preview: false, backup: null,
+    errors: [{ key: 'agents.reviewer.effort', value: 'hgih', message: '不是合法值', suggestion: 'agents.reviewer.effort=high' }],
+  }, { exit: 2 }), 'set'));
+  assert.equal(bad.error, 'invalid');
+  assert.equal(bad.errors[0].suggestion, 'agents.reviewer.effort=high');
+
+  // 在讀設定檔之前就停下來的錯誤沒有 changes／errors —— 不該因此解析失敗。
+  const early = parseSet(parseEnvelope(envelope('set', { error: 'schema-unreadable' }, { exit: 2 }), 'set'));
+  assert.equal(early.error, 'schema-unreadable');
+  assert.deepEqual(early.changes, []);
+
+  assert.throws(() => parseSet(parseEnvelope(envelope('set', { changes: [{ key: 'x', from: true, to: 'y', changed: true, needsApply: false }] }), 'set')), /from/);
+});
+
+test('rules.json 的驗證結果：新版帶「第幾條、哪個欄位」；舊版只有句子 → 一律當檔案層級（不從句子裡猜）', () => {
+  const v = parseRulesValidation(JSON.stringify({
+    passed: false, rules_file: 'guidelines/rules.json', exists: true, rule_count: 1, block_count: 0,
+    problems: ['b: severity 必須是 block 或 warn'],
+    rule_problems: [{ index: 2, id: 'b', field: 'severity', message: 'b: severity 必須是 block 或 warn' }],
+  }));
+  assert.deepEqual(v.ruleProblems[0], { index: 2, id: 'b', field: 'severity', message: 'b: severity 必須是 block 或 warn' });
+  const old = parseRulesValidation(JSON.stringify({ passed: false, rules_file: 'r', exists: true, rule_count: 1, block_count: 0, problems: ['b: 缺 pattern'] }));
+  assert.deepEqual(old.ruleProblems, [{ index: null, id: null, field: null, message: 'b: 缺 pattern' }]);
 });

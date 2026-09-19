@@ -46,6 +46,14 @@ export function issuesFromDoctor(d: DoctorData): Issue[] {
         detail: 'Codex 還沒信任這個專案 —— 專案層的 config 與 hooks 整個停用。在專案裡開 codex，信任這個資料夾，再在「Hooks need review」選 Trust all and continue。',
       });
       break;
+    // 檔不在 = 整層不存在，而且沒有任何跡象 —— 這是最該吵的一種。
+    case 'no-hooks':
+      issues.push({
+        level: 'error',
+        badge: '$(shield) 沒有 hooks.json',
+        detail: '.codex/hooks.json 不在 —— 機械強制層整層不存在：寫檔與委派完全沒有人擋，而且 Codex 不會提示。把發佈物解壓到別處，跑 sdlc.ps1 update -Target <這個專案> 補回工具檔。',
+      });
+      break;
   }
 
   if (d.config.exists && !d.config.parsable) {
@@ -58,6 +66,21 @@ export function issuesFromDoctor(d: DoctorData): Issue[] {
       detail: `sdlc.config.json 改過但沒有 apply：${d.tuning.stale.join('、')} —— 不 apply 的話流程用的是舊值，而畫面上看不出來。`,
     });
   }
+  if (d.config.comments) {
+    issues.push({
+      level: 'warn',
+      badge: '$(comment) 設定檔有註解',
+      detail: 'sdlc.config.json 裡有註解 —— 這個檔不支援註解，下一次 update 或在面板裡改值時會不見（會先備份）。要留的說明請搬進 _note。',
+    });
+  }
+  const badCheck = d.lint.violations.find((v) => v.rule === 'update-check-invalid');
+  if (badCheck) {
+    issues.push({
+      level: 'warn',
+      badge: '$(cloud) 更新檢查頻率寫壞了',
+      detail: `${badCheck.detail} —— 不認得的值照 daily 算，會連網檢查。在設定面板的「更新」裡重選一次。`,
+    });
+  }
   if (!d.review.valid) {
     issues.push({
       level: 'warn',
@@ -68,7 +91,7 @@ export function issuesFromDoctor(d: DoctorData): Issue[] {
   // 調校區塊對不上時 agent-lint（檢查 9）也會紅；review.maxRounds 寫壞時檢查 13 也會紅 ——
   // 同一件事已經由上面那幾條講了，而且那幾條才說得出修法。重複報一次，狀態列會把「agent-lint」排在最前面，
   // 使用者看到的就不是能直接動手的那一句。
-  const covered = new Set(['tuning-block-stale', 'tuning-block-missing', 'sdlc-config-unparsable', 'review-max-rounds-invalid', 'review-config-invalid']);
+  const covered = new Set(['tuning-block-stale', 'tuning-block-missing', 'sdlc-config-unparsable', 'review-max-rounds-invalid', 'review-config-invalid', 'update-check-invalid']);
   const violations = d.lint.violations.filter((v) => !covered.has(v.rule));
   if (d.lint.ran && !d.lint.passed && (violations.length > 0 || d.lint.violations.length === 0)) {
     const n = violations.length;

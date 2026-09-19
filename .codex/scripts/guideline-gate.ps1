@@ -62,6 +62,9 @@ function Read-StdinUtf8 {
 # 只會讓 gate 在每次 SQL 逆推時無條件紅燈，然後被整個關掉。
 $excludeRe = '^(bdd-docs|guidelines|\.codex|\.agents|\.git)/|/(bin|obj|node_modules|packages|\.git|\.vs|TestResults)/'
 
+# severity 的合法值。跟 .codex/bdd-workflow/rules.schema.json 一致，由 agent-lint 檢查 14 守（gate 不讀 schema：它要在 schema 不在時照跑）。
+$Severities = @('block', 'warn')
+
 function Write-Warn([string]$msg) { [Console]::Error.WriteLine("[Hook][Guideline] $msg") }
 
 # glob → regex。支援 `**/`（跨層）、`*`（單層內）、`?`。
@@ -140,14 +143,21 @@ function Write-HookContext([string]$eventName, [string[]]$lines) {
 # ---- 載入並驗證規則 ----
 # 回傳 @{ rules = @(...); problems = @(...) }。壞掉的規則被丟掉，其餘照常生效 ——
 # 一條規則寫壞不該讓另外 199 條跟著失效。
+# `details` 是同一批問題的結構化版本（第幾條、哪個 id、哪個欄位），給 -Validate -Json 的讀者把問題放到對的那一行 ——
+# 讀者只負責「放在哪」，對錯一律在這裡判。
 function Get-Rules([string]$file) {
-    $problems = @()
-    if (-not (Test-Path $file)) { return @{ rules = @(); problems = $problems; exists = $false } }
+    $problems = @(); $details = @()
+    function Add-Problem([string]$text, $index, [string]$id, [string]$field) {
+        $script:rulesProblems += $text
+        $script:rulesDetails  += [pscustomobject]@{ index = $index; id = $(if ($id) { $id } else { $null }); field = $(if ($field) { $field } else { $null }); message = $text }
+    }
+    $script:rulesProblems = @(); $script:rulesDetails = @()
+    if (-not (Test-Path $file)) { return @{ rules = @(); problems = $problems; details = $details; exists = $false } }
 
     try { $doc = Get-Content $file -Raw -Encoding UTF8 | ConvertFrom-Json }
     catch {
-        $problems += "$file 不是合法的 JSON：$($_.Exception.Message)"
-        return @{ rules = @(); problems = $problems; exists = $true }
+        Add-Problem "$file 不是合法的 JSON：$($_.Exception.Message)" $null $null $null
+        return @{ rules = @(); problems = @($script:rulesProblems); details = @($script:rulesDetails); exists = $true }
     }
 
     $good = @()
@@ -155,14 +165,14 @@ function Get-Rules([string]$file) {
     foreach ($r in @($doc.rules)) {
         $i++
         $id = if ($r.id) { $r.id } else { "rule#$i" }
-        if (-not $r.id)      { $problems += "第 $i 條缺 id"; continue }
-        if (-not $r.pattern) { $problems += "${id}: 缺 pattern"; continue }
+        if (-not $r.id)      { Add-Problem "第 $i 條缺 id" $i $null 'id'; continue }
+        if (-not $r.pattern) { Add-Problem "${id}: 缺 pattern" $i $id 'pattern'; continue }
 
         $sev = if ($r.severity) { [string]$r.severity } else { 'warn' }   # 預設 warn，block 要明確 opt-in
-        if ($sev -notin @('block', 'warn')) { $problems += "${id}: severity 必須是 block 或 warn，收到 '$sev'"; continue }
+        if ($sev -notin $Severities) { Add-Problem "${id}: severity 必須是 $($Severities -join ' 或 ')，收到 '$sev'" $i $id 'severity'; continue }
 
         try { $re = [regex]::new([string]$r.pattern) }
-        catch { $problems += "${id}: pattern 不是合法的 regex —— $($_.Exception.Message)"; continue }
+        catch { Add-Problem "${id}: pattern 不是合法的 regex —— $($_.Exception.Message)" $i $id 'pattern'; continue }
 
         $globs = @()
         foreach ($g in @($r.'applies-to')) { if ($g) { $globs += (ConvertTo-GlobRegex ([string]$g)) } }
@@ -176,7 +186,7 @@ function Get-Rules([string]$file) {
             fix      = [string]$r.fix
         }
     }
-    return @{ rules = $good; problems = $problems; exists = $true }
+    return @{ rules = $good; problems = @($script:rulesProblems); details = @($script:rulesDetails); exists = $true }
 }
 
 $loaded = Get-Rules $RulesFile
@@ -191,6 +201,8 @@ if ($Validate) {
         rule_count  = $loaded.rules.Count
         block_count = @($loaded.rules | Where-Object severity -eq 'block').Count
         problems    = $loaded.problems
+        # 同一批問題，帶「第幾條規則（1 起算）／id／欄位」—— 檔案層級的問題 index 是 null。
+        rule_problems = @($loaded.details)
     }
     if ($Json) { $out | ConvertTo-Json -Depth 4 -Compress }
     elseif ($ok) { "[guideline-gate] OK — $($loaded.rules.Count) rule(s) in $RulesFile ($($out.block_count) blocking)." }

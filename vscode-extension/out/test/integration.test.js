@@ -44,11 +44,14 @@ const fs = __importStar(require("node:fs"));
 const os = __importStar(require("node:os"));
 const path = __importStar(require("node:path"));
 const node_test_1 = require("node:test");
+const codelens_1 = require("../src/codelens");
+const config_1 = require("../src/config");
 const contract_1 = require("../src/contract");
 const diagnostics_1 = require("../src/diagnostics");
 const pwsh_1 = require("../src/pwsh");
+const schema_1 = require("../src/schema");
 const status_1 = require("../src/status");
-const tuning_1 = require("../src/tuning");
+const tree_1 = require("../src/tree");
 const repo = path.resolve(__dirname, '..', '..', '..');
 const pw = (0, pwsh_1.resolvePwsh)({ env: process.env, platform: process.platform, exists: (p) => { try {
         return fs.statSync(p).isFile();
@@ -94,9 +97,12 @@ async function gate(rel, files, extra = []) {
     strict_1.default.equal(d.tuning.status, 'in-sync');
     strict_1.default.equal(d.problems, 0, `全新安裝的專案 doctor 應該是綠的：${JSON.stringify(d.guidelines)}`);
 });
-(0, node_test_1.test)('改 sdlc.config.json 不 apply → 立刻看到漂移；apply 之後 doctor 是綠的（M1.5 驗收）', async () => {
-    const cfg = path.join(project, 'sdlc.config.json');
-    fs.writeFileSync(cfg, (0, tuning_1.setAgentValue)(fs.readFileSync(cfg, 'utf8'), 'reviewer', 'effort', 'high'));
+(0, node_test_1.test)('set 不 apply → 立刻看到漂移；apply 之後 doctor 是綠的（M1.5 驗收，寫檔改走 set）', async () => {
+    const w = (0, contract_1.parseSet)(await sdlc('set', ['agents.reviewer.effort=high']));
+    strict_1.default.equal(w.error, null);
+    strict_1.default.equal(w.written, true);
+    strict_1.default.equal(w.applied, false);
+    strict_1.default.deepEqual(w.changes.map((c) => [c.key, c.to, c.changed, c.needsApply]), [['agents.reviewer.effort', 'high', true, true]]);
     const stale = (0, contract_1.parseDoctor)(await sdlc('doctor'));
     strict_1.default.equal(stale.tuning.status, 'stale');
     strict_1.default.deepEqual(stale.tuning.stale, ['reviewer.toml']);
@@ -138,10 +144,10 @@ async function gate(rel, files, extra = []) {
     const c = (0, contract_1.parseCheckUpdate)(await sdlc('check-update', ['-IfDue']));
     strict_1.default.equal(c.status, 'disabled');
 });
-(0, node_test_1.test)('修正輪上限：extension 寫進去的值，doctor 與 handoff-lint 都照它算', async () => {
-    const { setReviewMaxRounds } = await Promise.resolve().then(() => __importStar(require('../src/tuning')));
-    const cfg = path.join(project, 'sdlc.config.json');
-    fs.writeFileSync(cfg, setReviewMaxRounds(fs.readFileSync(cfg, 'utf8'), 5));
+(0, node_test_1.test)('修正輪上限：面板寫進去的值（經 set），doctor 與 handoff-lint 都照它算', async () => {
+    const w = (0, contract_1.parseSet)(await sdlc('set', ['review.maxRounds=5']));
+    strict_1.default.equal(w.error, null);
+    strict_1.default.equal(w.changes[0].needsApply, false, '修正輪是 hook 現讀的，面板不該標成未套用');
     const d = (0, contract_1.parseDoctor)(await sdlc('doctor'));
     strict_1.default.deepEqual(d.review, { maxRounds: 5, source: 'config', valid: true });
     strict_1.default.ok(pw.ok);
@@ -151,4 +157,73 @@ async function gate(rel, files, extra = []) {
     const j = JSON.parse(r.stdout.trim());
     strict_1.default.equal(r.exit, 0, `設了 5 卻擋下第 5 輪：${r.stdout}`);
     strict_1.default.equal(j.max_review_rounds, 5);
+});
+(0, node_test_1.test)('set 擋下的值：錯誤的形狀讀得懂，而且附上建議（面板的「改用 X」按鈕靠它）', async () => {
+    const before = fs.readFileSync(path.join(project, 'sdlc.config.json'), 'utf8');
+    const env = await sdlc('set', ['agents.reviewer.effort=hgih', 'review.maxRounds=2']);
+    const d = (0, contract_1.parseSet)(env);
+    strict_1.default.equal(env.exit, 2);
+    strict_1.default.equal(d.error, 'invalid');
+    strict_1.default.equal(d.errors[0].key, 'agents.reviewer.effort');
+    strict_1.default.equal(d.errors[0].suggestion, 'agents.reviewer.effort=high');
+    strict_1.default.equal(fs.readFileSync(path.join(project, 'sdlc.config.json'), 'utf8'), before, '有一組不合法卻寫了檔');
+});
+(0, node_test_1.test)('set -Preset -Preview：只列差異，面板拿它給人確認', async () => {
+    const d = (0, contract_1.parseSet)(await sdlc('set', ['-Preset', 'deep', '-Preview']));
+    strict_1.default.equal(d.preview, true);
+    strict_1.default.equal(d.written, false);
+    strict_1.default.ok(d.changes.some((c) => c.key === 'agents.sa-analyst.effort' && c.to === 'medium'));
+});
+(0, node_test_1.test)('專案裡的 schema 讀得懂：面板的選項與說明從這裡來，不是 extension 自己寫的', () => {
+    const s = (0, schema_1.readSettingsSchema)(project);
+    strict_1.default.ok(s, '裝好的專案裡沒有 schema');
+    strict_1.default.ok(s.effort.choices.some((c) => c.value === 'inherit'));
+    strict_1.default.ok(s.effort.choices.some((c) => c.value === 'xhigh'));
+    strict_1.default.ok(!s.effort.choices.some((c) => c.value === 'minimal'), 'minimal 不在 Codex 0.154 的任何模型清單裡');
+    strict_1.default.match(s.effort.agentHints['sa-analyst']?.high ?? '', /逾時/);
+    strict_1.default.deepEqual([s.reviewRounds.min, s.reviewRounds.max, s.reviewRounds.default], [1, 5, 3]);
+    strict_1.default.deepEqual(s.updateCheck.choices.map((c) => c.value), ['daily', 'never']);
+    strict_1.default.ok(new RegExp(s.updateSource.pattern).test('https://github.com/o/r'));
+    strict_1.default.ok(new RegExp(s.updateSource.pattern).test(''));
+    strict_1.default.ok(!new RegExp(s.updateSource.pattern).test('https://gitlab.com/o/r'));
+});
+(0, node_test_1.test)('設定面板：拿真的 doctor 與 schema 建出來的樹，值跟設定檔一致、未套用標得出來', async () => {
+    (0, contract_1.parseSet)(await sdlc('set', ['agents.implementer.effort=medium']));
+    const d = (0, contract_1.parseDoctor)(await sdlc('doctor'));
+    const cfg = (0, config_1.readConfig)(fs.readFileSync(path.join(project, 'sdlc.config.json'), 'utf8'));
+    const input = {
+        rootName: 'p', rootPath: project, workflowVersion: d.version.contract, schema: (0, schema_1.readSettingsSchema)(project), canEdit: true,
+        config: cfg, knownAgents: [], doctor: d, checking: false, pendingAgents: [],
+        guidelines: { dir: true, files: [], rulesExists: true, ruleCount: 1, gateDisabled: false },
+        machine: { pwsh: { ok: true, path: 'pwsh' }, codex: { source: 'none' }, extensionVersion: 'test' },
+    };
+    const nodes = (0, tree_1.flatten)((0, tree_1.buildSettingsTree)(input));
+    const byId = new Map(nodes.map((n) => [n.id, n]));
+    strict_1.default.equal(byId.get('agents')?.contextValue, 'tuningPending', 'set 之後沒 apply，面板卻沒標未套用');
+    strict_1.default.match(byId.get('agents/implementer')?.description ?? '', /effort medium.*未套用/);
+    strict_1.default.equal(byId.get('agents/implementer/effort')?.edit?.key, 'agents.implementer.effort');
+    strict_1.default.equal(byId.get('status/hooks')?.contextValue, 'hooksUnknown', '找不到 codex 時要給「選擇 codex」而不是假裝信任了');
+    const lenses = (0, codelens_1.configLenses)(fs.readFileSync(path.join(project, 'sdlc.config.json'), 'utf8'), { rootPath: project, pendingAgents: ['implementer'], canEdit: true });
+    strict_1.default.match(lenses[0].title, /套用（1 個 agent 未套用）/);
+    strict_1.default.equal((0, contract_1.parseApply)(await sdlc('apply')).changed.length, 1);
+});
+(0, node_test_1.test)('rules.json 自己的問題：落在寫壞的那一條規則上（S3 驗收）', async () => {
+    const rules = path.join(project, 'guidelines/rules.json');
+    const good = fs.readFileSync(rules, 'utf8');
+    try {
+        const text = good.replace('"severity": "block"', '"severity": "blok"');
+        fs.writeFileSync(rules, text);
+        strict_1.default.ok(pw.ok);
+        const r = await (0, pwsh_1.runPwsh)(pw.path, (0, pwsh_1.fileArgs)(path.join(project, '.codex/scripts/guideline-gate.ps1'), ['-Validate', '-Json', '-RulesFile', rules]), { cwd: project, timeoutMs: 60_000 });
+        const v = (0, contract_1.parseRulesValidation)(r.stdout);
+        strict_1.default.equal(v.passed, false);
+        const o = (0, diagnostics_1.rulesOutcome)(v, text);
+        strict_1.default.equal(o.records.length, 1);
+        const expectLine = text.split('\n').findIndex((l) => l.includes('"blok"')) + 1;
+        strict_1.default.equal(o.records[0].line, expectLine, `問題沒有落在寫壞的那一行：${JSON.stringify(o.records[0])}`);
+        strict_1.default.match(o.records[0].message, /severity/);
+    }
+    finally {
+        fs.writeFileSync(rules, good);
+    }
 });

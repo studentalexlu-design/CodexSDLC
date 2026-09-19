@@ -13,6 +13,10 @@ export const SUPPORTED_SCHEMA = 1;
 // 叫下去只會得到一個參數錯誤 —— 狀態列要說的是「工作流太舊」，不是「健檢失敗」。
 export const MIN_WORKFLOW_VERSION = '4.8.0';
 
+// 在面板裡改設定要 `sdlc.ps1 set` 與專案裡的 schema，兩者都從這一版開始。更舊的專案照樣有狀態列，
+// 面板只顯示、不給改，並說要升到哪一版。
+export const MIN_SETTINGS_VERSION = '4.9.0';
+
 export function compareVersions(a: string, b: string): number {
   const pa = a.split('.').map((x) => parseInt(x, 10) || 0);
   const pb = b.split('.').map((x) => parseInt(x, 10) || 0);
@@ -102,7 +106,8 @@ export interface InstalledEditor { product: string; version: string; compatible:
 
 export interface DoctorData {
   version: { contract: string; minCompatible: string };
-  config: { exists: boolean; parsable: boolean };
+  // comments／schemaRef 從 4.9.0 起才有；更舊的 doctor 沒有這兩個欄位，讀成 false。
+  config: { exists: boolean; parsable: boolean; comments: boolean; schemaRef: boolean };
   tuning: { status: string; stale: string[] };
   unverifiedModel: string[];
   baseline: { exists: boolean; version: string | null; fileCount: number };
@@ -142,7 +147,12 @@ export function parseDoctor(env: Envelope): DoctorData {
 
   return {
     version: { contract: str(version, 'contract', `${at}.version`), minCompatible: str(version, 'minCompatible', `${at}.version`) },
-    config: { exists: bool(config, 'exists', `${at}.config`), parsable: bool(config, 'parsable', `${at}.config`) },
+    config: {
+      exists: bool(config, 'exists', `${at}.config`),
+      parsable: bool(config, 'parsable', `${at}.config`),
+      comments: 'comments' in config ? bool(config, 'comments', `${at}.config`) : false,
+      schemaRef: 'schemaRef' in config ? bool(config, 'schemaRef', `${at}.config`) : false,
+    },
     tuning: { status: str(tuning, 'status', `${at}.tuning`), stale: strArr(tuning, 'stale', `${at}.tuning`) },
     unverifiedModel: strArr(d, 'unverifiedModel', at),
     baseline: {
@@ -228,13 +238,61 @@ export function parseWhatsNew(env: Envelope): WhatsNewData {
   return { source, latest: null, text: '' };
 }
 
+// ---- set（4.9.0 起）----
+
+export interface SettingChange { key: string; from: string | null; to: string; changed: boolean; needsApply: boolean }
+export interface SettingError { key: string; value: string | null; message: string; suggestion: string | null }
+export interface SetData {
+  error: string | null;            // invalid／has-comments／schema-unreadable／config-unreadable／cancelled／…
+  changes: SettingChange[];
+  errors: SettingError[];
+  written: boolean;
+  applied: boolean;
+  preview: boolean;
+  configCreated: boolean;      // 沒有 sdlc.config.json 時，set 會先替你建一份預設的
+}
+
+// 值可能是字串或整數（review.maxRounds）；面板只拿來顯示，一律轉成字串。
+const scalar = (o: Json, k: string, at: string): string | null => {
+  const v = field(o, k, at);
+  if (v === null) return null;
+  need<unknown>(typeof v === 'string' || typeof v === 'number', `${at}.${k}`, 'string|number|null', v);
+  return String(v);
+};
+
+export function parseSet(env: Envelope): SetData {
+  const d = env.data;
+  const error = 'error' in d ? optStr(d, 'error', '$.data') : null;
+  // 在讀設定檔、讀 schema 之前就停下來的錯誤，不會有 changes／errors。
+  const changes = 'changes' in d ? arr(d, 'changes', '$.data') : [];
+  const errors = 'errors' in d ? arr(d, 'errors', '$.data') : [];
+  return {
+    error,
+    changes: changes.map((c, i) => {
+      const cat = `$.data.changes[${i}]`;
+      const o = need<Json>(isObj(c), cat, 'object', c);
+      return { key: str(o, 'key', cat), from: scalar(o, 'from', cat), to: scalar(o, 'to', cat) ?? '', changed: bool(o, 'changed', cat), needsApply: bool(o, 'needsApply', cat) };
+    }),
+    errors: errors.map((e, i) => {
+      const eat = `$.data.errors[${i}]`;
+      const o = need<Json>(isObj(e), eat, 'object', e);
+      return { key: str(o, 'key', eat), value: optStr(o, 'value', eat), message: str(o, 'message', eat), suggestion: optStr(o, 'suggestion', eat) };
+    }),
+    written: 'written' in d ? bool(d, 'written', '$.data') : false,
+    applied: 'applied' in d ? bool(d, 'applied', '$.data') : false,
+    preview: 'preview' in d ? bool(d, 'preview', '$.data') : false,
+    configCreated: 'configCreated' in d ? bool(d, 'configCreated', '$.data') : false,
+  };
+}
+
 export interface ProposalItem { agent: string; current: string; proposed: string; reason: string; signal: string }
-export interface TuneData { proposal: ProposalItem[]; applied: boolean }
+export interface TuneData { proposal: ProposalItem[]; applied: boolean; generatedAt: string | null }
 export function parseTune(env: Envelope): TuneData {
   const d = env.data;
-  if ('error' in d) return { proposal: [], applied: false };
+  if ('error' in d) return { proposal: [], applied: false, generatedAt: null };
   return {
     applied: bool(d, 'applied', '$.data'),
+    generatedAt: 'generatedAt' in d ? optStr(d, 'generatedAt', '$.data') : null,
     proposal: arr(d, 'proposal', '$.data').map((p, i) => {
       const pat = `$.data.proposal[${i}]`;
       const o = need<Json>(isObj(p), pat, 'object', p);
@@ -270,6 +328,30 @@ export function parseGuidelineGate(stdout: string): GuidelineGateResult {
       return { rule: str(x, 'rule', hat), severity: str(x, 'severity', hat), file: str(x, 'file', hat), line: num(x, 'line', hat), message: str(x, 'message', hat), fix: str(x, 'fix', hat) };
     }),
   };
+}
+
+// guideline-gate -Validate -Json（只驗 rules.json 本身）。rule_problems 從 4.9.0 起才有。
+export interface RuleProblem { index: number | null; id: string | null; field: string | null; message: string }
+export interface RulesValidation { passed: boolean; exists: boolean; ruleCount: number; problems: string[]; ruleProblems: RuleProblem[] }
+
+export function parseRulesValidation(stdout: string): RulesValidation {
+  const o = parseJsonObject(stdout, 'guideline-gate -Validate');
+  const problems = strArr(o, 'problems', '$');
+  const ruleProblems = 'rule_problems' in o
+    ? arr(o, 'rule_problems', '$').map((p, i) => {
+      const pat = `$.rule_problems[${i}]`;
+      const x = need<Json>(isObj(p), pat, 'object', p);
+      const index = field(x, 'index', pat);
+      return {
+        index: need<number | null>(index === null || typeof index === 'number', `${pat}.index`, 'number|null', index),
+        id: optStr(x, 'id', pat),
+        field: optStr(x, 'field', pat),
+        message: str(x, 'message', pat),
+      };
+    })
+    // 舊版只有句子：一律當成檔案層級的問題（放第一行），不從句子裡猜是哪一條。
+    : problems.map((message) => ({ index: null, id: null, field: null, message }));
+  return { passed: bool(o, 'passed', '$'), exists: bool(o, 'exists', '$'), ruleCount: num(o, 'rule_count', '$'), problems, ruleProblems };
 }
 
 export interface DlpCategory { type: string; count: number; lines: number[] }

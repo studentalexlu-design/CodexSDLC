@@ -1,8 +1,8 @@
 {
   "name": "codex-sdlc",
   "displayName": "Codex SDLC",
-  "description": "Codex SDLC 工作流的駕駛艙：狀態列、Problems、一鍵 doctor／apply／whatsnew／tune。它只是 sdlc.ps1 與各 gate 的殼，真相仍在 sdlc.config.json 與腳本裡。",
-  "version": "4.8.0",
+  "description": "Codex SDLC 工作流的駕駛艙：狀態列、設定面板、Problems、一鍵 doctor／apply／tune。它只是 sdlc.ps1 與各 gate 的殼，真相仍在 sdlc.config.json 與腳本裡。",
+  "version": "4.9.0",
   "publisher": "codex-sdlc",
   "private": true,
   "engines": {
@@ -26,6 +26,148 @@
     "jsonSchema": 1
   },
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "codexSdlc",
+          "title": "Codex SDLC",
+          "icon": "media/codex-sdlc.svg"
+        }
+      ]
+    },
+    "views": {
+      "codexSdlc": [
+        {
+          "id": "codexSdlc.settings",
+          "name": "設定",
+          "contextualTitle": "Codex SDLC",
+          "when": "codexSdlc.active"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "codexSdlc.refresh",
+          "when": "view == codexSdlc.settings",
+          "group": "navigation@1"
+        },
+        {
+          "command": "codexSdlc.doctor",
+          "when": "view == codexSdlc.settings",
+          "group": "navigation@2"
+        },
+        {
+          "command": "codexSdlc.openWalkthrough",
+          "when": "view == codexSdlc.settings",
+          "group": "overflow"
+        },
+        {
+          "command": "codexSdlc.showOutput",
+          "when": "view == codexSdlc.settings",
+          "group": "overflow"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "codexSdlc.editSetting",
+          "when": "view == codexSdlc.settings && viewItem == editable",
+          "group": "inline"
+        },
+        {
+          "command": "codexSdlc.apply",
+          "when": "view == codexSdlc.settings && viewItem == tuningPending",
+          "group": "inline"
+        },
+        {
+          "command": "codexSdlc.trustHooks",
+          "when": "view == codexSdlc.settings && viewItem == hooksUntrusted",
+          "group": "inline"
+        },
+        {
+          "command": "codexSdlc.pickCodex",
+          "when": "view == codexSdlc.settings && viewItem =~ /^(hooksUnknown|machineCodex)$/",
+          "group": "inline"
+        },
+        {
+          "command": "codexSdlc.pickPwsh",
+          "when": "view == codexSdlc.settings && viewItem == machinePwsh",
+          "group": "inline"
+        },
+        {
+          "command": "codexSdlc.toggleGate",
+          "when": "view == codexSdlc.settings && viewItem =~ /^gate(On|Off)$/",
+          "group": "inline"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "codexSdlc.editSetting",
+          "when": "false"
+        },
+        {
+          "command": "codexSdlc.applyProposalFor",
+          "when": "false"
+        },
+        {
+          "command": "codexSdlc.openFile",
+          "when": "false"
+        }
+      ]
+    },
+    "walkthroughs": [
+      {
+        "id": "codexSdlc.start",
+        "title": "開始使用 Codex SDLC",
+        "description": "四步：讓 Codex 信任 hooks、選一組調校、跑一次健檢、知道設定在哪裡改。",
+        "steps": [
+          {
+            "id": "trust",
+            "title": "讓 Codex 信任這個專案的 hooks",
+            "description": "沒信任之前，機械強制層一條都不會跑，而且沒有任何提示。\n[在終端機開 Codex](command:codexSdlc.trustHooks)",
+            "media": {
+              "markdown": "media/walkthrough/trust.md"
+            },
+            "completionEvents": [
+              "onCommand:codexSdlc.trustHooks"
+            ]
+          },
+          {
+            "id": "preset",
+            "title": "選一組調校",
+            "description": "fast／balanced／deep —— 先列出會改哪些值，確認才寫，寫完自動套用。之後隨時可以在設定面板個別改。\n[選預設組合](command:codexSdlc.applyPreset)",
+            "media": {
+              "markdown": "media/walkthrough/preset.md"
+            },
+            "completionEvents": [
+              "onCommand:codexSdlc.applyPreset"
+            ]
+          },
+          {
+            "id": "doctor",
+            "title": "跑一次健檢",
+            "description": "doctor 會檢查版本、調校有沒有套用、規範檔、hooks 信任狀態。結果在輸出面板，狀態列左下角也會一直顯示。\n[跑 doctor](command:codexSdlc.doctor)",
+            "media": {
+              "markdown": "media/walkthrough/doctor.md"
+            },
+            "completionEvents": [
+              "onCommand:codexSdlc.doctor"
+            ]
+          },
+          {
+            "id": "settings",
+            "title": "設定在哪裡改",
+            "description": "活動列的 Codex SDLC 圖示 → 設定面板：一眼看到全部設定，點一下就能改，需要套用的會標出來。\n[開啟設定面板](command:codexSdlc.openSettings)",
+            "media": {
+              "markdown": "media/walkthrough/settings.md"
+            },
+            "completionEvents": [
+              "onView:codexSdlc.settings"
+            ]
+          }
+        ]
+      }
+    ],
     "commands": [
       {
         "command": "codexSdlc.menu",
@@ -35,26 +177,79 @@
       {
         "command": "codexSdlc.refresh",
         "title": "重新整理狀態",
-        "category": "Codex SDLC"
+        "category": "Codex SDLC",
+        "icon": "$(refresh)"
       },
       {
         "command": "codexSdlc.doctor",
         "title": "doctor —— 完整健檢",
-        "category": "Codex SDLC"
+        "category": "Codex SDLC",
+        "icon": "$(checklist)"
       },
       {
         "command": "codexSdlc.apply",
         "title": "apply —— 把 sdlc.config.json 套到 agent 定義",
+        "category": "Codex SDLC",
+        "icon": "$(check-all)"
+      },
+      {
+        "command": "codexSdlc.openSettings",
+        "title": "開啟設定面板",
         "category": "Codex SDLC"
       },
       {
-        "command": "codexSdlc.editTuning",
-        "title": "調整某個 agent 的 effort／model",
+        "command": "codexSdlc.editSetting",
+        "title": "修改",
+        "category": "Codex SDLC",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "codexSdlc.applyPreset",
+        "title": "換成預設組合（fast／balanced／deep）",
+        "category": "Codex SDLC"
+      },
+      {
+        "command": "codexSdlc.applyProposalFor",
+        "title": "採用 tune 對這個 agent 的建議",
+        "category": "Codex SDLC"
+      },
+      {
+        "command": "codexSdlc.trustHooks",
+        "title": "在終端機開 Codex，信任這個專案的 hooks",
+        "category": "Codex SDLC",
+        "icon": "$(shield)"
+      },
+      {
+        "command": "codexSdlc.toggleGate",
+        "title": "打開／關閉規範的機械層",
+        "category": "Codex SDLC",
+        "icon": "$(debug-disconnect)"
+      },
+      {
+        "command": "codexSdlc.pickPwsh",
+        "title": "選擇 PowerShell 7（pwsh）的位置",
+        "category": "Codex SDLC",
+        "icon": "$(folder-opened)"
+      },
+      {
+        "command": "codexSdlc.pickCodex",
+        "title": "選擇 codex 執行檔的位置",
+        "category": "Codex SDLC",
+        "icon": "$(folder-opened)"
+      },
+      {
+        "command": "codexSdlc.openFile",
+        "title": "開啟檔案",
+        "category": "Codex SDLC"
+      },
+      {
+        "command": "codexSdlc.openWalkthrough",
+        "title": "開始使用（四步引導）",
         "category": "Codex SDLC"
       },
       {
         "command": "codexSdlc.tune",
-        "title": "tune —— 依 repo 現況給調校提議",
+        "title": "tune —— 依 repo 現況給調校建議",
         "category": "Codex SDLC"
       },
       {

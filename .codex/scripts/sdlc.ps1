@@ -15,6 +15,10 @@
 #    所以升級不能無條件覆蓋 —— 要靠 baseline manifest 分辨「沒動過／你改過／新增／這一版刪了」。
 #    分不出來時**不得假設沒動過**：猜錯就是靜默蓋掉使用者的修改。
 #
+# 4. **改設定只有一個入口：`set`。** 它先依 .codex/bdd-workflow/sdlc.config.schema.json 驗完全部的值才寫
+#    （有一組不對，一個字都不動），`-Apply` 讓「寫」與「套用」是同一個動作。VS Code 的設定面板也只經過它。
+#    設定檔整份改寫，所以**不支援註解** —— 有註解時 set 先停下來問、update 先備份。
+#
 # 更新通知刻意**不在這裡**：它折進 handoff-lint.ps1 的尾端，只讀快取、不碰網路、只喊一行。
 # 流程裡不得冒出更新確認 —— AGENTS.md 的「必經的確認只有兩個」是硬不變量。
 #
@@ -27,7 +31,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('install', 'update', 'check-update', 'apply', 'tune', 'doctor', 'whatsnew')]
+    [ValidateSet('install', 'update', 'check-update', 'apply', 'set', 'tune', 'doctor', 'whatsnew')]
     [string]$Command = 'doctor',
 
     [string]$Source,                       # 發佈物根目錄；預設 = 本腳本所在的工作流根
@@ -35,15 +39,21 @@ param(
     [string]$ConfigFile = 'sdlc.config.json',
 
     [ValidateSet('fast', 'balanced', 'deep')]
-    [string]$Preset,                       # install 用；不給就全部 inherit
+    [string]$Preset,                       # install 用（不給就全部 inherit）；set 用：換成這個預設組合
     [switch]$Adopt,                        # install 用：接管既有的手動安裝，把現況記成基準線
     [switch]$WithEditor,                   # install 用：順便把發佈物附的 VS Code extension 裝進這台機器的編輯器
-    [switch]$ApplyProposal,                # tune 用：把提議寫回設定檔
+    [switch]$Apply,                        # set 用：寫完順便 apply 一次（不管改了幾個值）
+    [switch]$Preview,                      # set 用：只驗、只列出會改什麼，一個字都不寫
+    [switch]$ApplyProposal,                # tune 用：把**存下來的那份**提議寫回設定檔（不重算）
+    [string[]]$Only,                       # tune -ApplyProposal 用：只套這幾個 agent（逗號分隔也可以）
     [switch]$IfDue,                        # check-update 用：照 update.check 的頻率決定要不要真的連網
     [string]$CodexPath,                    # doctor 用：codex 執行檔（預設找 PATH）；查 hooks 信任狀態要問它
     [string]$EditorHome,                   # 找已安裝 extension 的家目錄（預設 = 使用者家目錄；測試用）
     [switch]$Yes,                          # 非互動確認
-    [switch]$Json
+    [switch]$Json,
+    # set 用：要改的值，寫成 key=value（例如 agents.reviewer.effort=high review.maxRounds=4）
+    [Parameter(ValueFromRemainingArguments)]
+    [string[]]$Assignments
 )
 
 $ErrorActionPreference = 'Stop'
@@ -77,8 +87,19 @@ $ProposalRel = "$StateDir/tuning-proposal.json"
 
 $TuneBegin   = '# SDLC-TUNING:BEGIN'
 $TuneEnd     = '# SDLC-TUNING:END'
-$KnownEfforts = @('minimal', 'low', 'medium', 'high')
-# 修正輪上限的預設值。範圍（1–5）不在這裡驗 —— 那是 handoff-lint 與 agent-lint 檢查 13 的事，doctor 讀 lint 的結論。
+
+# ---- 合法值 ----
+# 唯一真相是 $ConfigSchemaRel（set 與 VS Code 都讀它）。這裡的常數是這支腳本在 schema 不在時也要能跑的那一份，
+# 由 agent-lint 檢查 14 跟 schema 綁在一起 —— 改一邊沒改另一邊，lint 紅。
+$ConfigSchemaRel = '.codex/bdd-workflow/sdlc.config.schema.json'
+$RulesSchemaRel  = '.codex/bdd-workflow/rules.schema.json'
+$ConfigSchemaRef = './.codex/bdd-workflow/sdlc.config.schema.json'   # 寫進 sdlc.config.json 的 $schema（相對於專案根）
+# effort 是觀測值：Codex 0.154.0 內建模型清單列的 reasoning effort（Codex 本身不檢查這個值，寫錯要到呼叫 API 才出事）。
+# minimal 不在任何一個模型的清單裡，所以拿掉了。Codex 升版時照 docs/vscode-extension-plan.md 的方法重查。
+$KnownEfforts = @('low', 'medium', 'high', 'xhigh', 'max', 'ultra')
+$UpdateChecks = @('daily', 'never')
+$GitHubSourcePattern = 'github\.com/([^/]+)/([^/\s]+?)(\.git)?/?$'
+# 修正輪上限的預設值。範圍（1–5）由 handoff-lint 與 agent-lint 檢查 13 判，doctor 讀 lint 的結論。
 $DefaultReviewRounds = 3
 
 $JsonSchema  = 1
@@ -177,6 +198,31 @@ function ConvertTo-IsoText($v) {
     if ($null -eq $v -or $v -eq '') { return $null }
     if ($v -is [DateTime]) { return $v.ToString('o') }
     return [string]$v
+}
+
+# 字串外的 // 或 /* —— JSON 註解。PowerShell 7 讀得進去，寫回去時就沒了，而且不會有任何提示。
+# sdlc.config.json 宣告不支援註解；改寫它之前先用這個看一眼，有的話先備份、說一聲。
+function Test-JsonHasComments([string]$text) {
+    $inString = $false; $escaped = $false
+    for ($i = 0; $i -lt $text.Length - 1; $i++) {
+        $c = $text[$i]
+        if ($inString) {
+            if ($escaped) { $escaped = $false }
+            elseif ($c -eq [char]'\') { $escaped = $true }
+            elseif ($c -eq [char]'"') { $inString = $false }
+            continue
+        }
+        if ($c -eq [char]'"') { $inString = $true; continue }
+        if ($c -eq [char]'/' -and ($text[$i + 1] -eq [char]'/' -or $text[$i + 1] -eq [char]'*')) { return $true }
+    }
+    return $false
+}
+
+# $schema 放第一個 key：人打開檔案時第一眼看到它從哪裡來，編輯器也只看這一個。
+function ConvertTo-ConfigWithSchemaRef($cfg) {
+    $o = [ordered]@{ '$schema' = $ConfigSchemaRef }
+    foreach ($p in $cfg.PSObject.Properties) { if ($p.Name -ne '$schema') { $o[$p.Name] = $p.Value } }
+    return [pscustomobject]$o
 }
 
 function Write-JsonFile([string]$path, $obj) {
@@ -351,15 +397,17 @@ function Get-DefaultConfig([string]$root, [string]$version, [string]$preset) {
     }
 
     return [ordered]@{
-        '_note'            = 'sdlc.config.json 是你的，升級永遠不覆蓋。effort/model 的 "inherit" = 產生出來的 toml 裡不寫那一行，交由 Codex CLI 決定（改完要跑 apply）。orchestrator 沒有 agent 定義檔，這裡只是記錄建議值，強制不了。review.maxRounds = ⑤ 審核的修正輪上限（1–5，預設 3），handoff-lint 每次現讀，不必 apply。'
+        # 編輯器靠它找到 schema：補全、波浪線、滑鼠移上去的說明。沒裝 VS Code extension 也有。
+        '$schema'          = $ConfigSchemaRef
+        '_note'            = 'sdlc.config.json 是你的，升級永遠不覆蓋。改值最省事的方法：pwsh .codex/scripts/sdlc.ps1 set agents.reviewer.effort=high -Apply（先驗再寫，寫錯一個字都不動）。effort/model 的 "inherit" = 產生出來的 toml 裡不寫那一行，交由 Codex CLI 決定（手改 agents.* 之後要跑 apply）。orchestrator 沒有 agent 定義檔，這裡只是記錄建議值，強制不了。review.maxRounds = ⑤ 審核的修正輪上限（1–5，預設 3），handoff-lint 每次現讀，不必 apply。這個檔不支援註解，說明請寫在這裡。'
         'workflow-version' = $version
         # 來源網址由**發佈物**帶進來（版本檔的 `source`），不是寫死在這支腳本裡。
         # 寫死的話，維護者換 repo 或第一次發佈時忘了改，每一個安裝出去的專案都會拿到
         # 一個指不到任何地方的網址 —— 而症狀是「沒有人告訴你有新版」，完全靜默。
         # 空字串是合法的：check-update 會直接說查不到，其餘一切照常。
+        # channel 不再寫：從來沒有任何一方讀它（schema 標成已棄用，舊檔留著不報錯）。
         'update'           = [ordered]@{
             source  = $(if ($srcVersionRaw -and $srcVersionRaw.source) { [string]$srcVersionRaw.source } else { '' })
-            channel = 'stable'
             check   = 'daily'
         }
         # ⑤ 的修正輪上限。由 handoff-lint 每次現讀（不寫進 hooks.json：hook 指令一改，Codex 就要你重新信任它）。
@@ -591,6 +639,13 @@ function Show-HookTrust($trust) {
             Say "無法確認 Codex 是否信任了這個專案的 hooks（$why）。信任狀態只有 Codex 自己知道：開 codex 時若出現「Hooks need review」，要選 Trust all and continue，否則強制層不會跑。"
             return 0
         }
+        # 檔不在 = 機械強制層整層不存在，而且沒有任何跡象。這裡不自己產生一份：內容屬於發佈物
+        # （在這支腳本裡再放一份就是第二份真相，而 agent-lint 檢查 12 驗的是 hooks.json 本身），
+        # 而且新寫出來的檔還要使用者去 Codex 重新信任 —— 靜默產生只會讓人以為已經在擋了。
+        'no-hooks' {
+            Warn "$HooksRel 不在 —— 機械強制層整層不存在：handoff-lint／dlp-gate／guideline-gate／build-check 一支都不會跑，寫檔與委派完全沒有人擋，而且 Codex 不會提示。把發佈物解壓到別處，跑 update -Target <這個專案> 把工具檔補回來（或重跑一次 install）。"
+            return 1
+        }
         default { return 0 }
     }
 }
@@ -666,14 +721,15 @@ function Install-Editor([string]$vsix) {
         return $result
     }
     if (-not $WithEditor) {
-        Say "發佈物附了 VS Code extension（狀態列、Problems、一鍵 doctor／apply）。要裝：code --install-extension `"$vsix`"（Cursor／Windsurf／VSCodium 換成各自的指令）。它是每台機器一份、所有專案共用。"
+        # 這一行排在「裝好了」後面 —— 不明講「沒有裝」，使用者會以為發佈物附的東西都裝好了，然後在 VS Code 裡找不到任何介面。
+        Say "VS Code extension **沒有裝**（這次沒加 -WithEditor）。要狀態列、Problems、一鍵 doctor／apply 的話，在刪掉這個解壓目錄之前跑：code --install-extension `"$vsix`"（Cursor／Windsurf／VSCodium 換成各自的指令）。它是每台機器一份、所有專案共用。"
         return $result
     }
 
     $clis = @(Find-EditorClis)
     if ($clis.Count -eq 0) {
         # 查不到就說怎麼手動裝 —— 不丟例外：擋下的理由跟他要做的事無關，而且他修不了。
-        Warn "找不到編輯器的指令（code／code-insiders／cursor／windsurf／codium 都不在 PATH）—— 工作流照常裝好了。手動裝 extension：編輯器的 Extensions 面板 → … → Install from VSIX，選 $vsix"
+        Warn "VS Code extension 沒有裝上：找不到編輯器的指令（code／code-insiders／cursor／windsurf／codium 都不在 PATH）—— 工作流照常裝好了。手動裝 extension：編輯器的 Extensions 面板 → … → Install from VSIX，選 $vsix"
         $result.error = 'cli-not-found'
         return $result
     }
@@ -940,10 +996,26 @@ function Invoke-Update {
         $cfg | Add-Member -NotePropertyName 'review' -NotePropertyValue ([pscustomobject]@{ maxRounds = $DefaultReviewRounds })
         $script:Data.reviewAdded = $true
     }
+    # 4.9 起設定檔帶 $schema：編輯器有補全與波浪線，沒裝 extension 也有。
+    $script:Data.schemaAdded = $false
+    if (-not $cfg.PSObject.Properties['$schema']) {
+        $cfg = ConvertTo-ConfigWithSchemaRef $cfg
+        $script:Data.schemaAdded = $true
+    }
+    # 下面整份改寫會把註解吃掉 —— 先備份原檔，再說一聲。
+    $script:Data.configCommentsBackup = $null
+    if (Test-JsonHasComments ([IO.File]::ReadAllText($cfgPath))) {
+        $dst = Join-Path $backupDir $ConfigFile
+        New-Item -ItemType Directory -Path (Split-Path $dst -Parent) -Force | Out-Null
+        Copy-Item $cfgPath $dst -Force
+        $script:Data.configCommentsBackup = ConvertTo-Rel $Target (Resolve-Path $dst).Path
+        Warn "$ConfigFile 裡有註解 —— 這個檔不支援註解，改寫後它們不見了。原檔備份在 $($script:Data.configCommentsBackup)；要留的說明請搬進 _note。"
+    }
     Write-JsonFile $cfgPath $cfg
     $script:Data.newAgents = @($newAgents)
     if ($newAgents.Count -gt 0) { Say "$ConfigFile：新增 agent $($newAgents -join '、')（值填 inherit），既有設定一個字沒動。" }
     if ($script:Data.reviewAdded) { Say "$ConfigFile：新增 review.maxRounds = $DefaultReviewRounds（⑤ 的修正輪上限，跟以前寫死的一樣；可改成 1–5）。" }
+    if ($script:Data.schemaAdded) { Say "$ConfigFile：加上 `$schema —— 在編輯器裡改這個檔會有補全與錯字提示。" }
 
     $bl = [ordered]@{}
     foreach ($rel in (Get-ToolFileList $Target)) {
@@ -979,13 +1051,311 @@ function Invoke-Update {
 function Invoke-Apply {
     $cfgPath = Join-Path $Target $ConfigFile
     $cfg = Read-JsonFile $cfgPath
-    if (-not $cfg) { Warn "找不到或解析不了 $ConfigFile。"; $script:Data.error = 'config-unreadable'; return 2 }
+    if (-not $cfg) {
+        if (Test-Path $cfgPath) { Warn "$ConfigFile 解析不了 —— 先把 JSON 修好。"; $script:Data.error = 'config-unreadable' }
+        else {
+            # 沒有設定檔是合法狀態（全部 inherit）—— 沒有東西要套用，但別叫他去跑 install，這個專案已經裝好了。
+            Warn "沒有 $ConfigFile —— 沒有東西要套用（全部 inherit，跟現在一樣）。要開始調校：pwsh .codex/scripts/sdlc.ps1 set agents.reviewer.effort=high -Apply（它會替你建設定檔）"
+            $script:Data.error = 'no-config'
+        }
+        return 2
+    }
     $res = Invoke-TuningApply $Target $cfg
     foreach ($w in $res.warnings) { Warn $w }
     $script:Data.changed  = @($res.changed)
     $script:Data.warnings = @($res.warnings)
     if ($res.changed.Count -gt 0) { Say "更新了：$($res.changed -join '、')" } else { Say '沒有變更 —— toml 的 SDLC-TUNING 區塊已經跟設定檔一致。' }
     return 0
+}
+
+# ---- set：改設定的單一入口 ----
+#
+# 手改 JSON 的三種壞法都是靜默的：值打錯（Codex 不檢查 effort，要到呼叫 API 才出事）、
+# key 打錯（沒有人讀它，設定等於沒設）、改完忘了 apply（流程用的是舊值）。
+# 所以這裡**先依 schema 驗完全部的值才寫** —— 有一組不對，一個字都不動 —— 而 -Apply 讓「寫」跟「套用」是同一個動作。
+# VS Code extension 的設定面板也只經過這裡寫檔。
+
+function Get-ConfigSchema([string]$root) {
+    return Read-JsonFile (Join-Path $root $ConfigSchemaRel)
+}
+
+# 沿著 key 路徑往 schema 裡走（properties → additionalProperties，途中展開 $ref）。走不到 = 不認得的 key。
+function Resolve-SchemaRef($schema, $node) {
+    $guard = 0
+    while ($node -and $node.PSObject.Properties['$ref'] -and $guard -lt 10) {
+        $m = [regex]::Match([string]$node.'$ref', '^#/definitions/(.+)$')
+        if (-not $m.Success -or -not $schema.definitions.PSObject.Properties[$m.Groups[1].Value]) { return $null }
+        $node = $schema.definitions.PSObject.Properties[$m.Groups[1].Value].Value
+        $guard++
+    }
+    return $node
+}
+function Get-SchemaNode($schema, [string[]]$segments) {
+    $node = $schema
+    foreach ($s in $segments) {
+        $node = Resolve-SchemaRef $schema $node
+        if (-not $node) { return $null }
+        if ($node.properties -and $node.properties.PSObject.Properties[$s]) { $node = $node.properties.PSObject.Properties[$s].Value }
+        elseif ($node.additionalProperties -is [pscustomobject]) { $node = $node.additionalProperties }
+        else { return $null }
+    }
+    return Resolve-SchemaRef $schema $node
+}
+
+function Get-EditDistance([string]$a, [string]$b) {
+    $a = $a.ToLowerInvariant(); $b = $b.ToLowerInvariant()
+    $prev = 0..$b.Length
+    for ($i = 1; $i -le $a.Length; $i++) {
+        $cur = @($i) + @(0) * $b.Length
+        for ($j = 1; $j -le $b.Length; $j++) {
+            $cost = if ($a[$i - 1] -eq $b[$j - 1]) { 0 } else { 1 }
+            $cur[$j] = [Math]::Min([Math]::Min($cur[$j - 1] + 1, $prev[$j] + 1), $prev[$j - 1] + $cost)
+        }
+        $prev = $cur
+    }
+    return $prev[$b.Length]
+}
+function Get-ClosestText([string]$text, [string[]]$candidates) {
+    $best = $null; $bestD = [int]::MaxValue
+    foreach ($c in $candidates) { $d = Get-EditDistance $text $c; if ($d -lt $bestD) { $bestD = $d; $best = $c } }
+    # 差太多就不猜 —— 亂猜一個 key 比不給建議更誤導。
+    if ($best -and $bestD -le [Math]::Max(2, [int]($text.Length / 3))) { return $best }
+    return $null
+}
+
+function Get-KnownAgentNames([string]$root, $cfg) {
+    $names = @('orchestrator')
+    $dir = Join-Path $root '.codex/agents'
+    if (Test-Path $dir) { $names += @(Get-ChildItem $dir -Filter *.toml -File | ForEach-Object { $_.BaseName }) }
+    if ($cfg -and $cfg.agents) { $names += @($cfg.agents.PSObject.Properties.Name) }
+    return @($names | Sort-Object -Unique)
+}
+
+# 驗一組 key=value。回 @{ ok; key; value（已轉型）; message; suggestion; needsApply }。
+function Test-SettingAssignment($schema, [string]$key, [string]$raw, [string[]]$agentNames) {
+    $settable = @('review.maxRounds', 'update.check', 'update.source') +
+                @($agentNames | ForEach-Object { "agents.$_.effort"; "agents.$_.model" })
+    $fail = { param($msg, $sug) [pscustomobject]@{ ok = $false; key = $key; value = $raw; message = $msg; suggestion = $sug; needsApply = $false } }
+
+    if ($key -in @('$schema', '_note', 'workflow-version')) { return & $fail "$key 由 install／update 維護，不能用 set 改" $null }
+    if ($key -eq 'update.channel') { return & $fail 'update.channel 已棄用 —— 沒有任何一方讀它，設了也沒有作用' $null }
+    $segments = @($key -split '\.')
+    if ($segments[0] -ceq 'agents' -and $segments.Count -eq 3 -and $segments[1] -cnotin $agentNames) {
+        $near = Get-ClosestText $segments[1] $agentNames
+        return & $fail "沒有叫 $($segments[1]) 的 agent（有：$($agentNames -join '、')）" $(if ($near) { "agents.$near.$($segments[2])" } else { $null })
+    }
+    # 大小寫要完全一樣：JSON 的 key 分大小寫，Review.MaxRounds 會被寫成另一個沒有人讀的 key。
+    $node = if ($key -cin $settable) { Get-SchemaNode $schema $segments } else { $null }
+    if (-not $node) {
+        return & $fail "不認得的設定 $key" (Get-ClosestText $key $settable)
+    }
+
+    $value = $raw
+    if ($node.type -eq 'integer') {
+        $n = 0
+        if (-not [int]::TryParse($raw, [ref]$n)) { return & $fail "要是整數，收到 `"$raw`"" $null }
+        $value = $n
+        $lo = $node.minimum; $hi = $node.maximum
+        if (($null -ne $lo -and $n -lt $lo) -or ($null -ne $hi -and $n -gt $hi)) { return & $fail "要是 $lo–$hi 的整數，收到 $n" $null }
+    }
+    if ($node.enum) {
+        $allowed = @($node.enum | ForEach-Object { [string]$_ })
+        if ($raw -cnotin $allowed) {
+            $near = Get-ClosestText $raw $allowed
+            return & $fail "不是合法值 —— 可用：$($allowed -join '、')" $(if ($near) { "$key=$near" } else { $null })
+        }
+    }
+    if ($node.type -eq 'string') {
+        if ($null -ne $node.minLength -and $raw.Length -lt $node.minLength) { return & $fail '不能是空的' $null }
+        if ($node.pattern -and $raw -notmatch [string]$node.pattern) {
+            $why = if ($node.patternErrorMessage) { [string]$node.patternErrorMessage } else { "格式不對（要符合 $($node.pattern)）" }
+            return & $fail $why $null
+        }
+    }
+    # orchestrator 沒有 agent 定義檔：它的值只是記錄，apply 不會動任何檔。
+    $needsApply = ($segments[0] -eq 'agents' -and $segments[1] -ne 'orchestrator')
+    return [pscustomobject]@{ ok = $true; key = $key; value = $value; message = $null; suggestion = $null; needsApply = $needsApply }
+}
+
+function Get-ConfigValue($cfg, [string[]]$segments) {
+    $node = $cfg
+    foreach ($s in $segments) {
+        if ($node -isnot [pscustomobject] -or -not $node.PSObject.Properties[$s]) { return $null }
+        $node = $node.PSObject.Properties[$s].Value
+    }
+    return $node
+}
+function Set-ConfigValue($cfg, [string[]]$segments, $value) {
+    $node = $cfg
+    for ($i = 0; $i -lt $segments.Count - 1; $i++) {
+        $s = $segments[$i]
+        if (-not $node.PSObject.Properties[$s] -or $node.PSObject.Properties[$s].Value -isnot [pscustomobject]) {
+            # 新的 agent 項目補齊兩個 key，跟 install 產生的形狀一樣。
+            $fresh = if ($i -eq 1 -and $segments[0] -eq 'agents') { [pscustomobject]@{ model = 'inherit'; effort = 'inherit' } } else { [pscustomobject]@{} }
+            $node | Add-Member -NotePropertyName $s -NotePropertyValue $fresh -Force
+        }
+        $node = $node.PSObject.Properties[$s].Value
+    }
+    $leaf = $segments[-1]
+    if ($node.PSObject.Properties[$leaf]) { $node.$leaf = $value }
+    else { $node | Add-Member -NotePropertyName $leaf -NotePropertyValue $value }
+}
+
+# 驗 → 寫 → （-Apply）套用。tune -ApplyProposal 也走這裡。
+# $pairs：@( @{ key; raw } )。回 exit code；結果寫進 $script:Data。
+function Invoke-SettingWrite([object[]]$pairs, [bool]$preview, [bool]$applyAfter, [bool]$showDiff = $true) {
+    $cfgPath = Join-Path $Target $ConfigFile
+    $script:Data.changes = @(); $script:Data.errors = @()
+    $script:Data.written = $false; $script:Data.applied = $false; $script:Data.preview = $preview; $script:Data.backup = $null
+
+    # 沒有設定檔是合法狀態（＝全部 inherit、修正輪 3）。但你既然叫它改值，就替你建一份預設的 ——
+    # 內容跟 install 建的一樣，所以「建檔」這件事本身不改變任何行為，只是讓你有地方放這個值。
+    $script:Data.configCreated = $false
+    if (-not (Test-Path $cfgPath)) {
+        $ver = Get-ContractVersion $Target
+        if (-not $ver) {
+            Warn "這個資料夾還沒安裝這套工作流（找不到 $VersionRel）—— 先跑 install。"
+            $script:Data.error = 'not-installed'
+            return 2
+        }
+        if (-not $preview) {
+            Write-JsonFile $cfgPath (Get-DefaultConfig $Target $ver.contract $null)
+            $script:Data.configCreated = $true
+            Say "建立 $ConfigFile（全部 inherit、修正輪 $DefaultReviewRounds —— 跟沒有這個檔的時候一樣）。"
+        }
+    }
+    # 預覽時檔案可能還不存在：拿一份空的當現況，差異就會顯示成「（沒設）→ 新值」。
+    $rawText = if (Test-Path $cfgPath) { [IO.File]::ReadAllText($cfgPath) } else { '{}' }
+    $cfg = $null
+    try { $cfg = $rawText | ConvertFrom-Json -ErrorAction Stop } catch { }
+    if ($cfg -isnot [pscustomobject]) { Warn "$ConfigFile 解析不了 —— 先把 JSON 修好（set 不在壞掉的檔上寫）。"; $script:Data.error = 'config-unreadable'; return 2 }
+    $schema = Get-ConfigSchema $Target
+    if (-not $schema) { Warn "找不到或解析不了 $ConfigSchemaRel —— 沒有它就驗不了值，所以一個字都沒寫。重跑 update 補回工具檔。"; $script:Data.error = 'schema-unreadable'; return 2 }
+    if ($pairs.Count -eq 0) { Warn '沒有要改的值。用法：sdlc.ps1 set agents.reviewer.effort=high review.maxRounds=4 [-Apply]'; $script:Data.error = 'no-assignments'; return 2 }
+
+    $agentNames = Get-KnownAgentNames $Target $cfg
+    $checked = @()
+    foreach ($p in $pairs) {
+        $r = Test-SettingAssignment $schema $p.key $p.raw $agentNames
+        if (-not $r.ok) {
+            $script:Data.errors += [ordered]@{ key = $r.key; value = $r.value; message = $r.message; suggestion = $r.suggestion }
+        } else {
+            $checked += $r
+        }
+    }
+    if ($script:Data.errors.Count -gt 0) {
+        foreach ($e in $script:Data.errors) {
+            Warn "$($e.key)=$($e.value)：$($e.message)$(if ($e.suggestion) { " —— 是不是要 $($e.suggestion)？" })"
+        }
+        Warn '有值不合法，這次一個值都沒寫。'
+        $script:Data.error = 'invalid'
+        return 2
+    }
+
+    # 同一個 key 給兩次：以後面的為準（-Preset 之後再個別覆寫就是這樣用的）。
+    $final = [ordered]@{}
+    foreach ($r in $checked) { $final[$r.key] = $r }
+    $changed = 0
+    foreach ($r in $final.Values) {
+        $segments = @($r.key -split '\.')
+        $before = Get-ConfigValue $cfg $segments
+        # JSON 讀回來的整數是 Int64，驗過的值是 Int32 —— 比數值；字串 "3" 對整數 3 則算不同（寫回去會修好型別）。
+        $isNum = { param($x) $x -is [int] -or $x -is [long] }
+        $same = if ($null -eq $before) { $false }
+                elseif ((& $isNum $before) -and (& $isNum $r.value)) { [long]$before -eq [long]$r.value }
+                elseif ($before -is [string] -and $r.value -is [string]) { $before -ceq $r.value }
+                else { $false }
+        $script:Data.changes += [ordered]@{
+            key = $r.key
+            from = $before
+            to = $r.value
+            changed = -not $same
+            needsApply = $r.needsApply
+        }
+        if (-not $same) { $changed++; Set-ConfigValue $cfg $segments $r.value }
+    }
+
+    $width = (@($final.Keys | ForEach-Object { $_.Length }) | Measure-Object -Maximum).Maximum
+    foreach ($c in @($script:Data.changes | Where-Object { $showDiff })) {
+        $show = { param($v) if ($null -eq $v) { '（沒設）' } elseif ([string]$v -eq '') { '（空）' } else { [string]$v } }
+        $note = if (-not $c.changed) { '（沒變）' }
+                elseif ($c.key -like 'agents.orchestrator.*') { '只是記錄，強制不了 —— 啟動 codex 時要自己帶' }
+                elseif ($c.key -like 'review.*') { '不必 apply，下一次委派就生效' }
+                elseif (-not $c.needsApply) { '不必 apply' }
+                else { '' }
+        Say ("{0}  {1} → {2}  {3}" -f $c.key.PadRight($width), (& $show $c.from), (& $show $c.to), $note).TrimEnd()
+    }
+
+    if ($preview) { Say '（預覽 —— 什麼都沒寫）'; return 0 }
+
+    if ($changed -gt 0) {
+        # 改寫整份會吃掉註解。沒有明確同意就不寫；同意了先備份。
+        if (Test-JsonHasComments $rawText) {
+            if (-not $Yes) {
+                Warn "$ConfigFile 裡有註解 —— 這個檔不支援註解，改寫會把它們吃掉。把說明搬進 _note 再跑一次，或加 -Yes 照寫（原檔會先備份）。"
+                $script:Data.error = 'has-comments'
+                return 2
+            }
+            $dst = Join-Path $Target "$StateDir/sdlc.config.with-comments.json"
+            New-Item -ItemType Directory -Path (Split-Path $dst -Parent) -Force | Out-Null
+            Copy-Item $cfgPath $dst -Force
+            $script:Data.backup = ConvertTo-Rel $Target (Resolve-Path $dst).Path
+            Warn "原檔（含註解）備份在 $($script:Data.backup)。"
+        }
+        Write-JsonFile $cfgPath $cfg
+        $script:Data.written = $true
+        Say "已寫入 $ConfigFile。"
+    } else {
+        Say '值都跟現在一樣，沒有寫檔。'
+    }
+
+    $pending = @($script:Data.changes | Where-Object { $_.changed -and $_.needsApply })
+    if ($applyAfter) {
+        $keep = @{ changes = $script:Data.changes; written = $script:Data.written; backup = $script:Data.backup; preview = $false }
+        $code = Invoke-Apply
+        foreach ($k in $keep.Keys) { $script:Data[$k] = $keep[$k] }
+        $script:Data.errors = @()
+        $script:Data.applied = ($code -eq 0)
+        return $code
+    }
+    if ($pending.Count -gt 0) { Say '還沒套用 —— 跑 pwsh .codex/scripts/sdlc.ps1 apply（或下次加 -Apply），流程才會用新值。' }
+    return 0
+}
+
+function Invoke-Set {
+    $pairs = @()
+    $script:Data.preset = $null
+    if ($Preset) {
+        $profiles = Read-JsonFile (Join-Path $Target $ProfilesRel)
+        $map = if ($profiles -and $profiles.presets) { $profiles.presets.PSObject.Properties[$Preset].Value } else { $null }
+        if (-not $map) { Warn "找不到預設組合 `"$Preset`"（$ProfilesRel）。"; $script:Data.error = 'preset-not-found'; return 2 }
+        $script:Data.preset = $Preset
+        foreach ($a in $map.PSObject.Properties) {
+            foreach ($k in @('model', 'effort')) {
+                if ($a.Value.PSObject.Properties[$k]) { $pairs += @{ key = "agents.$($a.Name).$k"; raw = [string]$a.Value.$k } }
+            }
+        }
+    }
+    foreach ($a in @($Assignments)) {
+        if (-not $a) { continue }
+        $i = $a.IndexOf('=')
+        if ($i -lt 1) {
+            Warn "`"$a`" 不是 key=value 的形狀（例如 agents.reviewer.effort=high）。這次一個值都沒寫。"
+            $script:Data.error = 'invalid'
+            $script:Data.errors = @([ordered]@{ key = $a; value = $null; message = '不是 key=value 的形狀'; suggestion = $null })
+            return 2
+        }
+        $pairs += @{ key = $a.Substring(0, $i).Trim(); raw = $a.Substring($i + 1) }
+    }
+
+    # 換一整組預設是「一次改很多值」—— 先給人看要改什麼，確認了才寫。個別指定的值是明確的，不必再問。
+    if ($Preset -and -not $Preview -and -not $Yes) {
+        $code = Invoke-SettingWrite $pairs $true $false
+        if ($code -ne 0) { return $code }
+        if (-not (Confirm-Step "換成預設組合 $Preset 嗎？")) { $script:Data.error = 'cancelled'; Say '已取消，一個字都沒寫。'; return 2 }
+        return (Invoke-SettingWrite $pairs $false ([bool]$Apply) $false)
+    }
+    return (Invoke-SettingWrite $pairs ([bool]$Preview) ([bool]$Apply))
 }
 
 # update.check 的頻率。daily = 距上次查過滿 24 小時才再查；查失敗（離線）的話一小時內不重試 ——
@@ -1013,6 +1383,10 @@ function Invoke-CheckUpdate {
         Say '設定為不檢查更新（update.check = never）。'
         return 0
     }
+    # 不認得的值照 daily 算（會連網）。打成 "nevr" 的人以為關掉了 —— 所以要講。
+    if ($cfg.update -and $cfg.update.check -and [string]$cfg.update.check -notin $UpdateChecks) {
+        Warn "update.check 是 `"$($cfg.update.check)`"，不是 $($UpdateChecks -join '／') —— 照 daily 算，會連網檢查。改法：pwsh .codex/scripts/sdlc.ps1 set update.check=never"
+    }
 
     $cachePath = Join-Path $Target $CacheRel
     $cache = Read-JsonFile $cachePath
@@ -1025,7 +1399,7 @@ function Invoke-CheckUpdate {
     }
 
     $src = if ($cfg.update) { [string]$cfg.update.source } else { '' }
-    if ($src -notmatch 'github\.com/([^/]+)/([^/\s]+?)(\.git)?/?$') {
+    if ($src -notmatch $GitHubSourcePattern) {
         $script:Data.status = 'unsupported-source'
         Warn "update.source 不是可辨識的 GitHub repo（$src）—— 無法自動檢查，請手動看發佈頁。"
         return 0
@@ -1106,10 +1480,66 @@ function Invoke-WhatsNew {
     return 0
 }
 
+# tune -ApplyProposal：套**存下來的那份**提議，不重算。
+# 以前是重算一次再套 —— 看提議與按套用之間 repo 變了（例如 legacy-schema 多了檔），套進去的就跟畫面上的不一樣。
+function Invoke-ApplyStoredProposal {
+    $script:Data.applied = $false
+    $script:Data.proposal = @()
+    $stored = Read-JsonFile (Join-Path $Target $ProposalRel)
+    if (-not $stored -or -not $stored.proposal) {
+        Warn '還沒有提議可以套用 —— 先跑 pwsh .codex/scripts/sdlc.ps1 tune 看一次。'
+        $script:Data.error = 'no-proposal'
+        return 2
+    }
+    $cfg = Read-JsonFile (Join-Path $Target $ConfigFile)
+    $items = @($stored.proposal)
+    $only = @($Only | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    if ($only.Count -gt 0) {
+        $names = @($items | ForEach-Object { [string]$_.agent })
+        $unknown = @($only | Where-Object { $_ -cnotin $names })
+        if ($unknown.Count -gt 0) {
+            Warn "提議裡沒有 $($unknown -join '、')（有：$($names -join '、')）。這次什麼都沒套。"
+            $script:Data.error = 'unknown-agent'
+            return 2
+        }
+        $items = @($items | Where-Object { [string]$_.agent -cin $only })
+    }
+    # 提議是照工作流的 agent 名冊產生的；這個專案沒有的 agent 略過，不讓它擋住其他幾個。
+    $known = Get-KnownAgentNames $Target $cfg
+    foreach ($skip in @($items | Where-Object { [string]$_.agent -cnotin $known })) { Say "略過 $($skip.agent)：這個專案沒有這個 agent。" }
+    $items = @($items | Where-Object { [string]$_.agent -cin $known })
+
+    $proposal = @($items | ForEach-Object {
+        $cur = Get-AgentConfig $cfg ([string]$_.agent)
+        [ordered]@{
+            agent    = [string]$_.agent
+            current  = $(if ($cur -and $cur.effort) { [string]$cur.effort } else { 'inherit' })
+            proposed = [string]$_.effort
+            reason   = [string]$_.reason
+            signal   = [string]$_.signal
+        }
+    })
+    $generatedAt = ConvertTo-IsoText $stored.'generated-at'
+    Say "套用 $generatedAt 的提議$(if ($only.Count -gt 0) { "（只套 $($only -join '、')）" })。不重算 —— 套的就是你看到的那一份。"
+
+    $pairs = @($proposal | ForEach-Object { @{ key = "agents.$($_.agent).effort"; raw = $_.proposed } })
+    $code = Invoke-SettingWrite $pairs $false $true
+    $script:Data.proposal    = $proposal
+    $script:Data.signals     = $stored.signals
+    $script:Data.generatedAt = $generatedAt
+    return $code
+}
+
 function Invoke-Tune {
+    if ($ApplyProposal) { return Invoke-ApplyStoredProposal }
     $cfgPath = Join-Path $Target $ConfigFile
     $cfg = Read-JsonFile $cfgPath
-    if (-not $cfg) { Warn "找不到 $ConfigFile。先跑 install。"; $script:Data.error = 'config-unreadable'; return 2 }
+    if (-not $cfg) {
+        if (Test-Path $cfgPath) { Warn "$ConfigFile 解析不了 —— 先把 JSON 修好。"; $script:Data.error = 'config-unreadable'; return 2 }
+        if (-not (Get-ContractVersion $Target)) { Warn '這個專案還沒安裝這套工作流。'; $script:Data.error = 'not-installed'; return 2 }
+        # 沒有設定檔照樣能給建議：現值一律是 inherit，套用的時候 set 會替他建檔。
+        Say "沒有 $ConfigFile —— 現值一律當成 inherit（套用建議時會替你建一份）。"
+    }
 
     # 訊號：只用便宜的。repo-index -StatusOnly 不讀任何檔內容。
     $signals = [ordered]@{ file_count = $null; language = ''; build_tool = ''; legacy_schema = 0 }
@@ -1171,23 +1601,10 @@ function Invoke-Tune {
         Say "    訊號：$($i.signal)"
     }
     Say ''
-    Say "提議寫在 $ProposalRel。這是提議不是動作 —— 要套用：sdlc.ps1 tune -ApplyProposal"
+    Say "提議寫在 $ProposalRel。這是提議不是動作 —— 要套用：sdlc.ps1 tune -ApplyProposal（只套其中幾個：-Only reviewer,sa-analyst）"
 
     $script:Data.applied = $false
-    if ($ApplyProposal) {
-        foreach ($i in $items) {
-            $cur = Get-AgentConfig $cfg $i.agent
-            if ($cur) { $cur.effort = $i.effort }
-        }
-        Write-JsonFile $cfgPath $cfg
-        $script:Data.applied = $true
-        Say ''
-        Say '已寫回設定檔，接著跑 apply。'
-        $proposal = $script:Data.proposal; $signalsKeep = $script:Data.signals
-        $code = Invoke-Apply
-        $script:Data.proposal = $proposal; $script:Data.signals = $signalsKeep
-        return $code
-    }
+    $script:Data.generatedAt = ConvertTo-IsoText (Read-JsonFile (Join-Path $Target $ProposalRel)).'generated-at'
     return 0
 }
 
@@ -1208,7 +1625,10 @@ function Invoke-Doctor {
         if ($exists) { Warn "$ConfigFile 解析不了 —— apply 與 doctor 都讀不到你的設定。"; $problems++ }
         else { Say "$ConfigFile 不存在 —— per-agent 調校未啟用，全部交由 Codex CLI 決定（這是合法狀態）。" }
     } else {
-        $script:Data.config = [ordered]@{ exists = $true; parsable = $true }
+        # 註解：讀得進去，但下一次 update／set／tune 改寫時會不見 —— 不算問題，但要先說。
+        $hasComments = Test-JsonHasComments ([IO.File]::ReadAllText($cfgPath))
+        $script:Data.config = [ordered]@{ exists = $true; parsable = $true; comments = $hasComments; schemaRef = [bool]$cfg.PSObject.Properties['$schema'] }
+        if ($hasComments) { Warn "$ConfigFile 裡有註解 —— 這個檔不支援註解，下一次 update／set 改寫時會不見。要留的說明請搬進 _note。" }
         $stale = @()
         foreach ($f in @(Get-ChildItem (Join-Path $Target '.codex/agents') -Filter *.toml -File -ErrorAction SilentlyContinue)) {
             $text = [IO.File]::ReadAllText($f.FullName)
@@ -1284,6 +1704,8 @@ function Invoke-Doctor {
     # 編輯器那一層：只報、不擋（它是整台機器共用的，不是這個專案的健康狀態）。
     $ext = @(Get-InstalledExtensions)
     $script:Data.editor = [ordered]@{ installed = @($ext | ForEach-Object { [ordered]@{ product = $_.product; version = $_.version; jsonSchema = $_.jsonSchema; compatible = $_.compatible } }) }
+    # 沒裝也說一行：在 VS Code 裡找不到介面的人會來跑 doctor，而沒裝的 extension 自己不可能告訴他。
+    if ($ext.Count -eq 0) { Say "VS Code extension：這台機器沒裝（選用）。要狀態列與一鍵指令，用發佈物 editor/ 底下的 .vsix 裝：code --install-extension <那個檔>。" }
     foreach ($x in $ext) {
         if ($x.compatible) { Say "VS Code extension：$($x.product) 裝的是 $($x.version)，跟這個專案相容。" }
         else { Say "VS Code extension：$($x.product) 裝的是 $($x.version)，跟這個專案（$($v.contract)）的 -Json 形狀對不上 —— 狀態列會顯示不了；換成這一版發佈物附的 vsix。" }
@@ -1298,6 +1720,7 @@ $code = switch ($Command) {
     'install'      { Invoke-Install }
     'update'       { Invoke-Update }
     'apply'        { Invoke-Apply }
+    'set'          { Invoke-Set }
     'check-update' { Invoke-CheckUpdate }
     'whatsnew'     { Invoke-WhatsNew }
     'tune'         { Invoke-Tune }

@@ -71,3 +71,56 @@ test('README 講清楚三件刻意不做的事與「移除專案不等於移除 
   assert.match(readme, /不把工作流設定存進 VS Code settings/);
   assert.match(readme, /--uninstall-extension codex-sdlc\.codex-sdlc/);
 });
+
+test('設定面板只在裝了工作流的工作區出現（不在每個專案多一個空圖示）', () => {
+  const views = pkg.contributes.views.codexSdlc;
+  assert.equal(views.length, 1);
+  assert.equal(views[0].id, 'codexSdlc.settings');
+  assert.equal(views[0].when, 'codexSdlc.active');
+  const src = fs.readFileSync(path.join(ext, 'src/extension.ts'), 'utf8');
+  assert.match(src, /setContext', 'codexSdlc\.active'/, 'extension 沒有設這個 context key —— 面板永遠不會出現');
+  assert.ok(fs.existsSync(path.join(ext, pkg.contributes.viewsContainers.activitybar[0].icon)), '活動列圖示不存在');
+});
+
+test('選單引用的指令都有宣告；需要參數的指令不出現在命令面板', () => {
+  const declared = new Set(pkg.contributes.commands.map((c: { command: string }) => c.command));
+  const menus = pkg.contributes.menus as Record<string, { command: string; when?: string }[]>;
+  for (const [where, items] of Object.entries(menus)) {
+    for (const m of items) assert.ok(declared.has(m.command), `${where} 引用了沒宣告的 ${m.command}`);
+  }
+  const hidden = new Set(menus.commandPalette.filter((m) => m.when === 'false').map((m) => m.command));
+  for (const c of ['codexSdlc.editSetting', 'codexSdlc.applyProposalFor', 'codexSdlc.openFile']) assert.ok(hidden.has(c), `${c} 從命令面板叫會沒有參數`);
+});
+
+test('面板的行內按鈕：tree.ts 產生的每一種標記都有對應的按鈕', () => {
+  const tree = fs.readFileSync(path.join(ext, 'src/tree.ts'), 'utf8');
+  const tags = new Set([...tree.matchAll(/contextValue: (?:[^,}]*\? )?'([A-Za-z]+)'(?: : '([A-Za-z]+)')?/g)].flatMap((m) => [m[1], m[2]]).filter(Boolean));
+  const whens = (pkg.contributes.menus['view/item/context'] as { when: string }[]).map((m) => m.when).join(' ');
+  for (const t of tags) {
+    if (t === 'openable') continue;   // 點一下就開，不需要行內按鈕
+    assert.ok(whens.includes(t) || new RegExp(t.replace(/(On|Off)$/, '')).test(whens), `contextValue ${t} 沒有任何行內按鈕`);
+  }
+  assert.ok(tags.size >= 6, `只抓到 ${[...tags].join(',')} —— 這條測試的 regex 跟 tree.ts 對不上了`);
+});
+
+test('四步引導的每一頁都在，而且會進 vsix（.vscodeignore 沒排除它們）', () => {
+  const steps = pkg.contributes.walkthroughs[0].steps as { media: { markdown: string }; description: string }[];
+  assert.equal(steps.length, 4);
+  const ignore = fs.readFileSync(path.join(ext, '.vscodeignore'), 'utf8');
+  for (const s of steps) {
+    assert.ok(fs.existsSync(path.join(ext, s.media.markdown)), `${s.media.markdown} 不存在`);
+    assert.match(s.description, /\]\(command:codexSdlc\.[A-Za-z]+\)/, '每一步都要有一個按鈕');
+  }
+  assert.doesNotMatch(ignore, /^media/m);
+});
+
+test('extension 自己不寫 sdlc.config.json（寫檔只經過 sdlc.ps1 set）', () => {
+  // 以前 extension 自己做文字層修改；兩條寫檔路徑、兩套驗證，就是 set 要消掉的東西。
+  for (const f of fs.readdirSync(path.join(ext, 'src'))) {
+    const code = fs.readFileSync(path.join(ext, 'src', f), 'utf8');
+    assert.doesNotMatch(code, /from 'jsonc-parser'[\s\S]*\b(modify|applyEdits)\b/, `${f} 又開始自己改設定檔了`);
+    if (/writeFileSync/.test(code)) {
+      assert.doesNotMatch(code, /writeFileSync\([^)]*CONFIG_REL/, `${f} 直接寫 sdlc.config.json`);
+    }
+  }
+});

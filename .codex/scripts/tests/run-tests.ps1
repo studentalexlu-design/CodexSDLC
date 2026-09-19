@@ -74,7 +74,8 @@ function Assert-True {
 function Invoke-Script {
     # 參數名不可用 $Args —— 那是 PowerShell 的自動變數（未繫結引數陣列），
     # 宣告成 [hashtable] 會在繫結期就轉型失敗。
-    param([string]$Script, [string]$Stdin = '', [hashtable]$Params = @{}, [hashtable]$Env = @{})
+    # $Positional：接在具名參數後面的位置引數（例如 sdlc.ps1 set 的 key=value）。
+    param([string]$Script, [string]$Stdin = '', [hashtable]$Params = @{}, [hashtable]$Env = @{}, [string[]]$Positional = @())
 
     $psi = [Diagnostics.ProcessStartInfo]::new()
     $psi.FileName               = 'pwsh'
@@ -97,6 +98,7 @@ function Invoke-Script {
         if ($v -is [switch] -or $v -is [bool]) { if ($v) { $psi.ArgumentList.Add("-$k") } }
         else { $psi.ArgumentList.Add("-$k"); $psi.ArgumentList.Add([string]$v) }
     }
+    foreach ($a in $Positional) { $psi.ArgumentList.Add($a) }
     foreach ($k in $Env.Keys) { $psi.Environment[$k] = [string]$Env[$k] }
 
     $proc = [Diagnostics.Process]::Start($psi)

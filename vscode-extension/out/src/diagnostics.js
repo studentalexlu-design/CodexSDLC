@@ -4,9 +4,12 @@
 // 這一層不判斷任何規則：哪些檔要掃、哪一行算違規，全部是 guideline-gate／dlp-gate 說了算。
 // extension 自己判規則的那一天，就是兩份實作開始分岔、而沒有人知道的那一天。
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.RULES_REL = void 0;
 exports.guidelineOutcome = guidelineOutcome;
 exports.dlpOutcome = dlpOutcome;
 exports.groupByFile = groupByFile;
+exports.rulesOutcome = rulesOutcome;
+const config_1 = require("./config");
 const norm = (p) => p.replace(/\\/g, '/').replace(/^\.\//, '');
 function guidelineOutcome(r) {
     const records = r.hits.map((h) => ({
@@ -58,4 +61,21 @@ function groupByFile(outcome, requested) {
         map.set(r.file, list);
     }
     return map;
+}
+// rules.json 自己的問題（guideline-gate -Validate -Json）→ Problems。
+// 對錯全由 gate 判；這裡只負責把「第幾條、哪個欄位」放到那一行。找不到位置就放第一行 —— 不丟掉。
+exports.RULES_REL = 'guidelines/rules.json';
+function rulesOutcome(v, text) {
+    const records = v.ruleProblems.map((p) => {
+        const at = p.index !== null ? (0, config_1.ruleLine)(text, p.index, p.field) : undefined;
+        return {
+            file: exports.RULES_REL,
+            line: (at ?? 0) + 1,
+            severity: 'error',
+            message: p.index !== null ? `${p.message}（這一條規則沒有生效，其餘照常）` : `${p.message}（整份規則都沒有生效）`,
+            code: p.field ? `rules-${p.field}` : 'rules-file',
+            source: 'SDLC 規範',
+        };
+    });
+    return { scanned: [exports.RULES_REL], records };
 }

@@ -24,7 +24,8 @@
 #  10. 版本號單一真相：AGENTS.md 與 config.toml 的標題要對得上版本檔
 #  11. VS Code extension 的 package.json 版本 = 版本檔（repo 裡有 extension 原始碼時才檢查）
 #  12. hooks.json 的形狀在 Codex 上真的擋得住：exit code 傳得出來、matcher 對得上真正的工具名稱
-#  13. sdlc.config.json 的 review.maxRounds 是 1–5 的整數（寫壞時 hook 照預設算，症狀是「設定沒生效」）
+#  13. sdlc.config.json 的 review.maxRounds 是 1–5 的整數、update.check 是認得的值（寫壞時照預設算，症狀是「設定沒生效」）
+#  14. 合法值的單一來源：sdlc.config.schema.json／rules.schema.json 跟各腳本留的常數一致
 #
 # v4.0.0 移除的檢查：skill matrix 覆蓋、gate 定義完整性、回傳 shape 對 policy 檔、
 # tier 表對 route-profiles、findings 段落對 template、合併 mode 矛盾、文件 tier 預算。
@@ -43,6 +44,9 @@ param(
     [string]$WorkflowConfig    = '.codex/config.toml',
     [string]$ExtensionManifest = 'vscode-extension/package.json',
     [string]$HooksFile         = '.codex/hooks.json',
+    [string]$ConfigSchema      = '.codex/bdd-workflow/sdlc.config.schema.json',
+    [string]$RulesSchema       = '.codex/bdd-workflow/rules.schema.json',
+    [string]$ScriptDir         = '.codex/scripts',
     [switch]$Json
 )
 
@@ -473,11 +477,14 @@ if (Test-Path $HooksFile) {
     }
 }
 
-# ---- 13. review.maxRounds 的型別與範圍 ----
+# ---- 13. 設定值的型別與範圍 ----
 # 修正輪上限由 handoff-lint 每次現讀 sdlc.config.json。值寫壞時 hook 照預設 3 輪算、不擋 spawn ——
 # 所以寫壞的症狀是「設了 5，還是第 3 輪就停」，而且要等到真的跑到那一輪才看得出來。這道檢查讓它在 doctor 就紅。
-# 範圍規則跟 handoff-lint 的一份相同（lint 要能獨立驗），兩邊由 test-handoff-lint.ps1 的交叉測試綁在一起。
-# 設定檔整份解析不了的情況由檢查 9 報，這裡不重複。
+# update.check 同理：不認得的值照 daily 算 —— 打成 "nevr" 的人以為關掉了，其實每天連網。
+# 範圍規則跟 handoff-lint 的一份相同（lint 要能獨立驗），兩邊由 test-handoff-lint.ps1 的交叉測試綁在一起；
+# 這兩個常數跟 schema 由檢查 14 綁在一起。設定檔整份解析不了的情況由檢查 9 報，這裡不重複。
+$ReviewRoundsRange = @(1, 5)
+$UpdateCheckValues = @('daily', 'never')
 if (Test-Path $ConfigFile) {
     $cfg13 = $null
     try { $cfg13 = Get-Content $ConfigFile -Raw -Encoding UTF8 | ConvertFrom-Json } catch { }
@@ -487,12 +494,115 @@ if (Test-Path $ConfigFile) {
             Add-V 'review-config-invalid' "$ConfigFile 的 review 不是物件" '寫成 "review": { "maxRounds": 3 } —— 寫壞時 handoff-lint 照預設 3 輪算，設定等於沒生效'
         } elseif ($review13.PSObject.Properties['maxRounds']) {
             $v13 = $review13.maxRounds
-            if (-not (($v13 -is [int] -or $v13 -is [long]) -and $v13 -ge 1 -and $v13 -le 5)) {
+            if (-not (($v13 -is [int] -or $v13 -is [long]) -and $v13 -ge $ReviewRoundsRange[0] -and $v13 -le $ReviewRoundsRange[1])) {
                 Add-V 'review-max-rounds-invalid' "$ConfigFile 的 review.maxRounds 是 $(ConvertTo-Json -InputObject $v13 -Compress)" `
-                      '改成 1–5 的整數 —— 值不合法時 handoff-lint 照預設 3 輪算，設定等於沒生效'
+                      "改成 $($ReviewRoundsRange[0])–$($ReviewRoundsRange[1]) 的整數 —— 值不合法時 handoff-lint 照預設 3 輪算，設定等於沒生效"
             }
         }
     }
+    if ($cfg13 -is [pscustomobject] -and $cfg13.PSObject.Properties['update'] -and $cfg13.update -is [pscustomobject] -and
+        $cfg13.update.PSObject.Properties['check']) {
+        $c13 = $cfg13.update.check
+        if (-not ($c13 -is [string] -and $c13 -in $UpdateCheckValues)) {
+            Add-V 'update-check-invalid' "$ConfigFile 的 update.check 是 $(ConvertTo-Json -InputObject $c13 -Compress)" `
+                  "改成 $($UpdateCheckValues -join ' 或 ') —— 不認得的值照 daily 算，會連網檢查（pwsh .codex/scripts/sdlc.ps1 set update.check=never）"
+        }
+    }
+}
+
+# ---- 14. 合法值的單一來源：schema ↔ 各腳本的常數 ----
+# sdlc.config.schema.json／rules.schema.json 是合法值的唯一真相：VS Code 的補全與波浪線、`sdlc.ps1 set` 的檢查、
+# extension 的設定面板都讀它。但 hook（handoff-lint、guideline-gate）與這支 lint 必須在 schema 不在時照跑，
+# 所以各自留了一份常數 —— 這道檢查讓每一份都跟 schema 綁在一起：只改一邊，這裡紅。
+# 沒有這道檢查，下一次 Codex 多一個 effort 值，UI 會讓人選、hook 會照舊值判，而兩邊看起來都對。
+# 常數用 PowerShell 的語法樹讀（不執行那幾支腳本）。
+function Get-ScriptConstant([string]$file, [string]$name) {
+    if (-not (Test-Path $file)) { return $null }
+    $tree = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file).Path, [ref]$null, [ref]$null)
+    $hit = $tree.Find({
+        param($n)
+        $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+        $n.Left -is [System.Management.Automation.Language.VariableExpressionAst] -and
+        $n.Left.VariablePath.UserPath -eq $name
+    }, $true)
+    if (-not $hit -or $hit.Right -isnot [System.Management.Automation.Language.CommandExpressionAst]) { return $null }
+    try { return , $hit.Right.Expression.SafeGetValue() } catch { return $null }
+}
+function Test-SameSet($a, $b) {
+    $x = @($a | ForEach-Object { [string]$_ } | Sort-Object -Unique)
+    $y = @($b | ForEach-Object { [string]$_ } | Sort-Object -Unique)
+    if ($x.Count -ne $y.Count) { return $false }
+    if ($x.Count -eq 0) { return $true }
+    return (@(Compare-Object $x $y -CaseSensitive).Count -eq 0)
+}
+function Get-JsonDoc([string]$file) {
+    try { return (Get-Content $file -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop) } catch { return $null }
+}
+
+$sdlcScript  = Join-Path $ScriptDir 'sdlc.ps1'
+$hookScript  = Join-Path $ScriptDir 'handoff-lint.ps1'
+$gateScript  = Join-Path $ScriptDir 'guideline-gate.ps1'
+$schemaFix   = '兩邊改成一樣 —— schema 是 UI、sdlc.ps1 set 與編輯器讀的那一份，常數是 hook／lint 實際照著判的那一份'
+
+$cs = $null
+if (Test-Path $ConfigSchema) {
+    $cs = Get-JsonDoc $ConfigSchema
+    if (-not $cs) { Add-V 'schema-unparsable' $ConfigSchema '修正 JSON 格式 —— 解析不了時編輯器沒有補全、sdlc.ps1 set 無法檢查任何值' }
+} elseif (Test-Path $sdlcScript) {
+    Add-V 'schema-missing' $ConfigSchema '這是工具那半的檔，缺了它 sdlc.ps1 set 與 VS Code 的設定面板都無法運作 —— 重跑 update 或從發佈物補回來'
+}
+if ($cs) {
+    $effortEnum = @($cs.definitions.effort.enum)
+    $known = Get-ScriptConstant $sdlcScript 'KnownEfforts'
+    if ($null -ne $known -and -not (Test-SameSet $effortEnum (@('inherit') + @($known)))) {
+        Add-V 'schema-drift' "effort：schema 是 $($effortEnum -join '／')，sdlc.ps1 的 `$KnownEfforts ＋ inherit 是 $((@('inherit') + @($known)) -join '／')" $schemaFix
+    }
+
+    $mr = $cs.properties.review.properties.maxRounds
+    $pairs = @(
+        @{ label = 'handoff-lint.ps1 的 $MinReviewRounds';        want = $mr.minimum; got = (Get-ScriptConstant $hookScript 'MinReviewRounds') }
+        @{ label = 'handoff-lint.ps1 的 $MaxAllowedReviewRounds'; want = $mr.maximum; got = (Get-ScriptConstant $hookScript 'MaxAllowedReviewRounds') }
+        @{ label = 'handoff-lint.ps1 的 $DefaultReviewRounds';    want = $mr.default; got = (Get-ScriptConstant $hookScript 'DefaultReviewRounds') }
+        @{ label = 'sdlc.ps1 的 $DefaultReviewRounds';            want = $mr.default; got = (Get-ScriptConstant $sdlcScript 'DefaultReviewRounds') }
+        @{ label = 'agent-lint.ps1 的 $ReviewRoundsRange 下限';    want = $mr.minimum; got = $ReviewRoundsRange[0] }
+        @{ label = 'agent-lint.ps1 的 $ReviewRoundsRange 上限';    want = $mr.maximum; got = $ReviewRoundsRange[1] }
+    )
+    foreach ($p in $pairs) {
+        if ($null -ne $p.got -and [string]$p.got -ne [string]$p.want) {
+            Add-V 'schema-drift' "review.maxRounds：schema 是 $($p.want)，$($p.label) 是 $($p.got)" $schemaFix
+        }
+    }
+
+    $checkEnum = @($cs.properties.update.properties.check.enum)
+    foreach ($p in @(
+        @{ label = 'sdlc.ps1 的 $UpdateChecks'; got = (Get-ScriptConstant $sdlcScript 'UpdateChecks') }
+        @{ label = 'agent-lint.ps1 的 $UpdateCheckValues'; got = $UpdateCheckValues }
+    )) {
+        if ($null -ne $p.got -and -not (Test-SameSet $checkEnum $p.got)) {
+            Add-V 'schema-drift' "update.check：schema 是 $($checkEnum -join '／')，$($p.label) 是 $(@($p.got) -join '／')" $schemaFix
+        }
+    }
+
+    $srcPattern = [string]$cs.properties.update.properties.source.pattern
+    $ghPattern = Get-ScriptConstant $sdlcScript 'GitHubSourcePattern'
+    if ($null -ne $ghPattern -and $srcPattern -cne ('^$|' + $ghPattern)) {
+        Add-V 'schema-drift' "update.source：schema 的 pattern 是 $srcPattern，應該是 ^`$| 加上 sdlc.ps1 的 `$GitHubSourcePattern（$ghPattern）" $schemaFix
+    }
+}
+
+if (Test-Path $RulesSchema) {
+    $rs = Get-JsonDoc $RulesSchema
+    if (-not $rs) {
+        Add-V 'schema-unparsable' $RulesSchema '修正 JSON 格式 —— 解析不了時編輯器對 guidelines/rules.json 沒有任何提示'
+    } else {
+        $sevEnum = @($rs.definitions.rule.properties.severity.enum)
+        $sev = Get-ScriptConstant $gateScript 'Severities'
+        if ($null -ne $sev -and -not (Test-SameSet $sevEnum $sev)) {
+            Add-V 'schema-drift' "severity：schema 是 $($sevEnum -join '／')，guideline-gate.ps1 的 `$Severities 是 $(@($sev) -join '／')" $schemaFix
+        }
+    }
+} elseif (Test-Path $gateScript) {
+    Add-V 'schema-missing' $RulesSchema '這是工具那半的檔 —— 重跑 update 或從發佈物補回來'
 }
 
 # ---- 輸出 ----

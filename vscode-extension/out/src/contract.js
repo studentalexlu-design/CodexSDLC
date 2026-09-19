@@ -8,20 +8,25 @@
 // PowerShell 那一側的同一份合約由 test-sdlc.ps1 的「-Json 是結構化合約」守住；
 // 這一側由 test/integration.test.ts 拿**真的** sdlc.ps1 輸出來驗。欄位改名，兩邊都會紅。
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.ContractError = exports.MIN_WORKFLOW_VERSION = exports.SUPPORTED_SCHEMA = void 0;
+exports.ContractError = exports.MIN_SETTINGS_VERSION = exports.MIN_WORKFLOW_VERSION = exports.SUPPORTED_SCHEMA = void 0;
 exports.compareVersions = compareVersions;
 exports.parseEnvelope = parseEnvelope;
 exports.parseDoctor = parseDoctor;
 exports.parseApply = parseApply;
 exports.parseCheckUpdate = parseCheckUpdate;
 exports.parseWhatsNew = parseWhatsNew;
+exports.parseSet = parseSet;
 exports.parseTune = parseTune;
 exports.parseGuidelineGate = parseGuidelineGate;
+exports.parseRulesValidation = parseRulesValidation;
 exports.parseDlpGate = parseDlpGate;
 exports.SUPPORTED_SCHEMA = 1;
 // 結構化的 -Json 從這一版的工作流開始。更舊的 sdlc.ps1 連 -CodexPath 這類參數都不認得，
 // 叫下去只會得到一個參數錯誤 —— 狀態列要說的是「工作流太舊」，不是「健檢失敗」。
 exports.MIN_WORKFLOW_VERSION = '4.8.0';
+// 在面板裡改設定要 `sdlc.ps1 set` 與專案裡的 schema，兩者都從這一版開始。更舊的專案照樣有狀態列，
+// 面板只顯示、不給改，並說要升到哪一版。
+exports.MIN_SETTINGS_VERSION = '4.9.0';
 function compareVersions(a, b) {
     const pa = a.split('.').map((x) => parseInt(x, 10) || 0);
     const pb = b.split('.').map((x) => parseInt(x, 10) || 0);
@@ -116,7 +121,12 @@ function parseDoctor(env) {
     }
     return {
         version: { contract: str(version, 'contract', `${at}.version`), minCompatible: str(version, 'minCompatible', `${at}.version`) },
-        config: { exists: bool(config, 'exists', `${at}.config`), parsable: bool(config, 'parsable', `${at}.config`) },
+        config: {
+            exists: bool(config, 'exists', `${at}.config`),
+            parsable: bool(config, 'parsable', `${at}.config`),
+            comments: 'comments' in config ? bool(config, 'comments', `${at}.config`) : false,
+            schemaRef: 'schemaRef' in config ? bool(config, 'schemaRef', `${at}.config`) : false,
+        },
         tuning: { status: str(tuning, 'status', `${at}.tuning`), stale: strArr(tuning, 'stale', `${at}.tuning`) },
         unverifiedModel: strArr(d, 'unverifiedModel', at),
         baseline: {
@@ -194,12 +204,45 @@ function parseWhatsNew(env) {
     }
     return { source, latest: null, text: '' };
 }
+// 值可能是字串或整數（review.maxRounds）；面板只拿來顯示，一律轉成字串。
+const scalar = (o, k, at) => {
+    const v = field(o, k, at);
+    if (v === null)
+        return null;
+    need(typeof v === 'string' || typeof v === 'number', `${at}.${k}`, 'string|number|null', v);
+    return String(v);
+};
+function parseSet(env) {
+    const d = env.data;
+    const error = 'error' in d ? optStr(d, 'error', '$.data') : null;
+    // 在讀設定檔、讀 schema 之前就停下來的錯誤，不會有 changes／errors。
+    const changes = 'changes' in d ? arr(d, 'changes', '$.data') : [];
+    const errors = 'errors' in d ? arr(d, 'errors', '$.data') : [];
+    return {
+        error,
+        changes: changes.map((c, i) => {
+            const cat = `$.data.changes[${i}]`;
+            const o = need(isObj(c), cat, 'object', c);
+            return { key: str(o, 'key', cat), from: scalar(o, 'from', cat), to: scalar(o, 'to', cat) ?? '', changed: bool(o, 'changed', cat), needsApply: bool(o, 'needsApply', cat) };
+        }),
+        errors: errors.map((e, i) => {
+            const eat = `$.data.errors[${i}]`;
+            const o = need(isObj(e), eat, 'object', e);
+            return { key: str(o, 'key', eat), value: optStr(o, 'value', eat), message: str(o, 'message', eat), suggestion: optStr(o, 'suggestion', eat) };
+        }),
+        written: 'written' in d ? bool(d, 'written', '$.data') : false,
+        applied: 'applied' in d ? bool(d, 'applied', '$.data') : false,
+        preview: 'preview' in d ? bool(d, 'preview', '$.data') : false,
+        configCreated: 'configCreated' in d ? bool(d, 'configCreated', '$.data') : false,
+    };
+}
 function parseTune(env) {
     const d = env.data;
     if ('error' in d)
-        return { proposal: [], applied: false };
+        return { proposal: [], applied: false, generatedAt: null };
     return {
         applied: bool(d, 'applied', '$.data'),
+        generatedAt: 'generatedAt' in d ? optStr(d, 'generatedAt', '$.data') : null,
         proposal: arr(d, 'proposal', '$.data').map((p, i) => {
             const pat = `$.data.proposal[${i}]`;
             const o = need(isObj(p), pat, 'object', p);
@@ -235,6 +278,25 @@ function parseGuidelineGate(stdout) {
             return { rule: str(x, 'rule', hat), severity: str(x, 'severity', hat), file: str(x, 'file', hat), line: num(x, 'line', hat), message: str(x, 'message', hat), fix: str(x, 'fix', hat) };
         }),
     };
+}
+function parseRulesValidation(stdout) {
+    const o = parseJsonObject(stdout, 'guideline-gate -Validate');
+    const problems = strArr(o, 'problems', '$');
+    const ruleProblems = 'rule_problems' in o
+        ? arr(o, 'rule_problems', '$').map((p, i) => {
+            const pat = `$.rule_problems[${i}]`;
+            const x = need(isObj(p), pat, 'object', p);
+            const index = field(x, 'index', pat);
+            return {
+                index: need(index === null || typeof index === 'number', `${pat}.index`, 'number|null', index),
+                id: optStr(x, 'id', pat),
+                field: optStr(x, 'field', pat),
+                message: str(x, 'message', pat),
+            };
+        })
+        // 舊版只有句子：一律當成檔案層級的問題（放第一行），不從句子裡猜是哪一條。
+        : problems.map((message) => ({ index: null, id: null, field: null, message }));
+    return { passed: bool(o, 'passed', '$'), exists: bool(o, 'exists', '$'), ruleCount: num(o, 'rule_count', '$'), problems, ruleProblems };
 }
 function parseDlpGate(stdout) {
     const o = parseJsonObject(stdout, 'dlp-gate');

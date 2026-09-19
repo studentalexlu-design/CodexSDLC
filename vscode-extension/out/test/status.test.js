@@ -86,3 +86,21 @@ const now = new Date('2026-09-13T08:00:00Z');
     const v = (0, status_1.statusFromDoctor)(doctor((d) => { d.review = { maxRounds: 5, source: 'config', valid: true }; }), now);
     strict_1.default.ok(v.tooltip.some((l) => l === '審核修正輪上限：5 輪（sdlc.config.json 的 review.maxRounds）'));
 });
+(0, node_test_1.test)('設定檔有註解 → 警告（下一次寫入會不見），不算錯', () => {
+    const v = (0, status_1.statusFromDoctor)(doctor((d) => { d.config = { exists: true, parsable: true, comments: true, schemaRef: true }; }), now);
+    strict_1.default.equal(v.level, 'warn');
+    strict_1.default.match(v.text, /設定檔有註解/);
+});
+(0, node_test_1.test)('update.check 打錯 → 自己一條看得懂的警告，不是泛泛的 agent-lint', () => {
+    const v = (0, status_1.statusFromDoctor)(doctor((d) => {
+        d.lint = { ran: true, passed: false, violations: [{ rule: 'update-check-invalid', detail: 'update.check 是 "nevr"', fix: 'x' }] };
+    }), now);
+    strict_1.default.match(v.text, /更新檢查頻率寫壞了$/);
+    strict_1.default.doesNotMatch(v.text, /agent-lint/);
+});
+(0, node_test_1.test)('沒有 hooks.json → 錯誤等級（整層強制不存在，比「沒信任」更嚴重）', () => {
+    const v = (0, status_1.statusFromDoctor)(doctor((d) => { d.hooks = { status: 'no-hooks', codex: null }; d.problems = 1; }), now);
+    strict_1.default.equal(v.level, 'error');
+    strict_1.default.match(v.text, /沒有 hooks\.json/);
+    strict_1.default.ok(v.issues.some((i) => /update/.test(i.detail)), '沒說怎麼補回來');
+});

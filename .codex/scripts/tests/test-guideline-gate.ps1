@@ -229,4 +229,23 @@ Describe-Suite 'guideline-gate / -Validate' {
             Assert-Match 'severity' $r.stderr
         } finally { Remove-Item $rules -Force -ErrorAction SilentlyContinue }
     }
+
+    It-Should '-Json 的 rule_problems 說得出第幾條、哪個欄位（VS Code 靠它把問題放到那一行）' {
+        $rules = New-GlRules '{ "$schema": "../x.json", "rules": [ { "id": "ok", "pattern": "x" }, { "pattern": "y" }, { "id": "bad-sev", "pattern": "z", "severity": "blok" }, { "id": "bad-re", "pattern": "(" } ] }'
+        try {
+            $r = Invoke-Script $Gate -Params @{ Validate = $true; Json = $true; RulesFile = $rules }
+            Assert-Equal 2 $r.exit
+            $j = $r.stdout | ConvertFrom-Json
+            Assert-Equal 1 $j.rule_count '$schema 這個 key 不該讓 gate 讀不懂整份規則'
+            $got = @($j.rule_problems | ForEach-Object { "$($_.index)|$($_.id)|$($_.field)" })
+            Assert-Equal '2||id' $got[0]
+            Assert-Equal '3|bad-sev|severity' $got[1]
+            Assert-Equal '4|bad-re|pattern' $got[2]
+            Assert-Equal @($j.problems).Count @($j.rule_problems).Count 'rule_problems 跟 problems 應該是同一批問題'
+            $broken = New-GlRules '{ "rules": [ '
+            $jb = (Invoke-Script $Gate -Params @{ Validate = $true; Json = $true; RulesFile = $broken }).stdout | ConvertFrom-Json
+            Assert-True ($null -eq @($jb.rule_problems)[0].index) '整份 JSON 壞掉是檔案層級的問題，不該指到某一條'
+            Remove-Item $broken -Force -ErrorAction SilentlyContinue
+        } finally { Remove-Item $rules -Force -ErrorAction SilentlyContinue }
+    }
 }

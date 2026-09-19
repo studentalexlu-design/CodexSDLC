@@ -1,5 +1,6 @@
 {
-  "note": "範例規則。整份請換成你們團隊自己的。severity 省略時預設 warn；block 會直接讓那次寫檔失敗，所以要明確寫。applies-to 省略 = 套用到所有未被排除的檔。改完跑 `pwsh -NoProfile -File .codex/scripts/guideline-gate.ps1 -Validate`。",
+  "$schema": "../.codex/bdd-workflow/rules.schema.json",
+  "note": "範例規則。整份請換成你們團隊自己的。severity 省略時預設 warn；block 會直接讓那次寫檔失敗，所以要明確寫。applies-to 省略 = 套用到所有未被排除的檔。改完跑 `pwsh -NoProfile -File .codex/scripts/guideline-gate.ps1 -Validate`（VS Code extension 存檔時會替你跑）。",
   "rules": [
     {
       "id": "sql-no-nolock",
