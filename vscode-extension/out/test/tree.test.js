@@ -71,7 +71,8 @@ function input(over = {}) {
         rootName: 'shop', rootPath: 'C:/work/shop', workflowVersion: '4.9.0', schema, canEdit: true,
         config: (0, config_1.readConfig)(configText), knownAgents: [], doctor: doctor(), checking: false, pendingAgents: [],
         guidelines: { dir: true, files: ['README.md', 'coding.md', 'rules.json', 'sql.md'], rulesExists: true, ruleCount: 8, gateDisabled: false },
-        machine: { pwsh: { ok: true, path: 'C:/pwsh/pwsh.exe' }, codex: { source: 'path', path: 'C:/bin/codex.exe' }, extensionVersion: '4.9.0' },
+        agentsNewExists: false,
+        machine: { pwsh: { ok: true, path: 'C:/pwsh/pwsh.exe' }, extensionVersion: '4.9.0', payloadVersion: '4.9.0' },
         ...over,
     };
 }
@@ -136,18 +137,21 @@ const nodes = (i) => new Map((0, tree_1.flatten)((0, tree_1.buildSettingsTree)(i
     strict_1.default.match(n.get('agents/blocked').label, /4\.9\.0/);
     strict_1.default.match(n.get('agents/reviewer').description, /effort medium/, '不能改也要看得到值');
 });
-(0, node_test_1.test)('hooks 沒信任 → 那一行紅、帶「在終端機信任」；找不到 codex → 帶「選擇 codex」', () => {
-    const untrusted = nodes(input({ doctor: doctor((x) => { x.hooks = { status: 'untrusted', codex: 'c', counts: { total: 4, trusted: 2, untrusted: 1, modified: 1, disabled: 0 } }; }) }));
-    const h = untrusted.get('status/hooks');
-    strict_1.default.equal(h.tone, 'error');
-    strict_1.default.equal(h.contextValue, 'hooksUntrusted');
-    strict_1.default.equal(h.command?.command, 'codexSdlc.trustHooks');
-    strict_1.default.match(h.label, /1 條未信任、1 條改過待重審/);
-    strict_1.default.ok(![...untrusted.keys()].some((k) => k.startsWith('status/issues/') && /信任/.test(untrusted.get(k).label)), 'hooks 的問題重複列了兩次');
-    const unknown = nodes(input({ doctor: doctor((x) => { x.hooks = { status: 'unknown', reason: 'codex-not-found', codex: null }; }) })).get('status/hooks');
-    strict_1.default.equal(unknown.contextValue, 'hooksUnknown');
-    strict_1.default.equal(unknown.command?.command, 'codexSdlc.pickCodex');
-    strict_1.default.notEqual(unknown.tone, 'ok', '查不到不能顯示成綠的');
+(0, node_test_1.test)('hooks.json 在 → 那一行綠，而且不提信任（要問 codex 的事一律不做）', () => {
+    const n = nodes(input({ doctor: doctor((x) => { x.hooks = { status: 'skipped', codex: null }; }) }));
+    const h = n.get('status/hooks');
+    strict_1.default.equal(h.tone, 'ok');
+    strict_1.default.equal(h.contextValue, undefined);
+    strict_1.default.doesNotMatch(h.label, /信任/);
+});
+(0, node_test_1.test)('AGENTS.md.new 還在 → 常駐一行，點一下開對照', () => {
+    const n = nodes(input({ agentsNewExists: true }));
+    const m = n.get('status/merge');
+    strict_1.default.equal(m.tone, 'error');
+    strict_1.default.equal(m.contextValue, 'needsMerge');
+    strict_1.default.equal(m.command?.command, 'codexSdlc.mergeAgents');
+    strict_1.default.deepEqual(m.command?.arguments, ['C:/work/shop']);
+    strict_1.default.ok(!nodes(input()).has('status/merge'), '沒有 .new 時不該有這一行');
 });
 (0, node_test_1.test)('doctor 的其他問題列在「需要處理」底下', () => {
     const n = nodes(input({ doctor: doctor((x) => { x.config.comments = true; x.problems = 0; }) }));
@@ -192,10 +196,14 @@ const nodes = (i) => new Map((0, tree_1.flatten)((0, tree_1.buildSettingsTree)(i
     strict_1.default.ok(!n.has('guidelines/gate'));
 });
 (0, node_test_1.test)('這台機器：找不到 pwsh → 紅，帶「選擇」', () => {
-    const n = nodes(input({ machine: { pwsh: { ok: false, message: '找不到 pwsh' }, codex: { source: 'none' }, extensionVersion: '4.9.0' } }));
+    const n = nodes(input({ machine: { pwsh: { ok: false, message: '找不到 pwsh' }, extensionVersion: '4.9.0' } }));
     strict_1.default.equal(n.get('machine/pwsh').tone, 'error');
     strict_1.default.equal(n.get('machine/pwsh').contextValue, 'machinePwsh');
-    strict_1.default.match(n.get('machine/codex').description, /找不到/);
+    // 沒有內附發佈物（開發模式）要講出來 —— 不然「安裝到這個工作區」會在按下去之後才說沒東西可裝。
+    strict_1.default.match(n.get('machine/payload').description, /沒有/);
+});
+(0, node_test_1.test)('這台機器：沒有 codex 那一行了（信任檢查整條拿掉）', () => {
+    strict_1.default.ok(!nodes(input()).has('machine/codex'));
 });
 (0, node_test_1.test)('設定檔壞了 → 一句話＋開檔，而不是一棵空樹', () => {
     const n = nodes(input({ config: undefined, configError: 'sdlc.config.json 解析不了' }));
@@ -209,8 +217,11 @@ const nodes = (i) => new Map((0, tree_1.flatten)((0, tree_1.buildSettingsTree)(i
     strict_1.default.match(n.get('agents/reviewer').description, /effort inherit/);
     strict_1.default.equal(n.get('review/maxRounds').edit?.key, 'review.maxRounds');
 });
-(0, node_test_1.test)('沒有 hooks.json → 面板那一行是紅的，並說怎麼補', () => {
-    const h = nodes(input({ doctor: doctor((x) => { x.hooks = { status: 'no-hooks', codex: null }; }) })).get('status/hooks');
+(0, node_test_1.test)('沒有 hooks.json → 面板那一行是紅的，而且點下去就能補（不是叫人去終端機）', () => {
+    const n = nodes(input({ doctor: doctor((x) => { x.hooks = { status: 'no-hooks', codex: null }; }) }));
+    const h = n.get('status/hooks');
     strict_1.default.equal(h.tone, 'error');
-    strict_1.default.match(h.tooltip, /update/);
+    strict_1.default.equal(h.contextValue, 'toolFilesMissing');
+    strict_1.default.equal(h.command?.command, 'codexSdlc.repair');
+    strict_1.default.ok(![...n.keys()].some((k) => k.startsWith('status/issues/') && /hooks/.test(n.get(k).label)), 'hooks 的問題重複列了兩次');
 });

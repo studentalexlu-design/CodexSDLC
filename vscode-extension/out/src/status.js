@@ -10,38 +10,16 @@ exports.statusFromFailure = statusFromFailure;
 const rank = { ok: 0, warn: 1, error: 2 };
 function issuesFromDoctor(d) {
     const issues = [];
-    switch (d.hooks.status) {
-        case 'untrusted': {
-            const c = d.hooks.counts;
-            const parts = [];
-            if (c?.untrusted)
-                parts.push(`${c.untrusted} 條未信任`);
-            if (c?.modified)
-                parts.push(`${c.modified} 條改過待重審`);
-            if (c?.disabled)
-                parts.push(`${c.disabled} 條被停用`);
-            issues.push({
-                level: 'error',
-                badge: '$(shield) hooks 未信任',
-                detail: `Codex hooks：${parts.join('、') || '有未信任的'} —— 沒信任的那幾條一次都不會跑，而且不會提示。在專案裡開 codex，「Hooks need review」選 Trust all and continue。`,
-            });
-            break;
-        }
-        case 'project-untrusted':
-            issues.push({
-                level: 'error',
-                badge: '$(shield) 專案未信任',
-                detail: 'Codex 還沒信任這個專案 —— 專案層的 config 與 hooks 整個停用。在專案裡開 codex，信任這個資料夾，再在「Hooks need review」選 Trust all and continue。',
-            });
-            break;
-        // 檔不在 = 整層不存在，而且沒有任何跡象 —— 這是最該吵的一種。
-        case 'no-hooks':
-            issues.push({
-                level: 'error',
-                badge: '$(shield) 沒有 hooks.json',
-                detail: '.codex/hooks.json 不在 —— 機械強制層整層不存在：寫檔與委派完全沒有人擋，而且 Codex 不會提示。把發佈物解壓到別處，跑 sdlc.ps1 update -Target <這個專案> 補回工具檔。',
-            });
-            break;
+    // Codex 的信任狀態不在這裡看（4.10.0 起 doctor 預設就不問）：問它要另外叫起一個 codex 子行程，
+    // 而它回答的問題在這個介面裡按不動。檔不在就不一樣 —— 整層不存在、沒有任何跡象，而且補得回來。
+    // 讀到舊工作流（或終端機加了 -CheckHookTrust）回的 untrusted／unknown 時也一樣不報：見下面那一條。
+    if (d.hooks.status === 'no-hooks') {
+        issues.push({
+            level: 'error',
+            badge: '$(shield) 沒有 hooks.json',
+            detail: '.codex/hooks.json 不在 —— 機械強制層整層不存在：寫檔與委派完全沒有人擋，而且 Codex 不會提示。用發佈物把工具檔補回來。',
+            fix: { contextValue: 'toolFilesMissing', command: { command: 'codexSdlc.repair', title: '補回工具檔' } },
+        });
     }
     if (d.config.exists && !d.config.parsable) {
         issues.push({ level: 'error', badge: '$(error) 設定檔壞了', detail: 'sdlc.config.json 解析不了 —— apply 與 doctor 都讀不到你的設定。' });
@@ -51,6 +29,7 @@ function issuesFromDoctor(d) {
             level: 'warn',
             badge: '$(sync) 調校未套用',
             detail: `sdlc.config.json 改過但沒有 apply：${d.tuning.stale.join('、')} —— 不 apply 的話流程用的是舊值，而畫面上看不出來。`,
+            fix: { contextValue: 'tuningPending', command: { command: 'codexSdlc.apply', title: 'apply' } },
         });
     }
     if (d.config.comments) {
@@ -66,6 +45,7 @@ function issuesFromDoctor(d) {
             level: 'warn',
             badge: '$(cloud) 更新檢查頻率寫壞了',
             detail: `${badCheck.detail} —— 不認得的值照 daily 算，會連網檢查。在設定面板的「更新」裡重選一次。`,
+            fix: { command: { command: 'codexSdlc.openSettings', title: '開啟設定面板' } },
         });
     }
     if (!d.review.valid) {
@@ -73,6 +53,7 @@ function issuesFromDoctor(d) {
             level: 'warn',
             badge: '$(debug-restart) 修正輪上限寫壞了',
             detail: `sdlc.config.json 的 review.maxRounds 不是 1–5 的整數 —— 審核實際照預設 ${d.review.maxRounds} 輪算，你設的值沒有生效。`,
+            fix: { command: { command: 'codexSdlc.openSettings', title: '開啟設定面板' } },
         });
     }
     // 調校區塊對不上時 agent-lint（檢查 9）也會紅；review.maxRounds 寫壞時檢查 13 也會紅 ——
@@ -94,17 +75,12 @@ function issuesFromDoctor(d) {
     return issues.sort((a, b) => rank[b.level] - rank[a.level]);
 }
 function hookLine(d) {
-    switch (d.hooks.status) {
-        case 'trusted': return `Codex hooks：${d.hooks.counts?.total ?? 0} 條都已信任 —— 機械強制層會跑`;
-        case 'untrusted': return 'Codex hooks：有未信任的（見上）';
-        case 'project-untrusted': return 'Codex hooks：專案本身未信任（見上）';
-        case 'no-hooks': return 'Codex hooks：這個專案沒有 .codex/hooks.json';
-        case 'unknown':
-            return d.hooks.reason === 'codex-not-found'
-                ? 'Codex hooks：無法確認（找不到 codex 執行檔）'
-                : 'Codex hooks：無法確認（問 codex 沒有回應）';
-        default: return `Codex hooks：${d.hooks.status}`;
-    }
+    // skipped＝這次沒去問 Codex（extension 一律如此）。沒什麼好說的，就別佔 tooltip 一行。
+    if (d.hooks.status === 'skipped')
+        return undefined;
+    if (d.hooks.status === 'no-hooks')
+        return '機械強制層：這個專案沒有 .codex/hooks.json（見上）';
+    return `機械強制層：.codex/hooks.json 在（${d.hooks.status}）`;
 }
 function statusFromDoctor(d, now) {
     const issues = issuesFromDoctor(d);
@@ -118,7 +94,9 @@ function statusFromDoctor(d, now) {
     const tooltip = [`工作流 ${d.version.contract}（最低相容 ${d.version.minCompatible}）`];
     for (const i of issues)
         tooltip.push(`${i.level === 'error' ? '✖' : '⚠'} ${i.detail}`);
-    tooltip.push(hookLine(d));
+    const hooks = hookLine(d);
+    if (hooks)
+        tooltip.push(hooks);
     tooltip.push(d.tuning.status === 'in-sync' ? '調校：sdlc.config.json 與 agent 定義一致'
         : d.tuning.status === 'no-config' ? '調校：沒有 sdlc.config.json（全部交給 Codex CLI 決定）'
             : `調校：${d.tuning.status}`);

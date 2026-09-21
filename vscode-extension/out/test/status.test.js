@@ -40,20 +40,21 @@ const now = new Date('2026-09-13T08:00:00Z');
     strict_1.default.equal(v.level, 'error');
     strict_1.default.match(v.text, /agent-lint/);
 });
-(0, node_test_1.test)('hooks 沒被信任 → 紅，而且說去哪裡按', () => {
+// 信任狀態整條拿掉了：doctor 4.10.0 起預設就不問，回 skipped。
+// 這三條守的是「拿掉之後不會又冒出來」—— 舊工作流回的 untrusted／unknown 都不得再變成使用者要處理的事。
+(0, node_test_1.test)('沒查信任狀態 → 不是問題，也不佔 tooltip 一行', () => {
+    const v = (0, status_1.statusFromDoctor)(doctor((d) => { d.hooks = { status: 'skipped', codex: null }; }), now);
+    strict_1.default.equal(v.level, 'ok');
+    strict_1.default.ok(!v.tooltip.some((l) => /信任|機械強制層/.test(l)));
+});
+(0, node_test_1.test)('就算 doctor 回了未信任（舊工作流，或有人加了 -CheckHookTrust），狀態列也不報', () => {
     const v = (0, status_1.statusFromDoctor)(doctor((d) => { d.hooks = { status: 'untrusted', codex: 'codex', counts: { total: 4, trusted: 2, untrusted: 1, modified: 1, disabled: 0 } }; }), now);
-    strict_1.default.equal(v.level, 'error');
-    strict_1.default.match(v.text, /hooks 未信任/);
-    strict_1.default.ok(v.tooltip.some((l) => l.includes('Hooks need review')));
+    strict_1.default.equal(v.level, 'ok');
+    strict_1.default.ok(!v.issues.some((i) => /信任/.test(i.detail)));
 });
-(0, node_test_1.test)('專案本身沒被信任 → 紅', () => {
-    const v = (0, status_1.statusFromDoctor)(doctor((d) => { d.hooks = { status: 'project-untrusted', codex: 'codex', counts: { total: 0, trusted: 0, untrusted: 0, modified: 0, disabled: 0 } }; }), now);
-    strict_1.default.equal(v.level, 'error');
-});
-(0, node_test_1.test)('查不到 codex 不算問題（但 tooltip 要講）', () => {
+(0, node_test_1.test)('查不到 codex 不算問題', () => {
     const v = (0, status_1.statusFromDoctor)(doctor((d) => { d.hooks = { status: 'unknown', reason: 'codex-not-found', codex: null }; }), now);
     strict_1.default.equal(v.level, 'ok');
-    strict_1.default.ok(v.tooltip.some((l) => l.includes('無法確認')));
 });
 (0, node_test_1.test)('有新版而且沒看過 → 顯示；看過 → 安靜', () => {
     const unseen = (0, status_1.statusFromDoctor)(doctor((d) => { d.update = { ...d.update, cached: true, newer: true, latest: '4.9.0', seen: false }; }), now);
@@ -64,9 +65,9 @@ const now = new Date('2026-09-13T08:00:00Z');
 (0, node_test_1.test)('多個問題 → 最嚴重的放前面，其餘用 +N', () => {
     const v = (0, status_1.statusFromDoctor)(doctor((d) => {
         d.tuning = { status: 'stale', stale: ['a.toml'] };
-        d.hooks = { status: 'project-untrusted', codex: 'codex', counts: { total: 0, trusted: 0, untrusted: 0, modified: 0, disabled: 0 } };
+        d.hooks = { status: 'no-hooks', codex: null };
     }), now);
-    strict_1.default.match(v.text, /專案未信任 \+1/);
+    strict_1.default.match(v.text, /沒有 hooks\.json \+1/);
 });
 (0, node_test_1.test)('失敗狀態有人看得懂的一句話', () => {
     const v = (0, status_1.statusFromFailure)('pwsh-missing', '找不到 PowerShell 7（pwsh）');
@@ -98,9 +99,9 @@ const now = new Date('2026-09-13T08:00:00Z');
     strict_1.default.match(v.text, /更新檢查頻率寫壞了$/);
     strict_1.default.doesNotMatch(v.text, /agent-lint/);
 });
-(0, node_test_1.test)('沒有 hooks.json → 錯誤等級（整層強制不存在，比「沒信任」更嚴重）', () => {
+(0, node_test_1.test)('沒有 hooks.json → 錯誤等級（整層強制不存在），而且有一顆按得下去的按鈕', () => {
     const v = (0, status_1.statusFromDoctor)(doctor((d) => { d.hooks = { status: 'no-hooks', codex: null }; d.problems = 1; }), now);
     strict_1.default.equal(v.level, 'error');
     strict_1.default.match(v.text, /沒有 hooks\.json/);
-    strict_1.default.ok(v.issues.some((i) => /update/.test(i.detail)), '沒說怎麼補回來');
+    strict_1.default.equal(v.issues.find((i) => /hooks\.json/.test(i.badge))?.fix?.command?.command, 'codexSdlc.repair', '沒有補回工具檔的按鈕');
 });

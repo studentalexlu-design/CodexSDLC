@@ -38,8 +38,9 @@ export interface StoredProposalItem { agent: string; effort: string; reason: str
 
 export interface MachineInfo {
   pwsh: { ok: boolean; path?: string; message?: string };
-  codex: { source: 'setting' | 'path' | 'bundled' | 'none'; path?: string };
   extensionVersion: string;
+  // vsix 內附的發佈物版本（開發模式下沒有）。「安裝／補工具檔時會用哪一份」是這台機器的事。
+  payloadVersion?: string;
 }
 
 export interface TreeInput {
@@ -58,6 +59,8 @@ export interface TreeInput {
   pendingAgents: string[];
   proposal?: StoredProposalItem[];
   guidelines: { dir: boolean; files: string[]; rulesExists: boolean; ruleCount?: number; gateDisabled: boolean };
+  // 安裝／升級寫了 AGENTS.md.new 但還沒合併。合併之前整套流程不會照這一版跑。
+  agentsNewExists: boolean;
   machine: MachineInfo;
 }
 
@@ -88,10 +91,12 @@ function statusSection(i: TreeInput): SettingNode {
     command: { command: 'codexSdlc.doctor', title: 'doctor' },
   });
   children.push(hooksNode(i));
+  const merge = mergeNode(i);
+  if (merge) children.push(merge);
   children.push(updateStatusNode(i));
 
   // doctor 的其他問題。hooks 那一條上面已經有自己的一行，不重複。
-  const issues = d ? issuesFromDoctor(d).filter((x) => !/hooks 未信任|專案未信任/.test(x.badge)) : [];
+  const issues = d ? issuesFromDoctor(d).filter((x) => !/hooks\.json/.test(x.badge)) : [];
   if (issues.length > 0) {
     children.push({
       id: 'status/issues',
@@ -102,60 +107,45 @@ function statusSection(i: TreeInput): SettingNode {
       children: issues.map((x, n) => ({
         id: `status/issues/${n}`,
         label: x.badge.replace(/^\$\([^)]+\)\s*/, ''),
+        // 修法由 doctor／agent-lint 自己說（violations[].fix）—— 這裡不自己編一套。
         tooltip: x.detail,
         icon: x.level === 'error' ? 'error' : 'warning',
         tone: x.level === 'error' ? 'error' : 'warn',
-        command: { command: 'codexSdlc.showOutput', title: '顯示輸出' },
+        ...(x.fix ?? { command: { command: 'codexSdlc.showOutput', title: '顯示輸出' } }),
       })),
     });
   }
   return { id: 'status', label: '狀態', description: i.rootName, expanded: true, children };
 }
 
+// 機械強制層在不在。**這裡不再顯示 Codex 的信任狀態** —— 那要啟動一個 codex 子行程去問，
+// 而答案是使用者在這個面板裡按不動的東西。hooks.json 在不在則留著：那是工具檔缺了，而它有得修。
 function hooksNode(i: TreeInput): SettingNode {
   const d = i.doctor;
   const base = { id: 'status/hooks', icon: 'shield' };
-  const trust: NodeCommand = { command: 'codexSdlc.trustHooks', title: '在終端機信任' };
-  if (!d) return { ...base, label: 'Codex hooks：檢查中…', tone: 'muted' };
-  const h = d.hooks;
-  switch (h.status) {
-    case 'trusted':
-      return { ...base, label: `Codex hooks：${h.counts?.total ?? 0} 條都已信任`, tone: 'ok', tooltip: '機械強制層會跑。' };
-    case 'untrusted': {
-      const c = h.counts;
-      const parts = [c?.untrusted ? `${c.untrusted} 條未信任` : '', c?.modified ? `${c.modified} 條改過待重審` : '', c?.disabled ? `${c.disabled} 條被停用` : ''].filter(Boolean);
-      return {
-        ...base, label: `Codex hooks：${parts.join('、') || '有未信任的'}`, tone: 'error', contextValue: 'hooksUntrusted', command: trust,
-        tooltip: '沒信任的那幾條一次都不會跑，而且不會提示。點一下在終端機開 Codex，「Hooks need review」選 Trust all and continue。',
-      };
-    }
-    case 'project-untrusted':
-      return {
-        ...base, label: 'Codex 還沒信任這個專案', tone: 'error', contextValue: 'hooksUntrusted', command: trust,
-        tooltip: '專案層的設定與 hooks 整個停用。點一下在終端機開 Codex：先信任這個資料夾，再在「Hooks need review」選 Trust all and continue。',
-      };
-    case 'no-hooks':
-      return {
-        ...base, label: 'Codex hooks：沒有 hooks.json', tone: 'error',
-        tooltip: '機械強制層整層不存在：寫檔與委派完全沒有人擋，而且 Codex 不會提示。把發佈物解壓到別處，跑 sdlc.ps1 update -Target <這個專案> 補回工具檔。',
-      };
-    case 'unknown': {
-      const notFound = h.reason === 'codex-not-found';
-      return {
-        ...base,
-        label: 'Codex hooks：無法確認',
-        description: notFound ? '找不到 codex 執行檔' : '問 codex 沒有回應',
-        tone: 'warn',
-        contextValue: notFound ? 'hooksUnknown' : 'hooksUntrusted',
-        command: notFound ? { command: 'codexSdlc.pickCodex', title: '選擇 codex 執行檔' } : trust,
-        tooltip: notFound
-          ? '不代表沒信任，也不代表有 —— 查不到。點一下選 codex 執行檔的位置（寫進這台機器的 VS Code 設定）。'
-          : '不代表沒信任，也不代表有。點一下在終端機開 Codex 確認一次。',
-      };
-    }
-    default:
-      return { ...base, label: `Codex hooks：${h.status}`, tone: 'warn' };
+  if (!d) return { ...base, label: '機械強制層：檢查中…', tone: 'muted' };
+  if (d.hooks.status === 'no-hooks') {
+    return {
+      ...base, label: '機械強制層：沒有 .codex/hooks.json', tone: 'error', contextValue: 'toolFilesMissing',
+      command: { command: 'codexSdlc.repair', title: '補回工具檔' },
+      tooltip: '整層不存在：handoff-lint／dlp-gate／guideline-gate／build-check 一支都不會跑，寫檔與委派完全沒有人擋。點一下用發佈物把工具檔補回來。',
+    };
   }
+  return {
+    ...base, label: '機械強制層：hooks.json 在', tone: 'ok',
+    tooltip: 'handoff-lint／dlp-gate／guideline-gate／build-check 由 .codex/hooks.json 掛上去。Codex 那邊要信任過才會真的跑 —— 那件事只有 Codex 自己知道，這裡不猜。',
+  };
+}
+
+// AGENTS.md.new 還在 = 安裝／升級寫了新版但還沒合併，而**合併之前整套流程不會啟動**。
+// 這一條刻意常駐到 .new 被刪掉為止：它是這套工作流唯一一個「看起來裝好了、其實沒在跑」的狀態。
+function mergeNode(i: TreeInput): SettingNode | undefined {
+  if (!i.agentsNewExists) return undefined;
+  return {
+    id: 'status/merge', label: 'AGENTS.md.new 還沒合併', icon: 'git-merge', tone: 'error', contextValue: 'needsMerge',
+    command: { command: 'codexSdlc.mergeAgents', title: '比對並合併', arguments: [i.rootPath] },
+    tooltip: '新版的 AGENTS.md 寫成 .new、沒有覆蓋你那一份。把流程那幾節合進去之前，orchestrator 不會照這一版跑。點一下開左右對照。',
+  };
 }
 
 function updateStatusNode(i: TreeInput): SettingNode {
@@ -402,12 +392,6 @@ function guidelinesSection(i: TreeInput): SettingNode {
 
 function machineSection(i: TreeInput): SettingNode {
   const m = i.machine;
-  const codexText = {
-    setting: `${m.codex.path}（設定）`,
-    path: m.codex.path ?? 'PATH 上的 codex',
-    bundled: `${m.codex.path}（OpenAI 擴充內附）`,
-    none: '找不到 —— 查不到 hooks 信任狀態',
-  }[m.codex.source];
   return {
     id: 'machine',
     label: '這台機器',
@@ -421,15 +405,15 @@ function machineSection(i: TreeInput): SettingNode {
         contextValue: 'machinePwsh',
         command: { command: 'codexSdlc.pickPwsh', title: '選擇 pwsh' },
       },
-      {
-        id: 'machine/codex', label: 'codex', icon: 'terminal',
-        description: codexText,
-        tone: m.codex.source === 'none' ? 'warn' : undefined,
-        tooltip: '用來問 Codex 這個專案的 hooks 有沒有被信任。點一下選執行檔（寫進 codexSdlc.codexPath）。',
-        contextValue: 'machineCodex',
-        command: { command: 'codexSdlc.pickCodex', title: '選擇 codex' },
-      },
       { id: 'machine/extension', label: 'extension', icon: 'extensions', description: m.extensionVersion },
+      {
+        id: 'machine/payload', label: '內附的發佈物', icon: 'package',
+        description: m.payloadVersion ?? '沒有（開發模式）',
+        tone: m.payloadVersion ? undefined : 'muted',
+        tooltip: m.payloadVersion
+          ? `在別的資料夾裡按「安裝到這個工作區」時，沒有更新的遠端版本就用這一份（${m.payloadVersion}）。`
+          : '這個 extension 不是從發佈物裝的，所以沒有內附。安裝時要自己「選擇發佈物…」，或設定發佈物來源。',
+      },
     ],
   };
 }

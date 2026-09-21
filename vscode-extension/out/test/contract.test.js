@@ -102,3 +102,83 @@ const envelope = (command, data, extra = {}) => JSON.stringify({ schema: contrac
     const old = (0, contract_1.parseRulesValidation)(JSON.stringify({ passed: false, rules_file: 'r', exists: true, rule_count: 1, block_count: 0, problems: ['b: 缺 pattern'] }));
     strict_1.default.deepEqual(old.ruleProblems, [{ index: null, id: null, field: null, message: 'b: 缺 pattern' }]);
 });
+// ---- fetch／install（4.10.0 起）----
+const fetchData = (over = {}) => ({
+    chosen: 'bundled',
+    version: '4.10.0',
+    path: 'C:/ext/payload',
+    remote: { checked: true, reachable: false, latest: null, url: null, reason: 'unreachable' },
+    bundled: { version: '4.10.0', path: 'C:/ext/payload' },
+    cacheDir: 'C:/state/payloads',
+    ...over,
+});
+(0, node_test_1.test)('fetch：遠端拿不到就退回內附的那一份，而且說得出是為什麼', () => {
+    const f = (0, contract_1.parseFetch)((0, contract_1.parseEnvelope)(envelope('fetch', fetchData()), 'fetch'));
+    strict_1.default.equal(f.chosen, 'bundled');
+    strict_1.default.equal(f.path, 'C:/ext/payload');
+    strict_1.default.equal(f.remote.reason, 'unreachable');
+    const remote = (0, contract_1.parseFetch)((0, contract_1.parseEnvelope)(envelope('fetch', fetchData({
+        chosen: 'remote', version: '4.11.0', path: 'C:/state/payloads/4.11.0',
+        remote: { checked: true, reachable: true, latest: '4.11.0', url: 'https://example/x.zip', reason: null },
+    })), 'fetch'));
+    strict_1.default.equal(remote.chosen, 'remote');
+    strict_1.default.equal(remote.remote.latest, '4.11.0');
+});
+(0, node_test_1.test)('fetch：一份都找不到時 path 是 null（呼叫端不該拿一個空字串去裝）', () => {
+    const f = (0, contract_1.parseFetch)((0, contract_1.parseEnvelope)(envelope('fetch', fetchData({
+        chosen: 'none', version: null, path: null, bundled: { version: null, path: null },
+    }), { exit: 2 }), 'fetch'));
+    strict_1.default.equal(f.chosen, 'none');
+    strict_1.default.equal(f.path, null);
+});
+(0, node_test_1.test)('fetch：欄位改名 → 紅，而且說得出是哪一個', () => {
+    const d = fetchData();
+    delete d.cacheDir;
+    strict_1.default.throws(() => (0, contract_1.parseFetch)((0, contract_1.parseEnvelope)(envelope('fetch', d), 'fetch')), /\$\.data\.cacheDir/);
+});
+const installData = (over = {}) => ({
+    mode: 'install',
+    target: 'C:/work/shop',
+    version: '4.10.0',
+    written: 42,
+    needsMerge: [],
+    guidelinesSkeleton: true,
+    config: { created: true, preset: null },
+    tuning: { changed: ['reviewer.toml'], warnings: [] },
+    guidelines: [],
+    lint: { ran: true, passed: true, violations: [] },
+    hooksWritten: true,
+    orchestratorHint: null,
+    editor: { installed: [], vsix: null, requested: false, error: null },
+    ...over,
+});
+(0, node_test_1.test)('install：裝完的結果讀得出「還差什麼」', () => {
+    const d = (0, contract_1.parseInstall)((0, contract_1.parseEnvelope)(envelope('install', installData()), 'install'));
+    strict_1.default.equal(d.error, null);
+    strict_1.default.equal(d.written, 42);
+    strict_1.default.equal(d.configCreated, true);
+    strict_1.default.ok(d.lint.passed);
+    const merge = (0, contract_1.parseInstall)((0, contract_1.parseEnvelope)(envelope('install', installData({
+        needsMerge: ['AGENTS.md'],
+        lint: { ran: true, passed: false, violations: [{ rule: 'core-drift', detail: 'x', fix: '重跑 install' }] },
+    }), { exit: 2 }), 'install'));
+    strict_1.default.deepEqual(merge.needsMerge, ['AGENTS.md']);
+    strict_1.default.equal(merge.lint.violations[0].fix, '重跑 install');
+});
+(0, node_test_1.test)('install：還沒開始複製就失敗 → 只有 error，不該因此解析失敗', () => {
+    const d = (0, contract_1.parseInstall)((0, contract_1.parseEnvelope)(envelope('install', { error: 'same-path' }, { exit: 2 }), 'install'));
+    strict_1.default.equal(d.error, 'same-path');
+    strict_1.default.equal(d.written, 0);
+    strict_1.default.deepEqual(d.needsMerge, []);
+});
+(0, node_test_1.test)('update：補工具檔的結果，以及「這個專案沒被接管過」這個要換一條路的失敗', () => {
+    const d = (0, contract_1.parseUpdate)((0, contract_1.parseEnvelope)(envelope('update', {
+        from: '4.9.0', to: '4.10.0', breaking: false, degraded: false,
+        unchanged: [], modified: ['AGENTS.md'], added: [], removed: [], result: 'applied', backup: 'bdd-docs/.sdlc/backup-1',
+    }), 'update'));
+    strict_1.default.equal(d.result, 'applied');
+    strict_1.default.deepEqual(d.modified, ['AGENTS.md']);
+    strict_1.default.equal(d.backup, 'bdd-docs/.sdlc/backup-1');
+    const early = (0, contract_1.parseUpdate)((0, contract_1.parseEnvelope)(envelope('update', { error: 'not-managed' }, { exit: 2 }), 'update'));
+    strict_1.default.equal(early.error, 'not-managed');
+});

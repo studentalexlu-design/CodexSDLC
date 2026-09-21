@@ -104,6 +104,8 @@ export interface HookCounts { total: number; trusted: number; untrusted: number;
 export interface HookTrust { status: string; reason?: string; codex: string | null; counts?: HookCounts }
 export interface InstalledEditor { product: string; version: string; compatible: boolean }
 
+export interface LintResult { ran: boolean; passed: boolean; violations: Violation[] }
+
 export interface DoctorData {
   version: { contract: string; minCompatible: string };
   // comments／schemaRef 從 4.9.0 起才有；更舊的 doctor 沒有這兩個欄位，讀成 false。
@@ -112,7 +114,7 @@ export interface DoctorData {
   unverifiedModel: string[];
   baseline: { exists: boolean; version: string | null; fileCount: number };
   guidelines: Finding[];
-  lint: { ran: boolean; passed: boolean; violations: Violation[] };
+  lint: LintResult;
   review: { maxRounds: number; source: string; valid: boolean };
   hooks: HookTrust;
   update: { cached: boolean; stale: boolean; newer: boolean; latest: string | null; seen: boolean; checkedAt: string | null; check: string };
@@ -125,6 +127,20 @@ function parseFinding(v: unknown, at: string): Finding {
   return { level: str(o, 'level', at), code: str(o, 'code', at), text: str(o, 'text', at) };
 }
 
+// doctor 與 install 各回一份 agent-lint 的結論，形狀一樣（install 的那一份是裝完當場跑的）。
+function parseLint(o: Json, at: string): LintResult {
+  const lint = obj(o, 'lint', at);
+  return {
+    ran: bool(lint, 'ran', `${at}.lint`),
+    passed: bool(lint, 'passed', `${at}.lint`),
+    violations: arr(lint, 'violations', `${at}.lint`).map((v, i) => {
+      const vat = `${at}.lint.violations[${i}]`;
+      const x = need<Json>(isObj(v), vat, 'object', v);
+      return { rule: str(x, 'rule', vat), detail: str(x, 'detail', vat), fix: str(x, 'fix', vat) };
+    }),
+  };
+}
+
 export function parseDoctor(env: Envelope): DoctorData {
   const d = env.data;
   const at = '$.data';
@@ -132,7 +148,6 @@ export function parseDoctor(env: Envelope): DoctorData {
   const config = obj(d, 'config', at);
   const tuning = obj(d, 'tuning', at);
   const baseline = obj(d, 'baseline', at);
-  const lint = obj(d, 'lint', at);
   const review = obj(d, 'review', at);
   const hooks = obj(d, 'hooks', at);
   const update = obj(d, 'update', at);
@@ -161,15 +176,7 @@ export function parseDoctor(env: Envelope): DoctorData {
       fileCount: num(baseline, 'fileCount', `${at}.baseline`),
     },
     guidelines: arr(d, 'guidelines', at).map((f, i) => parseFinding(f, `${at}.guidelines[${i}]`)),
-    lint: {
-      ran: bool(lint, 'ran', `${at}.lint`),
-      passed: bool(lint, 'passed', `${at}.lint`),
-      violations: arr(lint, 'violations', `${at}.lint`).map((v, i) => {
-        const vat = `${at}.lint.violations[${i}]`;
-        const o = need<Json>(isObj(v), vat, 'object', v);
-        return { rule: str(o, 'rule', vat), detail: str(o, 'detail', vat), fix: str(o, 'fix', vat) };
-      }),
-    },
+    lint: parseLint(d, at),
     review: {
       maxRounds: num(review, 'maxRounds', `${at}.review`),
       source: str(review, 'source', `${at}.review`),
@@ -217,6 +224,110 @@ export function parseCheckUpdate(env: Envelope): CheckUpdateData {
     installed: 'installed' in d ? optStr(d, 'installed', '$.data') : null,
     latest: 'latest' in d ? optStr(d, 'latest', '$.data') : null,
     newer: 'newer' in d ? bool(d, 'newer', '$.data') : false,
+  };
+}
+
+// ---- fetch／install（4.10.0 起）----
+//
+// 這兩個是「在一個還沒裝工作流的資料夾裡把它裝起來」的那條路。網路、下載、解壓、驗 sha 全部在
+// sdlc.ps1 那一側 —— extension 只讀這裡的結果，自己一個 socket 都不開。
+
+export interface FetchData {
+  chosen: string;                 // remote｜cached｜bundled｜none
+  version: string | null;
+  path: string | null;            // 可以拿去當 install -Source 的目錄
+  remote: { checked: boolean; reachable: boolean; latest: string | null; url: string | null; reason: string | null };
+  bundled: { version: string | null; path: string | null };
+  cacheDir: string;
+}
+
+export function parseFetch(env: Envelope): FetchData {
+  const d = env.data;
+  const at = '$.data';
+  const remote = obj(d, 'remote', at);
+  const bundled = obj(d, 'bundled', at);
+  return {
+    chosen: str(d, 'chosen', at),
+    version: optStr(d, 'version', at),
+    path: optStr(d, 'path', at),
+    remote: {
+      checked: bool(remote, 'checked', `${at}.remote`),
+      reachable: bool(remote, 'reachable', `${at}.remote`),
+      latest: optStr(remote, 'latest', `${at}.remote`),
+      url: optStr(remote, 'url', `${at}.remote`),
+      reason: optStr(remote, 'reason', `${at}.remote`),
+    },
+    bundled: { version: optStr(bundled, 'version', `${at}.bundled`), path: optStr(bundled, 'path', `${at}.bundled`) },
+    cacheDir: str(d, 'cacheDir', at),
+  };
+}
+
+export interface InstallData {
+  error: string | null;           // not-a-release｜same-path｜nothing-to-adopt
+  mode: string;                   // install｜adopt
+  target: string;
+  version: string | null;
+  written: number;
+  // 已經有一份、沒有覆蓋的檔（寫成 *.new）。AGENTS.md 幾乎一定在這裡 —— 沒合進去的話整套流程不會啟動。
+  needsMerge: string[];
+  guidelinesSkeleton: boolean;
+  configCreated: boolean;
+  preset: string | null;
+  hooksWritten: boolean;
+  lint: LintResult;
+  guidelines: Finding[];
+  orchestratorHint: string | null;
+}
+
+const EMPTY_INSTALL: InstallData = {
+  error: null, mode: '', target: '', version: null, written: 0, needsMerge: [], guidelinesSkeleton: false,
+  configCreated: false, preset: null, hooksWritten: false, lint: { ran: false, passed: false, violations: [] },
+  guidelines: [], orchestratorHint: null,
+};
+
+export function parseInstall(env: Envelope): InstallData {
+  const d = env.data;
+  const at = '$.data';
+  // 還沒開始複製就停下來的失敗（來源不是發佈物、來源＝目標）：只有 error，沒有其他欄位。
+  if ('error' in d) return { ...EMPTY_INSTALL, error: optStr(d, 'error', at) };
+  const config = obj(d, 'config', at);
+  return {
+    error: null,
+    mode: str(d, 'mode', at),
+    target: str(d, 'target', at),
+    version: optStr(d, 'version', at),
+    written: num(d, 'written', at),
+    needsMerge: strArr(d, 'needsMerge', at),
+    guidelinesSkeleton: bool(d, 'guidelinesSkeleton', at),
+    configCreated: bool(config, 'created', `${at}.config`),
+    preset: optStr(config, 'preset', `${at}.config`),
+    hooksWritten: bool(d, 'hooksWritten', at),
+    lint: parseLint(d, at),
+    guidelines: arr(d, 'guidelines', at).map((f, i) => parseFinding(f, `${at}.guidelines[${i}]`)),
+    orchestratorHint: optStr(d, 'orchestratorHint', at),
+  };
+}
+
+export interface UpdateData {
+  error: string | null;           // not-a-release｜same-path｜not-managed
+  result: string;                 // applied｜up-to-date｜cancelled
+  from: string | null;
+  to: string | null;
+  modified: string[];
+  backup: string | null;
+}
+
+export function parseUpdate(env: Envelope): UpdateData {
+  const d = env.data;
+  const at = '$.data';
+  if ('error' in d) return { error: optStr(d, 'error', at), result: '', from: null, to: null, modified: [], backup: null };
+  return {
+    error: null,
+    result: 'result' in d ? str(d, 'result', at) : '',
+    from: optStr(d, 'from', at),
+    to: optStr(d, 'to', at),
+    modified: strArr(d, 'modified', at),
+    backup: 'backup' in d ? optStr(d, 'backup', at) : null,
   };
 }
 

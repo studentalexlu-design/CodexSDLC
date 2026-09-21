@@ -8,3 +8,7 @@ out/test-host/**
 tsconfig.json
 **/*.map
 **/*.ts
+
+# payload/ 刻意**不**排除：pack.ps1 打包時把這一版的發佈物複製進去，vsix 要帶著它，
+# 使用者才能在一個還沒裝工作流的資料夾裡直接安裝。開發模式（F5、手動 npm run package）
+# 沒有它也能跑，只是安裝那條路會退回「選擇發佈物…」。

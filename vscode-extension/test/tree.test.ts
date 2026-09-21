@@ -37,7 +37,8 @@ function input(over: Partial<TreeInput> = {}): TreeInput {
     rootName: 'shop', rootPath: 'C:/work/shop', workflowVersion: '4.9.0', schema, canEdit: true,
     config: readConfig(configText), knownAgents: [], doctor: doctor(), checking: false, pendingAgents: [],
     guidelines: { dir: true, files: ['README.md', 'coding.md', 'rules.json', 'sql.md'], rulesExists: true, ruleCount: 8, gateDisabled: false },
-    machine: { pwsh: { ok: true, path: 'C:/pwsh/pwsh.exe' }, codex: { source: 'path', path: 'C:/bin/codex.exe' }, extensionVersion: '4.9.0' },
+    agentsNewExists: false,
+    machine: { pwsh: { ok: true, path: 'C:/pwsh/pwsh.exe' }, extensionVersion: '4.9.0', payloadVersion: '4.9.0' },
     ...over,
   };
 }
@@ -111,19 +112,22 @@ test('工作流太舊（沒有 set／schema）→ 只顯示、不給改，並說
   assert.match(n.get('agents/reviewer')!.description!, /effort medium/, '不能改也要看得到值');
 });
 
-test('hooks 沒信任 → 那一行紅、帶「在終端機信任」；找不到 codex → 帶「選擇 codex」', () => {
-  const untrusted = nodes(input({ doctor: doctor((x) => { x.hooks = { status: 'untrusted', codex: 'c', counts: { total: 4, trusted: 2, untrusted: 1, modified: 1, disabled: 0 } }; }) }));
-  const h = untrusted.get('status/hooks')!;
-  assert.equal(h.tone, 'error');
-  assert.equal(h.contextValue, 'hooksUntrusted');
-  assert.equal(h.command?.command, 'codexSdlc.trustHooks');
-  assert.match(h.label, /1 條未信任、1 條改過待重審/);
-  assert.ok(![...untrusted.keys()].some((k) => k.startsWith('status/issues/') && /信任/.test(untrusted.get(k)!.label)), 'hooks 的問題重複列了兩次');
+test('hooks.json 在 → 那一行綠，而且不提信任（要問 codex 的事一律不做）', () => {
+  const n = nodes(input({ doctor: doctor((x) => { x.hooks = { status: 'skipped', codex: null }; }) }));
+  const h = n.get('status/hooks')!;
+  assert.equal(h.tone, 'ok');
+  assert.equal(h.contextValue, undefined);
+  assert.doesNotMatch(h.label, /信任/);
+});
 
-  const unknown = nodes(input({ doctor: doctor((x) => { x.hooks = { status: 'unknown', reason: 'codex-not-found', codex: null }; }) })).get('status/hooks')!;
-  assert.equal(unknown.contextValue, 'hooksUnknown');
-  assert.equal(unknown.command?.command, 'codexSdlc.pickCodex');
-  assert.notEqual(unknown.tone, 'ok', '查不到不能顯示成綠的');
+test('AGENTS.md.new 還在 → 常駐一行，點一下開對照', () => {
+  const n = nodes(input({ agentsNewExists: true }));
+  const m = n.get('status/merge')!;
+  assert.equal(m.tone, 'error');
+  assert.equal(m.contextValue, 'needsMerge');
+  assert.equal(m.command?.command, 'codexSdlc.mergeAgents');
+  assert.deepEqual(m.command?.arguments, ['C:/work/shop']);
+  assert.ok(!nodes(input()).has('status/merge'), '沒有 .new 時不該有這一行');
 });
 
 test('doctor 的其他問題列在「需要處理」底下', () => {
@@ -175,10 +179,15 @@ test('沒有 guidelines/ → 一句話，不出現機械層開關', () => {
 });
 
 test('這台機器：找不到 pwsh → 紅，帶「選擇」', () => {
-  const n = nodes(input({ machine: { pwsh: { ok: false, message: '找不到 pwsh' }, codex: { source: 'none' }, extensionVersion: '4.9.0' } }));
+  const n = nodes(input({ machine: { pwsh: { ok: false, message: '找不到 pwsh' }, extensionVersion: '4.9.0' } }));
   assert.equal(n.get('machine/pwsh')!.tone, 'error');
   assert.equal(n.get('machine/pwsh')!.contextValue, 'machinePwsh');
-  assert.match(n.get('machine/codex')!.description!, /找不到/);
+  // 沒有內附發佈物（開發模式）要講出來 —— 不然「安裝到這個工作區」會在按下去之後才說沒東西可裝。
+  assert.match(n.get('machine/payload')!.description!, /沒有/);
+});
+
+test('這台機器：沒有 codex 那一行了（信任檢查整條拿掉）', () => {
+  assert.ok(!nodes(input()).has('machine/codex'));
 });
 
 test('設定檔壞了 → 一句話＋開檔，而不是一棵空樹', () => {
@@ -195,8 +204,11 @@ test('沒有 sdlc.config.json：照樣列出 agent 讓你改（第一次改就�
   assert.equal(n.get('review/maxRounds')!.edit?.key, 'review.maxRounds');
 });
 
-test('沒有 hooks.json → 面板那一行是紅的，並說怎麼補', () => {
-  const h = nodes(input({ doctor: doctor((x) => { x.hooks = { status: 'no-hooks', codex: null }; }) })).get('status/hooks')!;
+test('沒有 hooks.json → 面板那一行是紅的，而且點下去就能補（不是叫人去終端機）', () => {
+  const n = nodes(input({ doctor: doctor((x) => { x.hooks = { status: 'no-hooks', codex: null }; }) }));
+  const h = n.get('status/hooks')!;
   assert.equal(h.tone, 'error');
-  assert.match(h.tooltip!, /update/);
+  assert.equal(h.contextValue, 'toolFilesMissing');
+  assert.equal(h.command?.command, 'codexSdlc.repair');
+  assert.ok(![...n.keys()].some((k) => k.startsWith('status/issues/') && /hooks/.test(n.get(k)!.label)), 'hooks 的問題重複列了兩次');
 });

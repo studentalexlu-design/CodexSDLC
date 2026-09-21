@@ -588,6 +588,7 @@ while ($null -ne ($line = [Console]::In.ReadLine())) {
         $log = Join-Path $SdlcRoot 'fake/calls.log'
         $p = Get-IsolatedDoctorParams $t
         $p.CodexPath = $codex
+        $p.CheckHookTrust = $true            # 預設不查 —— 這一組測的就是「明講要查」的那條路
         $j = Invoke-SdlcJson doctor $p -Env @{ FAKE_TRUST = $trust; FAKE_CODEX_LOG = $log }
         return [pscustomobject]@{ json = $j; log = $(if (Test-Path $log) { Get-Content $log -Raw } else { '' }) }
     }
@@ -630,11 +631,13 @@ while ($null -ne ($line = [Console]::In.ReadLine())) {
         } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
     }
 
-    It-Should '找不到 codex → unknown，不算問題（查不到不等於有問題，但要講出來）' {
+    It-Should '-CheckHookTrust 但找不到 codex → unknown，不算問題（查不到不等於有問題，但要講出來）' {
         $rel = New-SdlcRelease 'r-hn' -WithHooks; $t = New-SdlcTarget 't-hn'
         try {
             Invoke-Sdlc install @{ Source = $rel; Target = $t } | Out-Null
-            $j = Invoke-SdlcJson doctor (Get-IsolatedDoctorParams $t)
+            $p = Get-IsolatedDoctorParams $t
+            $p.CheckHookTrust = $true
+            $j = Invoke-SdlcJson doctor $p
             Assert-Equal 'unknown' $j.data.hooks.status
             Assert-Equal 'codex-not-found' $j.data.hooks.reason
             Assert-Equal 0 $j.exit
@@ -646,6 +649,144 @@ while ($null -ne ($line = [Console]::In.ReadLine())) {
         try {
             $j = Invoke-SdlcJson install @{ Source = $rel; Target = $t }
             Assert-True $j.data.hooksWritten 'hooks.json 寫出去了卻沒有記下來 —— 使用者不會知道要去信任'
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    # 4.10.0 起**預設不查**：問它要另外叫起一個 codex（最久 15 秒），而修法永遠是同一句
+    # 「去 codex 裡信任」—— doctor 幫不上忙。這三條守的是「預設真的沒查」與「沒查一定要講」，
+    # 後者才是關鍵：不講的話「doctor 全綠」會被讀成「強制層在跑」，而那是這裡最貴的誤會。
+    It-Should '預設不查：一次都不叫 codex，狀態是 skipped，不算問題' {
+        $rel = New-SdlcRelease 'r-hs' -WithHooks; $t = New-SdlcTarget 't-hs'
+        try {
+            Invoke-Sdlc install @{ Source = $rel; Target = $t } | Out-Null
+            $codex = New-FakeCodex (Join-Path $SdlcRoot 'fake')
+            $log = Join-Path $SdlcRoot 'fake/calls.log'
+            $p = Get-IsolatedDoctorParams $t
+            $p.CodexPath = $codex
+            $j = Invoke-SdlcJson doctor $p -Env @{ FAKE_TRUST = 'trusted'; FAKE_CODEX_LOG = $log }
+            Assert-Equal 'skipped' $j.data.hooks.status
+            Assert-Equal 0 $j.exit
+            Assert-True (-not (Test-Path $log)) 'codex 被叫起來了 —— 預設應該連碰都不碰它'
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '沒查的時候一定要說一句，而且說得出怎麼查' {
+        $rel = New-SdlcRelease 'r-hs3' -WithHooks; $t = New-SdlcTarget 't-hs3'
+        try {
+            Invoke-Sdlc install @{ Source = $rel; Target = $t } | Out-Null
+            $j = Invoke-SdlcJson doctor (Get-IsolatedDoctorParams $t)
+            $said = @($j.output) -join "`n"
+            Assert-Match '沒查' $said 'doctor 全綠卻沒說「信任狀態這次沒查」—— 使用者會以為強制層在跑'
+            Assert-Match 'CheckHookTrust' $said '沒告訴他要怎麼查'
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '預設不查也不會把「hooks.json 不見了」蓋掉（那是工具檔缺了，補得回來）' {
+        $rel = New-SdlcRelease 'r-hs2'; $t = New-SdlcTarget 't-hs2'    # 這份發佈物沒有 hooks.json
+        try {
+            Invoke-Sdlc install @{ Source = $rel; Target = $t } | Out-Null
+            $j = Invoke-SdlcJson doctor (Get-IsolatedDoctorParams $t)
+            Assert-Equal 'no-hooks' $j.data.hooks.status
+            Assert-Equal 2 $j.exit '強制層整層不存在，doctor 卻是綠的'
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+Describe-Suite 'sdlc / fetch：在一個還沒裝工作流的資料夾裡也要找得到發佈物' {
+
+    # extension 自己不碰網路（那條界線由它的測試守著），所以「去哪裡拿一份發佈物」只有這一份實作。
+    # 這一組守的是三件會靜默出事的事：
+    #   拿不到遠端就整個失敗   → 離線的人裝不起來，而這套 zip 從第一天就是離線可用的
+    #   下載回來的東西不驗     → 壞掉的 payload 裝進專案，症狀落在使用者的流程裡
+    #   同一版每次重新下載     → 第二個專案、第二台機器都要再等一次（而且離線就沒了）
+
+    function New-PayloadZip([string]$release, [string]$zip) {
+        $dir = Split-Path $zip -Parent
+        if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+        Remove-Item $zip -Force -ErrorAction SilentlyContinue
+        Compress-Archive -Path (Join-Path $release '*') -DestinationPath $zip
+    }
+
+    It-Should '沒有設來源 → 用本機那一份，而且形狀是結構化合約' {
+        $rel = New-SdlcRelease 'r-f1'; $t = New-SdlcTarget 't-f1'
+        try {
+            $j = Invoke-SdlcJson fetch @{ Source = $rel; Target = $t; CacheDir = (Join-Path $SdlcRoot 'cache') }
+            Assert-Shape $j.data @{
+                chosen = 'string'; version = 'string?'; path = 'string?'; cacheDir = 'string'
+                remote = @{ checked = 'bool'; reachable = 'bool'; latest = 'string?'; url = 'string?'; reason = 'string?' }
+                bundled = @{ version = 'string?'; path = 'string?' }
+            }
+            Assert-Equal 'bundled' $j.data.chosen
+            Assert-Equal 'no-source' $j.data.remote.reason
+            Assert-Equal $false $j.data.remote.checked '沒有來源卻連了網'
+            Assert-Equal 0 $j.exit
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '來源連不上 → 靜默退回本機那一份，不擋安裝' {
+        # 離線是常態，不是錯誤。遠端拿不到就讓他用手上這一份裝起來。
+        $rel = New-SdlcRelease 'r-f2' -SourceUrl 'https://github.com/codex-sdlc-no-such-owner/no-such-repo'
+        $t = New-SdlcTarget 't-f2'
+        try {
+            $j = Invoke-SdlcJson fetch @{ Source = $rel; Target = $t; CacheDir = (Join-Path $SdlcRoot 'cache') }
+            Assert-Equal 'bundled' $j.data.chosen
+            Assert-True ($j.data.remote.checked) '有設來源卻沒去查'
+            Assert-Equal $false $j.data.remote.reachable
+            Assert-Equal 0 $j.exit '拿不到遠端不該擋住安裝'
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '-NoRemote → 一條連線都不開' {
+        $rel = New-SdlcRelease 'r-f3' -SourceUrl 'https://github.com/codex-sdlc-no-such-owner/no-such-repo'
+        $t = New-SdlcTarget 't-f3'
+        try {
+            $j = Invoke-SdlcJson fetch @{ Source = $rel; Target = $t; NoRemote = $true; CacheDir = (Join-Path $SdlcRoot 'cache') }
+            Assert-Equal 'skipped' $j.data.remote.reason
+            Assert-Equal $false $j.data.remote.checked
+            Assert-Equal 'bundled' $j.data.chosen
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '指一個 .zip → 解壓進快取、驗過才交出去（使用者自己從發佈頁抓的那一份）' {
+        $rel = New-SdlcRelease 'r-f4' -Version '4.6.0'; $t = New-SdlcTarget 't-f4'
+        $cache = Join-Path $SdlcRoot 'cache'
+        $zip = Join-Path $SdlcRoot 'dl/codex-sdlc-4.6.0.zip'
+        try {
+            New-PayloadZip $rel $zip
+            $j = Invoke-SdlcJson fetch @{ Source = $rel; Target = $t; NoRemote = $true; Bundled = $zip; CacheDir = $cache }
+            Assert-Equal 'bundled' $j.data.chosen
+            Assert-Equal '4.6.0' $j.data.version
+            Assert-Match '4\.6\.0$' $j.data.path '解出來的東西沒有照版本放進快取'
+            Assert-True (Test-Path (Join-Path $cache '4.6.0/.codex/agents')) '解出來的不是一份能用的發佈物'
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'manifest 對不上的發佈物 → 不採用（壞掉的 payload 裝進去，症狀是靜默的）' {
+        $rel = New-SdlcRelease 'r-f5'; $t = New-SdlcTarget 't-f5'
+        try {
+            # 發佈物自己的 manifest：列一個檔的 sha，然後把那個檔改掉。
+            $agent = Join-Path $rel '.codex/agents/sa-analyst.toml'
+            $sha = (Get-FileHash $agent -Algorithm SHA256).Hash.ToLowerInvariant()
+            New-SdlcFile (Join-Path $rel '.codex/bdd-workflow/manifest.json') `
+                "{ `"contract-version`": `"4.6.0`", `"files`": { `".codex/agents/sa-analyst.toml`": `"$sha`" } }"
+            $ok = Invoke-SdlcJson fetch @{ Source = $rel; Target = $t; NoRemote = $true; CacheDir = (Join-Path $SdlcRoot 'cache') }
+            Assert-Equal 'bundled' $ok.data.chosen '原樣的發佈物應該驗得過'
+
+            [IO.File]::AppendAllText($agent, "`n# 被動過了`n")
+            $bad = Invoke-SdlcJson fetch @{ Source = $rel; Target = $t; NoRemote = $true; CacheDir = (Join-Path $SdlcRoot 'cache') }
+            Assert-Equal 'none' $bad.data.chosen 'manifest 對不上還是拿去裝了'
+            Assert-Equal 2 $bad.exit
+            Assert-True ((@($bad.warnings) -match 'manifest').Count -gt 0) '沒說是哪裡不對'
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '一份都找不到 → 明講（exit 2），不給一個空路徑讓呼叫端拿去裝' {
+        $rel = New-SdlcRelease 'r-f6'; $t = New-SdlcTarget 't-f6'
+        try {
+            $j = Invoke-SdlcJson fetch @{ Source = $rel; Target = $t; NoRemote = $true; Bundled = ''; CacheDir = (Join-Path $SdlcRoot 'cache') }
+            Assert-Equal 'none' $j.data.chosen
+            Assert-Equal $null $j.data.path
+            Assert-Equal 2 $j.exit
         } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
     }
 }

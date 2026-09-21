@@ -2,7 +2,7 @@
   "name": "codex-sdlc",
   "displayName": "Codex SDLC",
   "description": "Codex SDLC 工作流的駕駛艙：狀態列、設定面板、Problems、一鍵 doctor／apply／tune。它只是 sdlc.ps1 與各 gate 的殼，真相仍在 sdlc.config.json 與腳本裡。",
-  "version": "4.9.0",
+  "version": "4.10.0",
   "publisher": "codex-sdlc",
   "private": true,
   "engines": {
@@ -40,22 +40,33 @@
         {
           "id": "codexSdlc.settings",
           "name": "設定",
-          "contextualTitle": "Codex SDLC",
-          "when": "codexSdlc.active"
+          "contextualTitle": "Codex SDLC"
         }
       ]
     },
+    "viewsWelcome": [
+      {
+        "view": "codexSdlc.settings",
+        "when": "!codexSdlc.active",
+        "contents": "這個資料夾還沒有 Codex SDLC 工作流（.codex/、.agents/、AGENTS.md）。\n\n安裝會先看發佈物來源有沒有新版，沒有就用這個 extension 內附的那一份。已經有的 AGENTS.md 與 guidelines/ 不會被覆蓋。\n[安裝到這個工作區](command:codexSdlc.install)\n[選擇發佈物…](command:codexSdlc.installFrom)\n[這是什麼](command:codexSdlc.openWalkthrough)"
+      }
+    ],
     "menus": {
       "view/title": [
         {
           "command": "codexSdlc.refresh",
-          "when": "view == codexSdlc.settings",
+          "when": "view == codexSdlc.settings && codexSdlc.active",
           "group": "navigation@1"
         },
         {
           "command": "codexSdlc.doctor",
-          "when": "view == codexSdlc.settings",
+          "when": "view == codexSdlc.settings && codexSdlc.active",
           "group": "navigation@2"
+        },
+        {
+          "command": "codexSdlc.install",
+          "when": "view == codexSdlc.settings && !codexSdlc.active",
+          "group": "navigation@1"
         },
         {
           "command": "codexSdlc.openWalkthrough",
@@ -80,13 +91,13 @@
           "group": "inline"
         },
         {
-          "command": "codexSdlc.trustHooks",
-          "when": "view == codexSdlc.settings && viewItem == hooksUntrusted",
+          "command": "codexSdlc.repair",
+          "when": "view == codexSdlc.settings && viewItem == toolFilesMissing",
           "group": "inline"
         },
         {
-          "command": "codexSdlc.pickCodex",
-          "when": "view == codexSdlc.settings && viewItem =~ /^(hooksUnknown|machineCodex)$/",
+          "command": "codexSdlc.mergeAgents",
+          "when": "view == codexSdlc.settings && viewItem == needsMerge",
           "group": "inline"
         },
         {
@@ -119,17 +130,17 @@
       {
         "id": "codexSdlc.start",
         "title": "開始使用 Codex SDLC",
-        "description": "四步：讓 Codex 信任 hooks、選一組調校、跑一次健檢、知道設定在哪裡改。",
+        "description": "四步：把工作流裝進這個資料夾、選一組調校、跑一次健檢、知道設定在哪裡改。",
         "steps": [
           {
-            "id": "trust",
-            "title": "讓 Codex 信任這個專案的 hooks",
-            "description": "沒信任之前，機械強制層一條都不會跑，而且沒有任何提示。\n[在終端機開 Codex](command:codexSdlc.trustHooks)",
+            "id": "install",
+            "title": "把工作流裝進這個資料夾",
+            "description": "沒有 .codex/、.agents/、AGENTS.md 的資料夾，這套流程一條都不會跑。已經有的 AGENTS.md 與 guidelines/ 不會被覆蓋。\n[安裝到這個工作區](command:codexSdlc.install)",
             "media": {
-              "markdown": "media/walkthrough/trust.md"
+              "markdown": "media/walkthrough/install.md"
             },
             "completionEvents": [
-              "onCommand:codexSdlc.trustHooks"
+              "onContext:codexSdlc.active"
             ]
           },
           {
@@ -146,7 +157,7 @@
           {
             "id": "doctor",
             "title": "跑一次健檢",
-            "description": "doctor 會檢查版本、調校有沒有套用、規範檔、hooks 信任狀態。結果在輸出面板，狀態列左下角也會一直顯示。\n[跑 doctor](command:codexSdlc.doctor)",
+            "description": "doctor 會檢查版本、調校有沒有套用、規範檔、工具檔齊不齊。結果在輸出面板，狀態列左下角也會一直顯示。\n[跑 doctor](command:codexSdlc.doctor)",
             "media": {
               "markdown": "media/walkthrough/doctor.md"
             },
@@ -214,10 +225,28 @@
         "category": "Codex SDLC"
       },
       {
-        "command": "codexSdlc.trustHooks",
-        "title": "在終端機開 Codex，信任這個專案的 hooks",
+        "command": "codexSdlc.install",
+        "title": "安裝到這個工作區",
         "category": "Codex SDLC",
-        "icon": "$(shield)"
+        "icon": "$(cloud-download)"
+      },
+      {
+        "command": "codexSdlc.installFrom",
+        "title": "選擇發佈物安裝…",
+        "category": "Codex SDLC",
+        "icon": "$(folder-opened)"
+      },
+      {
+        "command": "codexSdlc.repair",
+        "title": "補回工具檔（update）",
+        "category": "Codex SDLC",
+        "icon": "$(tools)"
+      },
+      {
+        "command": "codexSdlc.mergeAgents",
+        "title": "比對並合併 AGENTS.md.new",
+        "category": "Codex SDLC",
+        "icon": "$(git-merge)"
       },
       {
         "command": "codexSdlc.toggleGate",
@@ -228,12 +257,6 @@
       {
         "command": "codexSdlc.pickPwsh",
         "title": "選擇 PowerShell 7（pwsh）的位置",
-        "category": "Codex SDLC",
-        "icon": "$(folder-opened)"
-      },
-      {
-        "command": "codexSdlc.pickCodex",
-        "title": "選擇 codex 執行檔的位置",
         "category": "Codex SDLC",
         "icon": "$(folder-opened)"
       },
@@ -277,11 +300,11 @@
           "scope": "machine",
           "markdownDescription": "PowerShell 7（`pwsh`）的完整路徑。留空 = 先找 PATH，再找常見的安裝位置。**只放這台機器的東西** —— 工作流本身的設定（model／effort、更新檢查）一律在專案根的 `sdlc.config.json`，不在這裡。"
         },
-        "codexSdlc.codexPath": {
+        "codexSdlc.releaseSource": {
           "type": "string",
           "default": "",
           "scope": "machine",
-          "markdownDescription": "`codex` 執行檔的完整路徑，用來問 Codex 這個專案的 hooks 有沒有被信任。留空 = PATH 上的 `codex`，沒有的話找 OpenAI 的 VS Code extension 內附的那一支。"
+          "markdownDescription": "發佈物的 GitHub repo 網址（例如 `https://github.com/你的組織/codex-sdlc`）。**安裝／補工具檔時先問它有沒有新版**，拿不到才用這個 extension 內附的那一份。留空 = 讀內附發佈物版本檔裡的 `source`。這是「這台機器去哪裡拿發佈物」，不是工作流設定 —— 專案自己的更新來源仍然是 `sdlc.config.json` 的 `update.source`。"
         },
         "codexSdlc.statusBar.enabled": {
           "type": "boolean",

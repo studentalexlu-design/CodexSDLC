@@ -100,14 +100,34 @@ const pkg = JSON.parse(fs.readFileSync(path.join(ext, 'package.json'), 'utf8'));
     strict_1.default.match(readme, /不把工作流設定存進 VS Code settings/);
     strict_1.default.match(readme, /--uninstall-extension codex-sdlc\.codex-sdlc/);
 });
-(0, node_test_1.test)('設定面板只在裝了工作流的工作區出現（不在每個專案多一個空圖示）', () => {
+(0, node_test_1.test)('面板永遠在；還沒裝工作流時它是安裝入口（以前這裡什麼都沒有，使用者無路可走）', () => {
     const views = pkg.contributes.views.codexSdlc;
     strict_1.default.equal(views.length, 1);
     strict_1.default.equal(views[0].id, 'codexSdlc.settings');
-    strict_1.default.equal(views[0].when, 'codexSdlc.active');
+    strict_1.default.equal(views[0].when, undefined, '掛了 when 的話，沒裝工作流的工作區又會變成一片空白');
+    const welcome = pkg.contributes.viewsWelcome.find((w) => w.view === 'codexSdlc.settings');
+    strict_1.default.ok(welcome, '沒有 welcome view —— 面板會是空的，而使用者不知道要打哪個指令');
+    strict_1.default.equal(welcome.when, '!codexSdlc.active');
+    strict_1.default.match(welcome.contents, /command:codexSdlc\.install\)/);
+    strict_1.default.match(welcome.contents, /command:codexSdlc\.installFrom\)/);
     const src = fs.readFileSync(path.join(ext, 'src/extension.ts'), 'utf8');
-    strict_1.default.match(src, /setContext', 'codexSdlc\.active'/, 'extension 沒有設這個 context key —— 面板永遠不會出現');
+    strict_1.default.match(src, /setContext', 'codexSdlc\.active'/, 'extension 沒有設這個 context key —— welcome 與面板會同時出現');
     strict_1.default.ok(fs.existsSync(path.join(ext, pkg.contributes.viewsContainers.activitybar[0].icon)), '活動列圖示不存在');
+});
+(0, node_test_1.test)('不碰 Codex 的信任狀態，也不留 codex 的設定（整條拿掉了）', () => {
+    // doctor 4.10.0 起預設就不問，所以這裡**一個相關的參數都不該出現** ——
+    // 帶 -CheckHookTrust 等於把那個 15 秒的子行程請回來，而它回答的問題在這個介面裡按不動。
+    // 註解先拿掉：說明為什麼不做那件事的句子本身會提到它，那不是在做那件事。
+    const src = fs.readFileSync(path.join(ext, 'src/extension.ts'), 'utf8').replace(/^\s*\/\/.*$/gm, '');
+    strict_1.default.doesNotMatch(src, /app-server|trustHooks|codexPath|CheckHookTrust/);
+    strict_1.default.ok(!Object.keys(pkg.contributes.configuration.properties).includes('codexSdlc.codexPath'));
+    const ids = pkg.contributes.commands.map((c) => c.command);
+    for (const gone of ['codexSdlc.trustHooks', 'codexSdlc.pickCodex'])
+        strict_1.default.ok(!ids.includes(gone), `${gone} 還在`);
+});
+(0, node_test_1.test)('內附的 payload 不進版控、但要進 vsix（repo 裡長期躺著第二份 .codex/ 就是分岔的形狀）', () => {
+    strict_1.default.match(fs.readFileSync(path.join(repo, '.gitignore'), 'utf8'), /^vscode-extension\/payload\/$/m);
+    strict_1.default.doesNotMatch(fs.readFileSync(path.join(ext, '.vscodeignore'), 'utf8'), /^payload/m);
 });
 (0, node_test_1.test)('選單引用的指令都有宣告；需要參數的指令不出現在命令面板', () => {
     const declared = new Set(pkg.contributes.commands.map((c) => c.command));

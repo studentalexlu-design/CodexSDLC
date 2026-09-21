@@ -1,4 +1,4 @@
-# Codex Instructions — SDLC Workflow (v4.8.0)
+# Codex Instructions — SDLC Workflow (v4.10.0)
 
 **這份檔案就是 orchestrator 的指令本體。** 讀到它、而且直接在跟人講話的這個對話，就是 SDLC orchestrator 本人 —— **`bdd-orchestrator` 這個 agent 不存在**，它要做的事就在這份檔裡（理由見最後一節）。
 
@@ -282,7 +282,7 @@ Handoff 每次只傳：`feature-id`、`mode`、`spec.md` path、上游決策摘�
 
 ## 機械強制層
 
-prompt 裡的規則是榮譽制，這些不是。踩到會直接被擋，訊息裡附了怎麼修。**前提是 Codex 信任了這個專案與它的 hooks** —— 沒信任的 hook 一條都不跑、也不會提示；使用者說「怎麼都沒被擋」時，請他跑 `pwsh .codex/scripts/sdlc.ps1 doctor`，它會問 Codex 信任了沒。
+prompt 裡的規則是榮譽制，這些不是。踩到會直接被擋，訊息裡附了怎麼修。**前提是 Codex 信任了這個專案與它的 hooks** —— 沒信任的 hook 一條都不跑、也不會提示；使用者說「怎麼都沒被擋」時，請他跑 `pwsh .codex/scripts/sdlc.ps1 doctor -CheckHookTrust`，它會問 Codex 信任了沒（`doctor` 預設不查這一項）。
 
 - **`.codex/scripts/handoff-lint.ps1`**（`PreToolUse`，每次 spawn 前）擋下：handoff > 1200 字元、多重 `mode:`、缺 `mode` 或 `feature-id`、`mode: build|fix|code` 沒帶 `spec.md` **路徑**、`mode: fix` 沒帶 `round` 或超過修正輪上限（預設 3），以及禁用 payload（連線字串、secret、DLP 對照表、長測試輸出）。
 - **`.codex/scripts/dlp-gate.ps1`** ＋ **`.codex/scripts/dlp-residual-scan.ps1`**（`PostToolUse`）掃寫出去的產物。殘留掃描永遠不回報命中的值，只回類別、次數與行號。

@@ -31,7 +31,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('install', 'update', 'check-update', 'apply', 'set', 'tune', 'doctor', 'whatsnew')]
+    [ValidateSet('install', 'update', 'check-update', 'apply', 'set', 'tune', 'doctor', 'whatsnew', 'fetch')]
     [string]$Command = 'doctor',
 
     [string]$Source,                       # 發佈物根目錄；預設 = 本腳本所在的工作流根
@@ -47,7 +47,12 @@ param(
     [switch]$ApplyProposal,                # tune 用：把**存下來的那份**提議寫回設定檔（不重算）
     [string[]]$Only,                       # tune -ApplyProposal 用：只套這幾個 agent（逗號分隔也可以）
     [switch]$IfDue,                        # check-update 用：照 update.check 的頻率決定要不要真的連網
-    [string]$CodexPath,                    # doctor 用：codex 執行檔（預設找 PATH）；查 hooks 信任狀態要問它
+    [string]$SourceUrl,                    # fetch 用：發佈物的 GitHub repo 網址（不給就找 sdlc.config.json 的 update.source，再找 -Source 版本檔的 source）
+    [string]$CacheDir,                     # fetch 用：下載回來的發佈物放哪（預設 LocalApplicationData/codex-sdlc/payloads）
+    [string]$Bundled,                      # fetch 用：本機已經有的那一份發佈物（資料夾或 .zip；預設 = -Source）；遠端拿不到時就用它
+    [switch]$NoRemote,                     # fetch 用：只認本機那一份，一條連線都不開
+    [string]$CodexPath,                    # doctor -CheckHookTrust 用：codex 執行檔（預設找 PATH）
+    [switch]$CheckHookTrust,               # doctor 用：另外叫起 codex 問 hooks 的信任狀態（預設不問，見 Get-HookTrust）
     [string]$EditorHome,                   # 找已安裝 extension 的家目錄（預設 = 使用者家目錄；測試用）
     [switch]$Yes,                          # 非互動確認
     [switch]$Json,
@@ -113,6 +118,10 @@ $Editors = @(
     [pscustomobject]@{ product = 'Windsurf';         cli = 'windsurf';      dir = '.windsurf' }
     [pscustomobject]@{ product = 'VSCodium';         cli = 'codium';        dir = '.vscode-oss' }
 )
+
+# 「有沒有給 -Bundled」要在這裡記下來：函式裡的 $PSBoundParameters 是那個函式自己的，看不到腳本的。
+# 差別是真的：`-Bundled ''` 代表「這台機器沒有內附的發佈物」，完全不給才是「用 -Source 那一份」。
+$BundledGiven = $PSBoundParameters.ContainsKey('Bundled')
 
 if (-not $Source) { $Source = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path }
 if (-not $EditorHome) { $EditorHome = [Environment]::GetFolderPath('UserProfile') }
@@ -589,6 +598,11 @@ function Invoke-CodexHooksList([string]$codex, [string]$cwd, [int]$timeoutMs = 1
 function Get-HookTrust([string]$target) {
     $hooksFile = Join-Path $target $HooksRel
     if (-not (Test-Path $hooksFile)) { return [ordered]@{ status = 'no-hooks'; codex = $null } }
+    # **預設不問。** 問它要另外叫起一個 `codex app-server` 子行程（最久 15 秒），而它回答的問題
+    # 不是 doctor 修得了的 —— 修法永遠是同一句「去 codex 裡信任」。要查就明講 -CheckHookTrust，
+    # doctor 的收尾會告訴你這個參數在哪。
+    # **檔在不在照查** —— hooks.json 不見是工具檔缺了，不是信任問題，而那一條有得修（補回工具檔）。
+    if (-not $CheckHookTrust) { return [ordered]@{ status = 'skipped'; codex = $null } }
     $codex = Resolve-Codex
     if (-not $codex) { return [ordered]@{ status = 'unknown'; reason = 'codex-not-found'; codex = $null } }
 
@@ -633,6 +647,12 @@ function Show-HookTrust($trust) {
         'project-untrusted' {
             Warn 'Codex 還沒信任這個專案 —— 專案層的 .codex/config.toml 與 hooks 整個停用，機械強制層一條都不會跑。在專案裡開 codex，信任這個資料夾，接著在「Hooks need review」選 Trust all and continue。'
             return 1
+        }
+        # 預設沒查。不算問題，但**一定要說一句** —— 不說的話，「doctor 全綠」會被讀成
+        # 「強制層在跑」，而那正是這套工作流最貴的一個誤會（沒信任的 hook 一條都不跑，也不提示）。
+        'skipped' {
+            Say 'Codex hooks 的信任狀態：這次沒查（要查：doctor -CheckHookTrust，它會另外叫起一次 codex）。沒信任的 hook 一條都不會跑，而且不會提示。'
+            return 0
         }
         'unknown' {
             $why = if ($trust.reason -eq 'codex-not-found') { '找不到 codex 執行檔' } else { '問 codex 沒有得到回應' }
@@ -721,6 +741,8 @@ function Install-Editor([string]$vsix) {
         return $result
     }
     if (-not $WithEditor) {
+        # 這台機器已經有一版讀得懂這個 -Json 的 extension（很可能**就是它**在叫這次安裝）—— 再喊一次「沒有裝」是錯的。
+        if (@(Get-InstalledExtensions | Where-Object compatible).Count -gt 0) { return $result }
         # 這一行排在「裝好了」後面 —— 不明講「沒有裝」，使用者會以為發佈物附的東西都裝好了，然後在 VS Code 裡找不到任何介面。
         Say "VS Code extension **沒有裝**（這次沒加 -WithEditor）。要狀態列、Problems、一鍵 doctor／apply 的話，在刪掉這個解壓目錄之前跑：code --install-extension `"$vsix`"（Cursor／Windsurf／VSCodium 換成各自的指令）。它是每台機器一份、所有專案共用。"
         return $result
@@ -749,15 +771,189 @@ function Install-Editor([string]$vsix) {
     return $result
 }
 
+# ---- 發佈物來源（fetch）----
+#
+# VS Code extension 要在一個**還沒裝工作流**的資料夾裡安裝時，手上沒有任何 payload：專案是空的。
+# 「去哪裡拿一份發佈物」因此需要一個實作 —— 而它只能在這裡：extension 自己不碰網路
+# （那條界線由它的 package.test.ts 守著，繞過去就等於繞過 update.check = never 的承諾）。
+#
+# 順序是**遠端優先、內附墊底**：查得到就用最新的，離線／私有 repo／來源沒設一律**靜默退回內附**。
+# 裝不裝得成不該取決於有沒有網路 —— 這套 zip 從第一天就是離線可用的。
+#
+# 拿回來的東西一定驗過才交出去：版本檔在、而且 manifest 列的每一個檔的 sha256 都對得上。
+# 一份壞掉的 payload 裝進專案，症狀會落在**使用者的**流程裡，而且是靜默的。
+function Test-Payload([string]$dir) {
+    $v = Get-ContractVersion $dir
+    if (-not $v) { return [pscustomobject]@{ ok = $false; version = $null; reason = 'no-version-file'; bad = @() } }
+    $m = Read-JsonFile (Join-Path $dir $ManifestRel)
+    # 沒有 manifest 的 payload（手工解壓、從 repo 直接指過來）照收 —— 但說不出「沒被動過」，只說「有版本」。
+    if (-not $m -or -not $m.files) { return [pscustomobject]@{ ok = $true; version = [string]$v.contract; reason = 'no-manifest'; bad = @() } }
+    $bad = @()
+    foreach ($p in $m.files.PSObject.Properties) {
+        $f = Join-Path $dir $p.Name
+        if (-not (Test-Path $f)) { $bad += $p.Name; continue }
+        if ((Get-Sha256File $f) -ne [string]$p.Value) { $bad += $p.Name }
+    }
+    return [pscustomobject]@{
+        ok      = ($bad.Count -eq 0)
+        version = [string]$v.contract
+        reason  = $(if ($bad.Count -gt 0) { 'sha-mismatch' } else { 'verified' })
+        bad     = @($bad)
+    }
+}
+
+# 一份 zip → 快取裡一個驗過的目錄。遠端下載回來的、使用者自己從發佈頁抓的，走的是同一條路：
+# 解到暫存 → 驗 → 驗過才搬進 <cache>/<版本>。驗不過的東西一個位元組都不會出現在最終位置。
+function Expand-PayloadZip([string]$zip, [string]$cache) {
+    if (-not (Test-Path $cache)) { New-Item -ItemType Directory -Path $cache -Force | Out-Null }
+    $tmpDir = Join-Path $cache ('.tmp-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+    try {
+        Expand-Archive -Path $zip -DestinationPath $tmpDir -Force
+        $chk = Test-Payload $tmpDir
+        if (-not $chk.ok) {
+            Remove-Item $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
+            return [pscustomobject]@{ ok = $false; path = $null; version = $null; reason = $chk.reason }
+        }
+        $dest = Join-Path $cache $chk.version
+        if (Test-Path $dest) { Remove-Item $dest -Recurse -Force }
+        Move-Item $tmpDir $dest
+        return [pscustomobject]@{ ok = $true; path = (Resolve-Path $dest).Path; version = $chk.version; reason = $chk.reason }
+    } catch {
+        Remove-Item $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
+        return [pscustomobject]@{ ok = $false; path = $null; version = $null; reason = 'expand-failed' }
+    }
+}
+
+function Resolve-ReleaseSource {
+    if ($SourceUrl) { return $SourceUrl }
+    $cfg = Read-JsonFile (Join-Path $Target $ConfigFile)
+    if ($cfg -and $cfg.update -and $cfg.update.source) { return [string]$cfg.update.source }
+    $v = Get-ContractVersion $Source
+    if ($v -and $v.raw.PSObject.Properties['source'] -and $v.raw.source) { return [string]$v.raw.source }
+    return ''
+}
+
+function Invoke-Fetch {
+    $cache = if ($CacheDir) { $CacheDir } else { Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'codex-sdlc/payloads' }
+    # -Bundled 明講成空字串 = 這台機器沒有內附的那一份（extension 在沒有 payload 的開發模式下就是這樣叫）。
+    # 完全不給 = 用 -Source（在終端機直接跑 fetch 時，本機那一份就是腳本自己所在的發佈物）。
+    $bundledDir = if ($BundledGiven) { $Bundled } else { $Source }
+
+    $remote = [ordered]@{ checked = $false; reachable = $false; latest = $null; url = $null; reason = $null }
+    $bundledInfo = [ordered]@{ version = $null; path = $null }
+    $script:Data.chosen   = 'none'
+    $script:Data.version  = $null
+    $script:Data.path     = $null
+    $script:Data.remote   = $remote
+    $script:Data.bundled  = $bundledInfo
+    $script:Data.cacheDir = $cache
+
+    if ($bundledDir -and (Test-Path $bundledDir)) {
+        if (Test-Path $bundledDir -PathType Leaf) {
+            # 指過來的是一個 zip（使用者自己從發佈頁下載的那一份）：跟遠端下載回來的走同一條路。
+            $x = Expand-PayloadZip $bundledDir $cache
+            if ($x.ok) { $bundledInfo.version = $x.version; $bundledInfo.path = $x.path }
+            else { Warn "指定的發佈物 zip 用不了（$($x.reason)）：$bundledDir" }
+        } else {
+            $b = Test-Payload $bundledDir
+            if ($b.ok) {
+                $bundledInfo.version = $b.version
+                $bundledInfo.path    = (Resolve-Path $bundledDir).Path
+            } elseif ($b.reason -eq 'sha-mismatch') {
+                Warn "本機的發佈物有 $($b.bad.Count) 個檔跟 manifest 對不上（$(@($b.bad | Select-Object -First 3) -join '、')）—— 不拿它安裝。"
+            }
+        }
+    }
+
+    $src = if ($NoRemote) { '' } else { Resolve-ReleaseSource }
+    if ($NoRemote) {
+        $remote.reason = 'skipped'
+        Say '只用指定的那一份發佈物（-NoRemote）。'
+    } elseif (-not $src) {
+        $remote.reason = 'no-source'
+        Say '沒有設發佈物來源（update.source 或版本檔的 source）—— 只用本機現有的那一份。'
+    } elseif ($src -notmatch $GitHubSourcePattern) {
+        $remote.reason = 'unsupported-source'
+        Warn "發佈物來源不是可辨識的 GitHub repo（$src）—— 只用本機現有的那一份。"
+    } else {
+        $remote.checked = $true
+        $api = "https://api.github.com/repos/$($Matches[1])/$($Matches[2])/releases/latest"
+        $rel = $null
+        try { $rel = Invoke-RestMethod -Uri $api -TimeoutSec 8 -Headers @{ 'User-Agent' = 'codex-sdlc' } -ErrorAction Stop }
+        catch { $remote.reason = 'unreachable'; Say '連不到發佈頁（離線或來源不可達）—— 用本機現有的那一份。' }
+
+        if ($rel) {
+            $latest = ([string]$rel.tag_name) -replace '^v', ''
+            $remote.latest = $latest
+            $asset = @($rel.assets | Where-Object { [string]$_.name -eq "codex-sdlc-$latest.zip" })[0]
+            if (-not $asset) { $asset = @($rel.assets | Where-Object { [string]$_.name -like 'codex-sdlc-*.zip' })[0] }
+            if (-not $asset) {
+                $remote.reason = 'no-asset'
+                Warn "發佈頁的 $latest 沒有附 codex-sdlc-*.zip —— 用本機現有的那一份。"
+            } else {
+                $remote.reachable = $true
+                $remote.url = [string]$asset.browser_download_url
+                $dest = Join-Path $cache $latest
+                # 同一版已經在快取裡而且驗得過 → 一個位元組都不用再下載（第二台專案、離線的第二次都走這條）。
+                $hit = if (Test-Path $dest) { Test-Payload $dest } else { $null }
+                if ($hit -and $hit.ok) {
+                    $script:Data.chosen  = 'cached'
+                    $script:Data.version = $hit.version
+                    $script:Data.path    = (Resolve-Path $dest).Path
+                    Say "發佈物 $latest 已在快取：$dest"
+                } else {
+                    $tmpZip = Join-Path ([IO.Path]::GetTempPath()) ("sdlc-payload-" + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.zip')
+                    try {
+                        Say "下載發佈物 $latest…"
+                        Invoke-WebRequest -Uri $remote.url -OutFile $tmpZip -TimeoutSec 120 -Headers @{ 'User-Agent' = 'codex-sdlc' } -ErrorAction Stop
+                        $x = Expand-PayloadZip $tmpZip $cache
+                        if (-not $x.ok) {
+                            $remote.reason = $x.reason
+                            Warn "下載回來的發佈物驗不過（$($x.reason)）—— 不拿它安裝，改用本機現有的那一份。"
+                        } else {
+                            $script:Data.chosen  = 'remote'
+                            $script:Data.version = $x.version
+                            $script:Data.path    = $x.path
+                            Say "發佈物 $($x.version) 已下載到 $($x.path)"
+                        }
+                    } catch {
+                        $remote.reason = 'download-failed'
+                        Warn "下載發佈物失敗（$($_.Exception.Message)）—— 用本機現有的那一份。"
+                    } finally {
+                        Remove-Item $tmpZip -Force -ErrorAction SilentlyContinue
+                    }
+                }
+            }
+        }
+    }
+
+    if ($script:Data.chosen -eq 'none' -and $bundledInfo.path) {
+        $script:Data.chosen  = 'bundled'
+        $script:Data.version = $bundledInfo.version
+        $script:Data.path    = $bundledInfo.path
+        Say "用本機的發佈物 $($bundledInfo.version)：$($bundledInfo.path)"
+    }
+    if ($script:Data.chosen -eq 'none') {
+        Warn '找不到任何可用的發佈物 —— 遠端拿不到，本機也沒有內附的那一份。'
+        return 2
+    }
+    return 0
+}
+
 # ---- 子命令 ----
 
 function Invoke-Install {
     $srcVer = Get-ContractVersion $Source
-    if (-not $srcVer) { Warn "來源沒有 $VersionRel —— 這不是一份完整的發佈物。"; return 2 }
+    if (-not $srcVer) {
+        Warn "來源沒有 $VersionRel —— 這不是一份完整的發佈物。"
+        $script:Data.error = 'not-a-release'
+        return 2
+    }
 
     $samePlace = (Resolve-Path $Source).Path -eq (Resolve-Path $Target).Path
     if ($samePlace -and -not $Adopt) {
         Warn "來源與目標是同一個目錄。把發佈物解壓到別處再指定 -Target，或用 -Adopt 接管這個既有安裝。"
+        $script:Data.error = 'same-path'
         return 2
     }
 
@@ -769,7 +965,7 @@ function Invoke-Install {
     $script:Data.guidelinesSkeleton = $false
 
     if ($Adopt) {
-        if (-not (Test-Path (Join-Path $Target '.codex'))) { Warn "-Adopt 需要目標已經有 .codex/。"; return 2 }
+        if (-not (Test-Path (Join-Path $Target '.codex'))) { Warn "-Adopt 需要目標已經有 .codex/。"; $script:Data.error = 'nothing-to-adopt'; return 2 }
         $tgtVer = Get-ContractVersion $Target
         $script:Data.version = if ($tgtVer) { $tgtVer.contract } else { $null }
         Say "接管既有安裝：$((Resolve-Path $Target).Path)（版本 $($tgtVer.contract)）"
@@ -855,7 +1051,7 @@ function Complete-Install([string[]]$needsMerge, [bool]$hooksWritten) {
     # hooks.json 寫出去了 = Codex 那邊一定要（重新）信任。沒信任之前強制層一條都不會跑，而 Codex 不會主動說。
     $script:Data.hooksWritten = $hooksWritten
     if ($hooksWritten) {
-        Say "hooks 寫好了，但 **Codex 要你信任之後才會跑**：在專案裡開 codex，信任這個資料夾，出現「Hooks need review」時選 Trust all and continue。沒信任之前 handoff-lint／dlp-gate／guideline-gate／build-check 一條都不會跑，而且沒有任何提示。之後隨時可以用 sdlc.ps1 doctor 確認。"
+        Say "hooks 寫好了，但 **Codex 要你信任之後才會跑**：在專案裡開 codex，信任這個資料夾，出現「Hooks need review」時選 Trust all and continue。沒信任之前 handoff-lint／dlp-gate／guideline-gate／build-check 一條都不會跑，而且沒有任何提示。之後隨時可以用 sdlc.ps1 doctor -CheckHookTrust 確認（doctor 預設不查這一項）。"
     }
 
     $cfg = Read-JsonFile (Join-Path $Target $ConfigFile)
@@ -878,14 +1074,16 @@ function Complete-Install([string[]]$needsMerge, [bool]$hooksWritten) {
 function Invoke-Update {
     $srcVer = Get-ContractVersion $Source
     $tgtVer = Get-ContractVersion $Target
-    if (-not $srcVer) { Warn "來源沒有 $VersionRel —— 這不是一份完整的發佈物。"; return 2 }
+    if (-not $srcVer) { Warn "來源沒有 $VersionRel —— 這不是一份完整的發佈物。"; $script:Data.error = 'not-a-release'; return 2 }
     if ((Resolve-Path $Source).Path -eq (Resolve-Path $Target).Path) {
         Warn '來源與目標是同一個目錄。把新版發佈物解壓到別處，再從那裡跑 update -Target <你的專案>。'
+        $script:Data.error = 'same-path'
         return 2
     }
     $cfgPath = Join-Path $Target $ConfigFile
     if (-not (Test-Path $cfgPath)) {
         Warn "$ConfigFile 不存在 —— 這個專案還沒被 sdlc.ps1 接管過。先跑：pwsh .codex/scripts/sdlc.ps1 install -Adopt"
+        $script:Data.error = 'not-managed'
         return 2
     }
 
@@ -1722,6 +1920,7 @@ $code = switch ($Command) {
     'apply'        { Invoke-Apply }
     'set'          { Invoke-Set }
     'check-update' { Invoke-CheckUpdate }
+    'fetch'        { Invoke-Fetch }
     'whatsnew'     { Invoke-WhatsNew }
     'tune'         { Invoke-Tune }
     'doctor'       { Invoke-Doctor }

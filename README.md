@@ -20,6 +20,8 @@ pwsh <解壓目錄>/.codex/scripts/sdlc.ps1 install -Target C:\你的專案
 
 zip 裡是工具那半的全部（`.codex/`、`.agents/`、`AGENTS.md`）、一份 `manifest.json`（升級時用來分辨哪些檔是你改過的）、一份 `guidelines/` 骨架，以及選用的 VS Code extension（`editor/codex-sdlc-{版本}.vsix`；要順便裝就加 `-WithEditor`，見下面「在 VS Code 裡」）。
 
+**裝過 extension 之後，下一個專案不必再走這一段**：在那個資料夾開 VS Code，點活動列的 Codex SDLC 圖示 →「安裝到這個工作區」。vsix 內附了一份同版的發佈物，離線也裝得起來。
+
 裝完長這樣：
 
 ```
@@ -60,9 +62,17 @@ pwsh .codex/scripts/sdlc.ps1 doctor
 
 沒做這一步，`handoff-lint`、`dlp-gate`、`guideline-gate`、`build-check` 一條都不會跑 —— 流程照常進行、畫面上一切正常，只是沒有任何東西在擋。信任記在**你的** `~/.codex/config.toml`，所以換一台機器、專案搬了目錄、或升級改到 `hooks.json`，都要再信任一次。
 
-確認：`pwsh .codex/scripts/sdlc.ps1 doctor` —— 它會問 Codex 本人，回報「N 條都已信任」或哪幾條還沒。找不到 `codex` 執行檔時它會說查不到，不會假裝沒問題。（問的時候 Codex 連不到網路，這是刻意的。）
+確認：
 
-**只在 VS Code 裡用 Codex 擴充的話**：信任一樣記在 `~/.codex/config.toml`，跟 CLI 共用。我們沒驗過擴充會不會跳出同一個審核畫面，所以最保險的做法是在專案目錄的終端機裡開一次 `codex` 把這一步做完，再用 `doctor` 確認。只裝了擴充、PATH 上沒有 `codex` 時，`doctor` 會說「無法確認」—— 用 `doctor -CodexPath <codex 的完整路徑>` 指給它。
+```powershell
+pwsh .codex/scripts/sdlc.ps1 doctor -CheckHookTrust
+```
+
+它會問 Codex 本人，回報「N 條都已信任」或哪幾條還沒。找不到 `codex` 執行檔時它會說查不到，不會假裝沒問題。（問的時候 Codex 連不到網路，這是刻意的。）
+
+**`-CheckHookTrust` 要自己加** —— 4.10.0 起 `doctor` 預設不問這一項：問它要另外叫起一個 `codex app-server`（最久 15 秒），而它回答的問題 `doctor` 修不了，修法永遠是上面那兩步。沒加的那一次 `doctor` 會說一句「信任狀態這次沒查」，所以 **`doctor` 全綠不等於強制層在跑**。VS Code 的狀態列同理。
+
+**只在 VS Code 裡用 Codex 擴充的話**：信任一樣記在 `~/.codex/config.toml`，跟 CLI 共用。我們沒驗過擴充會不會跳出同一個審核畫面，所以最保險的做法是在專案目錄的終端機裡開一次 `codex` 把這一步做完，再用上面那行確認。只裝了擴充、PATH 上沒有 `codex` 時它會說「無法確認」—— 再加 `-CodexPath <codex 的完整路徑>` 指給它。
 
 ### 已經用手動複製裝過了
 
@@ -128,17 +138,20 @@ VS Code extension 不會被 `update` 重裝（它是整台機器共用的）；�
 
 | 在哪裡 | 看得到／做得到什麼 | 沒有它的話 |
 |---|---|---|
-| **活動列的 Codex SDLC 圖示 → 設定面板** | 一眼看到全部設定的現值；點一下就改（選項與說明來自 schema）；需要套用的標 ●，改完按一次「套用」；hooks 沒信任時有按鈕在終端機開 Codex；預設組合、tune 建議、規範機械層開關、pwsh／codex 的位置 | `sdlc.ps1 set` 或手改 JSON，再記得 apply |
-| 狀態列左下角的 **SDLC** | 版本、Codex 有沒有信任 hooks、改了沒套用、有新版（背景每天刷新一次；`update.check = never` 就一條連線都沒有）。點它是選單 | 只有主動跑 `doctor`／`check-update` 才知道 |
+| **還沒裝工作流的資料夾 → 活動列的 Codex SDLC 圖示** | 「安裝到這個工作區」：先看發佈物來源有沒有新版，沒有就用 vsix 內附的那一份（離線可用，一律驗 sha）。已經有的 `AGENTS.md`／`guidelines/` 不覆蓋 | 找 zip、解壓、記得 `-Target` |
+| **活動列的 Codex SDLC 圖示 → 設定面板** | 一眼看到全部設定的現值；點一下就改（選項與說明來自 schema）；需要套用的標 ●，改完按一次「套用」；工具檔缺了就點一下補回來；`AGENTS.md.new` 還沒合併會常駐提醒（點一下開左右對照）；預設組合、tune 建議、規範機械層開關 | `sdlc.ps1 set` 或手改 JSON，再記得 apply |
+| 狀態列左下角的 **SDLC** | 版本、改了沒套用、工具檔缺不缺、有新版（背景每天刷新一次；`update.check = never` 就一條連線都沒有）。點它是選單 | 只有主動跑 `doctor`／`check-update` 才知道 |
 | `sdlc.config.json` 上方 | 「套用（N 個 agent 未套用）」、tune 建議「採用」（只套那一個） | 切去終端機 |
 | Problems 面板（存檔時） | `guidelines/rules.json` 的違規、`bdd-docs/` 裡的敏感資料殘留、**`rules.json` 自己寫壞的那一條** | 只在 hook 的訊息裡捲過去 |
-| Get Started（第一次啟動自動打開） | 四步：信任 hooks → 選預設組合 → 跑 doctor → 設定在哪裡改 | 讀這份 README |
+| Get Started（第一次啟動自動打開） | 四步：裝進這個資料夾 → 選預設組合 → 跑 doctor → 設定在哪裡改 | 讀這份 README |
 
 面板裡的每一次修改都經過 `sdlc.ps1 set` —— 先驗完才寫，寫錯一個字都不動（見下面「每個 agent 用哪個模型」）。工作流還是 4.8 的專案，面板只顯示、不給改。
 
-裝：`install` 時加 `-WithEditor`，或自己 `code --install-extension <解壓目錄>/editor/codex-sdlc-{版本}.vsix`（Cursor／Windsurf／VSCodium 吃同一個檔）。需要 PowerShell 7；VS Code 找不到 `pwsh` 時它會說，並讓你直接選檔。
+裝：`install` 時加 `-WithEditor`，或自己 `code --install-extension <解壓目錄>/editor/codex-sdlc-{版本}.vsix`（Cursor／Windsurf／VSCodium 吃同一個檔）。需要 PowerShell 7；VS Code 找不到 `pwsh` 時它會說，並讓你直接選檔。**裝過一次之後，下一個專案不必再找 zip** —— 在那個資料夾按「安裝到這個工作區」就好。
 
-**有兩種信任，別搞混。** VS Code 的「工作區信任」決定這個 extension 會不會啟動 —— 它會執行專案裡的 `.ps1`，所以受限模式下不啟動，**連狀態列都不會出現**。Codex 的 hooks 信任決定強制層會不會跑（見「裝好之後一定要做的一件事」）。在 VS Code 按了信任，不代表 Codex 那邊也好了；後者沒好時，狀態列會顯示「專案未信任」或「hooks 未信任」。
+**它不查 Codex 有沒有信任這個專案的 hooks**（4.10.0 起 `doctor` 本身就預設不查）：那要另外叫起一個 `codex` 子行程，而答案是在面板裡按不動的東西。所以**狀態列的綠勾不等於強制層在跑** —— 裝完照樣要做「裝好之後一定要做的一件事」，要確認就跑 `sdlc.ps1 doctor -CheckHookTrust`。
+
+**有兩種信任，別搞混。** VS Code 的「工作區信任」決定這個 extension 會不會啟動 —— 它會執行 `.ps1`，所以受限模式下不啟動。Codex 的 hooks 信任決定強制層會不會跑（見「裝好之後一定要做的一件事」），那一項在 VS Code 裡看不到。
 
 **它是每台機器一份、所有專案共用 —— 刪掉專案不會移除它**，下次在別的專案裡它還會啟動。移除：
 
@@ -146,13 +159,13 @@ VS Code extension 不會被 `update` 重裝（它是整台機器共用的）；�
 code --uninstall-extension codex-sdlc.codex-sdlc
 ```
 
-它刻意不做三件事：不猜你流程走到第幾步（那活在對話裡）、不自己判任何規則（一律跑腳本、讀腳本的結構化輸出）、不把工作流設定放進 VS Code settings（唯一真相是 `sdlc.config.json`）。
+它刻意不做三件事：不猜你流程走到第幾步（那活在對話裡）、不自己判任何規則（一律跑腳本、讀腳本的結構化輸出）、不把工作流設定放進 VS Code settings（唯一真相是 `sdlc.config.json`）。安裝那條路也一樣：找發佈物是 `sdlc.ps1 fetch`、裝是發佈物自己的 `install`、補工具檔是它的 `update`，**連網只發生在腳本那一側**。vsix 內附的那份 payload 是打包時同一次建置複製進去的（不進版控），所以它跟發佈物不會分岔。
 
 已知限制：
 
 - **只在 Windows ＋ VS Code 上實測過。** macOS／Linux、Cursor／Windsurf／VSCodium 照理吃同一個 `.vsix`，但沒有實際跑過。
-- 查 hooks 信任要用到 `codex` 執行檔：設了 `codexSdlc.codexPath` 就用它（設定面板「這台機器 → codex」可以直接選檔），沒設就找 PATH，再試 OpenAI VS Code 擴充內附的那一支（那個位置沒實測過）。**都找不到時狀態列不會亮警示** —— 設定面板的「狀態」那一行是黃的「無法確認」。所以狀態列的綠勾不等於 hooks 已信任。
-- 「在終端機開 Codex 信任 hooks」這個按鈕沒有在真的 Codex 上試過（這台開發機沒有登入的 Codex）。畫面不對的話，照「裝好之後一定要做的一件事」手動做。
+- **「先看發佈物來源有沒有新版」目前是空轉的**：`bdd-workflow-version.json` 的 `source` 還是空的（見下面「已知的洞」），所以安裝一律用內附的那一份。要開通：填那個網址，或在 VS Code 設 `codexSdlc.releaseSource`。
+- 遠端有比 extension 新的版本時，裝出來的工作流可能吐出這一版讀不懂的 `-Json`；面板會說「版本不相容」，換一版 extension 就好。
 - 「有新版」要 `sdlc.config.json` 的 `update.source` 指向一個 GitHub repo 才查得到（見「升級」）。
 
 ---
@@ -640,13 +653,15 @@ pwsh -NoProfile -File .codex/scripts/guideline-gate.ps1 -Validate
 | `review-loop-exceeded` | 修正輪超過上限（預設 3，`sdlc.config.json` 的 `review.maxRounds`） | 它會交回你裁定：接受現版本／指定重點跑最後一輪／暫停 |
 | `handoff-too-long` | 委派超過 1200 字元 | 通常是它想貼全文；讓它改傳路徑 |
 | `connection-string`／`secret-literal` | prompt 裡有連線字串或密鑰 | **不要繞過**，把敏感值從來源拿掉 |
-| （沒有任何訊息）寫了違規的檔、沒帶 meta 的委派都照樣過 | Codex 沒信任這個專案的 hooks，強制層整層沒在跑 | 跑 `sdlc.ps1 doctor`，照它說的去 codex 裡信任 |
-| `doctor` 說「無法確認 Codex 是否信任了這個專案的 hooks」（狀態列說明裡是「Codex hooks：無法確認」） | 括號裡寫原因：找不到 `codex` 執行檔，或問了 15 秒沒回應。不代表沒信任，也不代表有 | 找不到：裝 Codex CLI，或 `doctor -CodexPath <完整路徑>`（VS Code 裡設 `codexSdlc.codexPath`）。沒回應：再跑一次 `doctor` |
-| `doctor` 說 `.codex/hooks.json` 不在 | 工具檔缺了（被刪掉，或當初只複製了一部分）—— 四支 hook 一支都不會跑，寫檔與委派完全沒有人擋 | 把發佈物解壓到別處，跑 `update -Target <這個專案>` 把工具檔補回來，然後在 codex 裡重新信任 |
+| （沒有任何訊息）寫了違規的檔、沒帶 meta 的委派都照樣過 | Codex 沒信任這個專案的 hooks，強制層整層沒在跑 | 跑 `sdlc.ps1 doctor -CheckHookTrust`，照它說的去 codex 裡信任 |
+| `doctor -CheckHookTrust` 說「無法確認 Codex 是否信任了這個專案的 hooks」 | 括號裡寫原因：找不到 `codex` 執行檔，或問了 15 秒沒回應。不代表沒信任，也不代表有 | 找不到：裝 Codex CLI，或再加 `-CodexPath <完整路徑>`。沒回應：再跑一次 |
+| `doctor` 全綠，寫檔卻沒有人擋 | **綠燈不包含 Codex 的 hooks 信任** —— 4.10.0 起預設不查那一項（`doctor` 會說一句「這次沒查」） | 跑 `sdlc.ps1 doctor -CheckHookTrust`，照它說的去 codex 裡信任 |
+| `doctor` 說 `.codex/hooks.json` 不在 | 工具檔缺了（被刪掉，或當初只複製了一部分）—— 四支 hook 一支都不會跑，寫檔與委派完全沒有人擋 | VS Code 面板那一行點下去（「補回工具檔」）；終端機的話把發佈物解壓到別處跑 `update -Target <這個專案>`。之後在 codex 裡重新信任 |
 | `apply` 說「沒有 sdlc.config.json —— 沒有東西要套用」 | 沒有設定檔是合法狀態（全部 inherit），所以沒有東西要套 | 要開始調校就用 `set …`（它會替你建設定檔）；不想調校就不必理它 |
 | `set` 說「設定檔裡有註解」，一個字都沒寫 | `sdlc.config.json` 不支援註解，整份改寫會把它們吃掉 | 把說明搬進 `_note` 再跑；或加 `-Yes` 照寫（原檔先備份到 `bdd-docs/.sdlc/sdlc.config.with-comments.json`）。VS Code 面板會跳出同一個選擇 |
 | `set` 說某個值「不是合法值」或「不認得的設定」 | 值不在 schema 的清單裡，或 key 打錯了 —— 整批都沒寫 | 照它給的「是不是要 …」改；合法值與說明也可以在設定面板或編輯器的補全裡看到 |
 | 裝了工作流，VS Code 裡卻沒有任何介面（左下角沒有 `SDLC`、活動列沒有 Codex SDLC、命令面板找不到 `Codex SDLC`） | 最常見：extension 根本沒裝 —— `install` 沒加 `-WithEditor` 時只會提示、不會裝。其次：打開的資料夾不是裝了工作流的那個，或工作區沒被信任 | `doctor` 會說這台機器有沒有裝；沒裝就 `code --install-extension <發佈物>/editor/codex-sdlc-{版本}.vsix`，然後 `Developer: Reload Window`。打開有 `.codex/bdd-workflow/` 的那個資料夾，信任它 |
+| 活動列有 Codex SDLC 圖示，點進去卻說「這個資料夾還沒有 Codex SDLC 工作流」 | 正常 —— 面板現在在每個工作區都在，那就是安裝入口 | 按「安裝到這個工作區」。說找不到發佈物的話（開發模式裝的 extension 沒有內附），改按「選擇發佈物…」或設 `codexSdlc.releaseSource` |
 
 寫入 `bdd-docs/**` 之後還會掃一次敏感資料殘留。確定整個專案沒有敏感資料的話，建一個 `bdd-docs/.dlp-disabled` 可以整個關掉。
 
@@ -691,11 +706,13 @@ pwsh -NoProfile -File .codex/scripts/guideline-gate.ps1 -Validate # 規則檔（
 pwsh -NoProfile -File .codex/scripts/pack.ps1     # → dist/codex-sdlc-{version}.zip
 ```
 
-發佈前把 `bdd-workflow-version.json` 的 **`source`** 填成這個 repo 的網址 —— `install` 會把它寫進每個消費端的 `sdlc.config.json`，那是他們唯一的更新來源。沒填不會擋你出貨（第一版還沒推上去很正常），但 `pack` 每次都會喊：**沒有它，那些專案永遠不會有人告訴他們有新版，而症狀是零。**
+發佈前把 `bdd-workflow-version.json` 的 **`source`** 填成這個 repo 的網址 —— `install` 會把它寫進每個消費端的 `sdlc.config.json`，那是他們唯一的更新來源，**也是 VS Code 的「安裝到這個工作區」去哪裡找新版發佈物的依據**（`sdlc.ps1 fetch`）。沒填不會擋你出貨（第一版還沒推上去很正常），但 `pack` 每次都會喊：**沒有它，那些專案永遠不會有人告訴他們有新版，而症狀是零。**
 
 `pack` 自己會先跑 `agent-lint` 與 fixture 測試，**紅燈就不出貨** —— 一份設定不一致的發佈物，症狀會落在別人的專案裡，而且通常是靜默的。它同時產生 `manifest.json`（每個工具檔一個 sha256），那是升級能分辨「使用者改過」的唯一依據，也會清掉 agent 檔裡的 `SDLC-TUNING` 區塊（發佈物一律原廠狀態，別把自己的調校偷渡出去）。版本號改 `bdd-workflow-version.json` 的 `contract-version`，`AGENTS.md`、`config.toml` 的標題與 `vscode-extension/package.json` 由檢查 10／11 盯著（extension 那一處用 `npm version <版本> --no-git-tag-version` 改）。
 
 repo 裡有 `vscode-extension/` 時，`pack` 還會 `npm ci` ＋ 編譯 ＋ 跑 extension 的測試（需要 Node.js；這一版不帶編輯器那一層就加 `-SkipExtension`），產出的 `.vsix` 放進發佈物的 `editor/` —— **不進 manifest**，它不是工具那半也不是使用者那半。extension 的測試包含一支拿真的 `sdlc.ps1` 輸出來驗的合約測試，所以改了 `-Json` 的欄位卻沒同步 extension，這裡會紅。
+
+建 vsix 之前，`pack` 會把**這一次 staging 算出來的發佈物**複製進 `vscode-extension/payload/`，讓 vsix 內附一份（使用者才能在還沒裝工作流的資料夾裡直接安裝）。內附的就是同一次打包的那一份、同一份 manifest，所以不會跟發佈物分岔；複製完還會從產出的 vsix 裡讀回版本再驗一次，對不上就不出貨。`payload/` 只在打包期間存在於工作區（`finally` 一定刪掉），而且 **gitignore —— repo 裡長期躺著第二份 `.codex/` 才是真正會分岔的那個形狀**。
 
 改了 extension 之後，另外在真的 VS Code 裡驗一次打包出來的 vsix（會開一個獨立的視窗，不碰你平常那一份）：
 
@@ -730,13 +747,13 @@ npm run test:host                   # 打包的是 out/ 現有的東西，所以
 
 ### 還沒做完的事
 
-截至 v4.9.0。細節與證據在 `docs/vscode-extension-plan.md` 與 `docs/settings-ux-plan.md` 的「執行結果」。
+截至 v4.10.0。細節與證據在 `docs/vscode-extension-plan.md` 與 `docs/settings-ux-plan.md` 的「執行結果」。
 
 **要先做決定的**
 
 - **`send_input`／`resume_agent` 要不要也經過 `handoff-lint`。** 現在 matcher 只攔 `spawn_agent`；把修正交給已經存在的子代理不會被檢查，修正輪上限因此擋不到（見「審核最多修幾輪」）。要攔，就得先定義一次 `send_input` 什麼時候算一輪修正 —— 它也拿來追問、補資料，不能每一次都要求帶 `round`。
 - **extension 的 publisher ID。** 現在的 `codex-sdlc` 是佔位。上 Marketplace 之前要定案 —— 改 publisher 等於改 extension ID，已經裝過的人要重裝；repo 裡寫著這個 ID 的地方要一起改（`sdlc.ps1` 的 `$ExtensionId`、兩份 README 的移除指令、`test-host/suite.ts`、`test-sdlc.ps1` 的假 extensions.json）。
-- **找不到 `codex` 時狀態列要不要亮警示。** 現在狀態列不亮，設定面板那一行是黃的（見「在 VS Code 裡」的已知限制）。亮的話，只用 Codex 擴充、沒裝 CLI 的人會一直看到警示；不亮的代價是不開面板的人看不到「hooks 沒信任」這個最靜默的失效。
+- **VS Code 裡要不要（用別的方式）把「Codex 還沒信任 hooks」講出來。** 4.10.0 把那一項整條從 extension 拿掉了：查它要另外叫起一個 `codex` 子行程（最久 15 秒），而答案在面板裡按不動。代價是最靜默的那個失效在 VS Code 裡完全看不到 —— 只有在終端機跑 `doctor -CheckHookTrust` 才知道（CLI 的預設也一起關了）。要補的話，成本最低的形狀是「裝完之後提醒一次」，而不是每次健檢都去問。
 - **網頁式設定頁（`docs/settings-ux-plan.md` 的 S5）。** 照計畫的判準：側邊欄上線之後回饋仍然是「不好設定」，或要設定的人不是開發者，才做。
 
 **計畫裡延後的**
@@ -752,12 +769,22 @@ npm run test:host                   # 打包的是 out/ 現有的東西，所以
 - 「在終端機開 Codex 信任 hooks」：沒有在真的（登入的）Codex 上試過。
 - macOS／Linux、Cursor／Windsurf／VSCodium、沒有 pwsh 或只有 Windows PowerShell 5.1 的機器、非繁中語系的 Windows（hook 的編碼問題是在 cp950 上查到並驗證修正的）。
 - OpenAI VS Code 擴充：內附 `codex` 的位置、它有沒有「Hooks need review」審核畫面。
-- `doctor` 問 Codex 信任狀態只在未登入的 Codex home 驗過；登入後 app-server 的啟動行為沒驗（15 秒沒回應就只說「無法確認」）。
+- `doctor -CheckHookTrust` 問 Codex 信任狀態只在未登入的 Codex home 驗過；登入後 app-server 的啟動行為沒驗（15 秒沒回應就只說「無法確認」）。
 
 **已知、還沒修的**
 
 - 兩支會阻斷的 hook 同時命中時，Codex 合併後的回饋偶爾有一兩個字亂碼（約十二次一次，隔離環境重現不出來）。
-- **更新檢查目前在每個專案上都查不到東西。** `bdd-workflow-version.json` 的 `source` 還是空的，`install` 寫進每個專案的 `update.source` 也就是空的（extension 的背景檢查一樣）。而且 `update` 不會替已經裝好的專案補這個值 —— 填好之後只有新裝的專案拿得到，舊的要自己改 `sdlc.config.json`，或讓 `update` 補空值（還沒做）。
+- **更新檢查目前在每個專案上都查不到東西。** `bdd-workflow-version.json` 的 `source` 還是空的，`install` 寫進每個專案的 `update.source` 也就是空的（extension 的背景檢查一樣）。而且 `update` 不會替已經裝好的專案補這個值 —— 填好之後只有新裝的專案拿得到，舊的要自己改 `sdlc.config.json`，或讓 `update` 補空值（還沒做）。**同一個洞也讓 VS Code 的「安裝到這個工作區」的「先看遠端有沒有新版」永遠空轉** —— 它一律退回 vsix 內附的那一份（功能是好的，只是現在沒有遠端可問）。
+
+### 從 v4.9 升上來
+
+**非破壞性** —— 流程六步、產物路徑、handoff 合約、hooks 都沒動（不必重新信任）。升級動作：跑 `update`，並換上這一版附的 vsix。這一版改的是「怎麼把它裝進下一個專案」：
+
+- **VS Code 裡多了安裝入口。** 活動列的 Codex SDLC 圖示現在**每個工作區都在**；還沒裝工作流的資料夾點進去是「安裝到這個工作區」。它先問發佈物來源有沒有新版，拿不到就用 vsix 內附的那一份（離線可用），拿回來的東西一律逐檔比對 `manifest.json` 的 sha256 才用。已經有的 `AGENTS.md`／`guidelines/` 不覆蓋。
+- **工具檔缺了、`AGENTS.md.new` 沒合併，現在都有按得下去的按鈕**（「補回工具檔」＝跑發佈物的 `update`；「比對並合併」＝開左右對照）。以前這些狀態只有一句「請去終端機跑 …」。
+- **新的子命令 `sdlc.ps1 fetch`**：找一份可用的發佈物（遠端優先、本機墊底、一律驗 sha、依版本快取）。終端機也能用：`pwsh .codex/scripts/sdlc.ps1 fetch -Json`。
+- **`doctor` 不再問 Codex 的信任狀態**（終端機也一樣）。問它要另外叫起一個 `codex app-server` 子行程（最久 15 秒），而修法永遠是同一句「去 codex 裡信任」—— `doctor` 幫不上忙。**要查就明講 `doctor -CheckHookTrust`**，行為跟以前一模一樣。沒查的那一次 `doctor` 會說一句「這次沒查」並告訴你這個參數 —— 因為「doctor 全綠」被讀成「強制層在跑」是這裡最貴的誤會。extension 因此拿掉了 `codexSdlc.codexPath` 與兩個信任相關的指令，多了 `codexSdlc.releaseSource`。
+- `install`／`update` 提早失敗時 `-Json` 多了結構化的 `error`（`not-a-release`／`same-path`／`not-managed`／`nothing-to-adopt`）。讀 `-Json` 的人不必再解析句子。
 
 ### 從 v4.8 升上來
 

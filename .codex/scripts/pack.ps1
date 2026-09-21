@@ -15,6 +15,11 @@
 # 紅燈一樣不出貨。vsix **不進 manifest**：它不是工具那半、也不是使用者那半，是每台機器一份的編輯器外掛，
 # 升級邏輯管不到、也不該管（理由見 docs/vscode-extension-plan.md 事實 1）。
 #
+# 從 4.10.0 起 vsix 還會**內附一份 payload**（vscode-extension/payload/），讓裝了 extension 的人在一個
+# 還沒裝工作流的資料夾裡直接安裝。內附的那一份就是這一次 staging 算出來的那一份 —— 同一次 pack、
+# 同一份 manifest，所以「兩份 payload 分岔」在構造上不可能發生；複製完還會從產出的 vsix 裡讀回版本再驗一次。
+# payload 只在打包期間存在於工作區，finally 一定刪掉，而且不進版控。
+#
 # Exit: 0 = 打包完成；2 = 驗證未過或參數錯誤。
 
 [CmdletBinding()]
@@ -76,53 +81,22 @@ try {
     }
 } finally { Pop-Location }
 
-# ---- VS Code extension ----
-# 放在收集檔案之前：extension 紅燈就不該留下半套 staging。
-# 版本號由 agent-lint 檢查 11 擋（package.json 必須等於 contract-version，上面已經跑過）；
-# 這裡再從**產出的 vsix 本身**讀一次 —— 建置腳本若改寫了版本號，出貨的是 vsix，不是 package.json。
+# ---- VS Code extension：先確認建得起來 ----
+# 真正的建置往後挪到 staging 之後（見「VS Code extension（payload 已就緒）」）——
+# 從這一版起 vsix 要把**這一次打包出來的 payload** 一起收進去，所以它得等 staging 算完。
+# 這裡只先擋掉「連 node 都沒有」：那種失敗不該讓使用者先等完整套 staging。
 $vsix = $null
+$extBuild = $null
 $extRoot = Join-Path $Root $ExtensionDir
-if ((Test-Path (Join-Path $extRoot 'package.json')) -and -not $SkipExtension) {
+$buildExtension = (Test-Path (Join-Path $extRoot 'package.json')) -and -not $SkipExtension
+if ($buildExtension) {
     foreach ($tool in @('node', 'npm')) {
         if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) {
             Fail "要打包 VS Code extension 需要 $tool（Node.js）。這一版不帶編輯器那一層的話，加 -SkipExtension。"
         }
     }
-    $extBuild = Join-Path ([IO.Path]::GetTempPath()) ("sdlc-vsix-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
-    New-Item -ItemType Directory -Path $extBuild -Force | Out-Null
-    Push-Location $extRoot
-    try {
-        Say 'VS Code extension：npm ci'
-        Invoke-Utf8 { & npm ci --no-audit --no-fund 2>&1 | ForEach-Object { Say "  $_" } }
-        if ($LASTEXITCODE -ne 0) { Fail 'extension 的 npm ci 失敗 —— 不出貨。' }
-        Invoke-Utf8 { & npm run build 2>&1 | ForEach-Object { Say "  $_" } }
-        if ($LASTEXITCODE -ne 0) { Fail 'extension 編譯失敗 —— 不出貨。' }
-        if (-not $SkipTests) {
-            Invoke-Utf8 { & npm test 2>&1 | Where-Object { $_ -match '^(not ok|# (tests|pass|fail))' } | ForEach-Object { Say "  $_" } }
-            if ($LASTEXITCODE -ne 0) { Fail 'extension 測試紅燈 —— 不出貨。它讀的是 sdlc.ps1 的 -Json，紅在這裡通常代表兩邊的合約分岔了。' }
-        }
-        $vsix = Join-Path $extBuild "codex-sdlc-$version.vsix"
-        Invoke-Utf8 { & npx --no-install vsce package --skip-license --allow-missing-repository --out $vsix 2>&1 | ForEach-Object { Say "  $_" } }
-        if ($LASTEXITCODE -ne 0 -or -not (Test-Path $vsix)) { Fail 'vsce package 失敗 —— 不出貨。' }
-    } finally { Pop-Location }
-
-    Add-Type -AssemblyName System.IO.Compression.FileSystem
-    $zipRead = [IO.Compression.ZipFile]::OpenRead($vsix)
-    try {
-        $entry = $zipRead.Entries | Where-Object { $_.FullName -eq 'extension/package.json' } | Select-Object -First 1
-        if (-not $entry) { Fail 'vsix 裡沒有 extension/package.json —— 產物是壞的，不出貨。' }
-        $reader = [IO.StreamReader]::new($entry.Open(), $Utf8NoBom)
-        try { $vpkg = $reader.ReadToEnd() | ConvertFrom-Json } finally { $reader.Dispose() }
-    } finally { $zipRead.Dispose() }
-    if ([string]$vpkg.version -ne $version) {
-        Fail "vsix 的版本是 $($vpkg.version)，contract-version 是 $version —— 對不上就不出貨（doctor 的相容性判斷會建立在錯的數字上）。"
-    }
-    if ($null -eq $vpkg.codexSdlc -or $null -eq $vpkg.codexSdlc.jsonSchema) {
-        Fail 'vsix 的 package.json 沒有宣告 codexSdlc.jsonSchema —— doctor 判斷不了它讀不讀得懂這一版的 -Json，不出貨。'
-    }
-    Say "VS Code extension：codex-sdlc-$version.vsix（-Json schema $($vpkg.codexSdlc.jsonSchema)）"
 } elseif ($SkipExtension) {
-    Say 'VS Code extension：-SkipExtension，這一版的發佈物不帶 editor/。'
+    Say 'VS Code extension：-SkipExtension，這一版的發佈物不帶 editor/、vsix 也不會內附 payload。'
 }
 
 # ---- 收集檔案 ----
@@ -162,13 +136,6 @@ try {
         $skelCount = @(Get-ChildItem (Join-Path $stage 'guidelines') -Recurse -File).Count
     }
 
-    # vsix 同理：跟著出貨，但**不進 manifest**（$files 在上面就算完了，這裡放進 stage 的檔不會被列進去）。
-    # install 的複製迴圈只走工具那半，看不到 editor/；只有 -WithEditor 才會拿它去裝。
-    if ($vsix) {
-        New-Item -ItemType Directory -Path (Join-Path $stage 'editor') -Force | Out-Null
-        Copy-Item $vsix (Join-Path $stage "editor/codex-sdlc-$version.vsix") -Force
-    }
-
     # 發佈物一律原廠狀態：清掉 SDLC-TUNING 區塊。
     $stripped = @()
     foreach ($t in @(Get-ChildItem (Join-Path $stage '.codex/agents') -Filter *.toml -File -ErrorAction SilentlyContinue)) {
@@ -202,6 +169,73 @@ try {
         'files'                 = $manifest
     }) | ConvertTo-Json -Depth 6) + "`n"), $Utf8NoBom)
 
+    # ---- VS Code extension（payload 已就緒）----
+    #
+    # vsix 內附一份 payload：裝了 extension 的人在一個**還沒裝工作流**的資料夾裡就能直接安裝，
+    # 不必先去找 zip、解壓、記得 -Target。「兩份 payload 會靜默分岔」是真的風險，所以這裡把它
+    # 壓成一次建置的事實 —— 內附的那一份**就是**上面 staging 算出來的那一份（同一次 pack、同一份
+    # manifest、SDLC-TUNING 已經清過），複製完再從產出的 vsix 裡讀回版本驗一次。
+    #
+    # payload 只在打包期間存在於工作區（finally 一定刪掉），而且不進版控（.gitignore）——
+    # repo 裡長期躺著第二份 .codex/ 才是真正會分岔的那個形狀。
+    # editor/ 不進 payload：vsix 裡不該再有一個 vsix（而且它是每台機器一份的東西，見上面的理由）。
+    if ($buildExtension) {
+        $payloadDir = Join-Path $extRoot 'payload'
+        $extBuild = Join-Path ([IO.Path]::GetTempPath()) ("sdlc-vsix-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
+        New-Item -ItemType Directory -Path $extBuild -Force | Out-Null
+        if (Test-Path $payloadDir) { Remove-Item $payloadDir -Recurse -Force }
+        New-Item -ItemType Directory -Path $payloadDir -Force | Out-Null
+        Copy-Item (Join-Path $stage '*') $payloadDir -Recurse -Force
+        Say "VS Code extension：內附 payload $version（$($files.Count) 個工具檔）"
+
+        Push-Location $extRoot
+        try {
+            Say 'VS Code extension：npm ci'
+            Invoke-Utf8 { & npm ci --no-audit --no-fund 2>&1 | ForEach-Object { Say "  $_" } }
+            if ($LASTEXITCODE -ne 0) { Fail 'extension 的 npm ci 失敗 —— 不出貨。' }
+            Invoke-Utf8 { & npm run build 2>&1 | ForEach-Object { Say "  $_" } }
+            if ($LASTEXITCODE -ne 0) { Fail 'extension 編譯失敗 —— 不出貨。' }
+            if (-not $SkipTests) {
+                Invoke-Utf8 { & npm test 2>&1 | Where-Object { $_ -match '^(not ok|# (tests|pass|fail))' } | ForEach-Object { Say "  $_" } }
+                if ($LASTEXITCODE -ne 0) { Fail 'extension 測試紅燈 —— 不出貨。它讀的是 sdlc.ps1 的 -Json，紅在這裡通常代表兩邊的合約分岔了。' }
+            }
+            $vsix = Join-Path $extBuild "codex-sdlc-$version.vsix"
+            Invoke-Utf8 { & npx --no-install vsce package --skip-license --allow-missing-repository --out $vsix 2>&1 | ForEach-Object { Say "  $_" } }
+            if ($LASTEXITCODE -ne 0 -or -not (Test-Path $vsix)) { Fail 'vsce package 失敗 —— 不出貨。' }
+        } finally { Pop-Location }
+
+        # 版本號由 agent-lint 檢查 11 擋（package.json 必須等於 contract-version，上面已經跑過）；
+        # 這裡再從**產出的 vsix 本身**讀一次 —— 建置腳本若改寫了版本號，出貨的是 vsix，不是 package.json。
+        # 內附的 payload 也一樣：vsix 裡那份版本檔才是使用者真的會裝出去的東西。
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        $vpkg = $null; $vpayload = $null
+        $zipRead = [IO.Compression.ZipFile]::OpenRead($vsix)
+        try {
+            foreach ($want in @('extension/package.json', "extension/payload/$VersionRel")) {
+                $entry = $zipRead.Entries | Where-Object { $_.FullName -eq $want } | Select-Object -First 1
+                if (-not $entry) { Fail "vsix 裡沒有 $want —— 產物是壞的，不出貨。" }
+                $reader = [IO.StreamReader]::new($entry.Open(), $Utf8NoBom)
+                try { $parsed = $reader.ReadToEnd() | ConvertFrom-Json } finally { $reader.Dispose() }
+                if ($want -eq 'extension/package.json') { $vpkg = $parsed } else { $vpayload = $parsed }
+            }
+        } finally { $zipRead.Dispose() }
+        if ([string]$vpkg.version -ne $version) {
+            Fail "vsix 的版本是 $($vpkg.version)，contract-version 是 $version —— 對不上就不出貨（doctor 的相容性判斷會建立在錯的數字上）。"
+        }
+        if ([string]$vpayload.'contract-version' -ne $version) {
+            Fail "vsix 內附的 payload 是 $($vpayload.'contract-version')，這一版是 $version —— 對不上就不出貨（它會在別人的空資料夾裡裝出錯的一版，而且是靜默的）。"
+        }
+        if ($null -eq $vpkg.codexSdlc -or $null -eq $vpkg.codexSdlc.jsonSchema) {
+            Fail 'vsix 的 package.json 沒有宣告 codexSdlc.jsonSchema —— doctor 判斷不了它讀不讀得懂這一版的 -Json，不出貨。'
+        }
+        Say "VS Code extension：codex-sdlc-$version.vsix（-Json schema $($vpkg.codexSdlc.jsonSchema)，內附 payload $version）"
+
+        # vsix 跟著出貨，但**不進 manifest**（$files 在上面就算完了，這裡放進 stage 的檔不會被列進去）。
+        # install 的複製迴圈只走工具那半，看不到 editor/；只有 -WithEditor 才會拿它去裝。
+        New-Item -ItemType Directory -Path (Join-Path $stage 'editor') -Force | Out-Null
+        Copy-Item $vsix (Join-Path $stage "editor/codex-sdlc-$version.vsix") -Force
+    }
+
     # ---- zip ----
     $outAbs = if ([IO.Path]::IsPathRooted($OutDir)) { $OutDir } else { Join-Path $Root $OutDir }
     if (-not (Test-Path $outAbs)) { New-Item -ItemType Directory -Path $outAbs -Force | Out-Null }
@@ -222,6 +256,9 @@ try {
     }
 } finally {
     Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
-    if ($vsix) { Remove-Item (Split-Path $vsix -Parent) -Recurse -Force -ErrorAction SilentlyContinue }
+    if ($extBuild) { Remove-Item $extBuild -Recurse -Force -ErrorAction SilentlyContinue }
+    # payload 是打包期間才存在於工作區的東西 —— 紅燈退出也要收乾淨，留著的話下一次 pack 會把
+    # 上一版的 payload 再打包一次，而症狀是「裝出來的流程比發佈物舊」，完全靜默。
+    Remove-Item (Join-Path $extRoot 'payload') -Recurse -Force -ErrorAction SilentlyContinue
 }
 exit 0

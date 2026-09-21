@@ -62,11 +62,16 @@ const pw = (0, pwsh_1.resolvePwsh)({ env: process.env, platform: process.platfor
 let project = '';
 let editorHome = '';
 async function sdlc(command, params = []) {
+    return sdlcAt(project, project, command, params);
+}
+// scriptRoot 可以不是 target —— 發佈物拿自己的 sdlc.ps1 往別的資料夾裝，正是 extension 的安裝那條路。
+async function sdlcAt(scriptRoot, target, command, params = []) {
     strict_1.default.ok(pw.ok, 'integration test 需要 pwsh 7');
-    const script = path.join(project, '.codex/scripts/sdlc.ps1');
-    // doctor 一律隔離：不問這台機器上的 codex、不看這台機器上真正裝的 extension。
-    const isolate = command === 'doctor' ? ['-CodexPath', path.join(project, 'no-such-codex.exe'), '-EditorHome', editorHome] : [];
-    const r = await (0, pwsh_1.runPwsh)(pw.path, (0, pwsh_1.fileArgs)(script, [command, '-Target', project, '-Json', ...isolate, ...params]), { cwd: project, timeoutMs: 120_000 });
+    const script = path.join(scriptRoot, '.codex/scripts/sdlc.ps1');
+    const source = scriptRoot === target ? [] : ['-Source', scriptRoot];
+    // doctor 一律隔離：不看這台機器上真正裝的 extension（信任狀態預設就不問了，不必隔離）。
+    const isolate = command === 'doctor' ? ['-EditorHome', editorHome] : [];
+    const r = await (0, pwsh_1.runPwsh)(pw.path, (0, pwsh_1.fileArgs)(script, [command, ...source, '-Target', target, '-Json', ...isolate, ...params]), { cwd: target, timeoutMs: 180_000 });
     strict_1.default.equal(r.spawnError, undefined);
     return (0, contract_1.parseEnvelope)(r.stdout, command);
 }
@@ -87,6 +92,41 @@ async function gate(rel, files, extra = []) {
     for (const d of [project, editorHome])
         if (d)
             fs.rmSync(d, { recursive: true, force: true });
+});
+// extension 在一個還沒裝工作流的資料夾裡按下「安裝到這個工作區」時走的就是這三步。
+// 這條是 4.10.0 的驗收：以前那種資料夾裡，extension 根本不會出現，也沒有任何路可以走。
+(0, node_test_1.test)('空資料夾：fetch 找得到發佈物 → install 裝得起來 → doctor 是綠的', async () => {
+    const fresh = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-sdlc-fresh-'));
+    const cache = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-sdlc-cache-'));
+    try {
+        const f = (0, contract_1.parseFetch)(await sdlcAt(repo, fresh, 'fetch', ['-NoRemote', '-Bundled', repo, '-CacheDir', cache]));
+        strict_1.default.equal(f.chosen, 'bundled');
+        strict_1.default.equal(f.path?.toLowerCase(), repo.toLowerCase());
+        const ins = (0, contract_1.parseInstall)(await sdlcAt(repo, fresh, 'install'));
+        strict_1.default.equal(ins.error, null);
+        strict_1.default.ok(ins.written > 0, '一個檔都沒寫');
+        strict_1.default.equal(ins.configCreated, true);
+        strict_1.default.ok(ins.lint.ran, '裝完沒有跑 agent-lint —— 那才是「裝好了沒」的答案');
+        strict_1.default.ok(fs.existsSync(path.join(fresh, '.codex/hooks.json')), '機械強制層沒裝進去');
+        const d = (0, contract_1.parseDoctor)(await sdlcAt(fresh, fresh, 'doctor'));
+        strict_1.default.equal(d.hooks.status, 'skipped', 'doctor 預設又去問 codex 了 —— 每次健檢都會多叫一個子行程');
+        strict_1.default.equal(d.problems, 0, `全新安裝的專案 doctor 應該是綠的：${JSON.stringify(d.guidelines)}`);
+        strict_1.default.equal((0, status_1.statusFromDoctor)(d, new Date()).level, 'ok');
+        // 工具檔缺了 → doctor 紅，而且面板那一行要有按得下去的按鈕（不是一句「請去終端機跑 update」）。
+        fs.rmSync(path.join(fresh, '.codex/hooks.json'));
+        const broken = (0, contract_1.parseDoctor)(await sdlcAt(fresh, fresh, 'doctor'));
+        strict_1.default.equal(broken.hooks.status, 'no-hooks');
+        const view = (0, status_1.statusFromDoctor)(broken, new Date());
+        strict_1.default.equal(view.level, 'error');
+        strict_1.default.equal(view.issues.find((i) => /hooks\.json/.test(i.badge))?.fix?.command?.command, 'codexSdlc.repair');
+        const up = (0, contract_1.parseUpdate)(await sdlcAt(repo, fresh, 'update', ['-Yes']));
+        strict_1.default.equal(up.error, null);
+        strict_1.default.ok(fs.existsSync(path.join(fresh, '.codex/hooks.json')), 'update 沒把工具檔補回來');
+    }
+    finally {
+        for (const d of [fresh, cache])
+            fs.rmSync(d, { recursive: true, force: true });
+    }
 });
 (0, node_test_1.test)('doctor 的真實輸出讀得懂，狀態列出現版本', async () => {
     const d = (0, contract_1.parseDoctor)(await sdlc('doctor'));
@@ -195,14 +235,15 @@ async function gate(rel, files, extra = []) {
         rootName: 'p', rootPath: project, workflowVersion: d.version.contract, schema: (0, schema_1.readSettingsSchema)(project), canEdit: true,
         config: cfg, knownAgents: [], doctor: d, checking: false, pendingAgents: [],
         guidelines: { dir: true, files: [], rulesExists: true, ruleCount: 1, gateDisabled: false },
-        machine: { pwsh: { ok: true, path: 'pwsh' }, codex: { source: 'none' }, extensionVersion: 'test' },
+        agentsNewExists: false,
+        machine: { pwsh: { ok: true, path: 'pwsh' }, extensionVersion: 'test' },
     };
     const nodes = (0, tree_1.flatten)((0, tree_1.buildSettingsTree)(input));
     const byId = new Map(nodes.map((n) => [n.id, n]));
     strict_1.default.equal(byId.get('agents')?.contextValue, 'tuningPending', 'set 之後沒 apply，面板卻沒標未套用');
     strict_1.default.match(byId.get('agents/implementer')?.description ?? '', /effort medium.*未套用/);
     strict_1.default.equal(byId.get('agents/implementer/effort')?.edit?.key, 'agents.implementer.effort');
-    strict_1.default.equal(byId.get('status/hooks')?.contextValue, 'hooksUnknown', '找不到 codex 時要給「選擇 codex」而不是假裝信任了');
+    strict_1.default.equal(byId.get('status/hooks')?.tone, 'ok', 'hooks.json 在，這一行就該是綠的（信任狀態不在這裡看）');
     const lenses = (0, codelens_1.configLenses)(fs.readFileSync(path.join(project, 'sdlc.config.json'), 'utf8'), { rootPath: project, pendingAgents: ['implementer'], canEdit: true });
     strict_1.default.match(lenses[0].title, /套用（1 個 agent 未套用）/);
     strict_1.default.equal((0, contract_1.parseApply)(await sdlc('apply')).changed.length, 1);

@@ -167,9 +167,9 @@ export async function run(): Promise<void> {
   assert.equal(cfgAfter.agents.reviewer.effort, 'high');
   assert.equal(cfgAfter.agents.implementer.effort, 'inherit', 'CodeLens 只該套那一個 agent');
 
-  // 11. 引導與信任按鈕叫得起來（這台測試機上沒有 codex → 只會說找不到，不會卡住）
+  // 11. 引導、合併對照、補工具檔叫得起來（沒有 .new 時只會說「沒有要合併的東西」，不會卡住）
   await vscode.commands.executeCommand('codexSdlc.openWalkthrough');
-  await vscode.commands.executeCommand('codexSdlc.trustHooks');
+  await vscode.commands.executeCommand('codexSdlc.mergeAgents');
 
   log('all host checks passed');
 }

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  compareVersions, ContractError, MIN_WORKFLOW_VERSION, parseDlpGate, parseDoctor, parseEnvelope, parseGuidelineGate, parseRulesValidation, parseSet, SUPPORTED_SCHEMA,
+  compareVersions, ContractError, MIN_WORKFLOW_VERSION, parseDlpGate, parseDoctor, parseEnvelope, parseFetch, parseGuidelineGate, parseInstall, parseRulesValidation, parseSet, parseUpdate, SUPPORTED_SCHEMA,
 } from '../src/contract';
 import { doctorFixture } from './fixtures';
 
@@ -117,4 +117,96 @@ test('rules.json 的驗證結果：新版帶「第幾條、哪個欄位」；舊
   assert.deepEqual(v.ruleProblems[0], { index: 2, id: 'b', field: 'severity', message: 'b: severity 必須是 block 或 warn' });
   const old = parseRulesValidation(JSON.stringify({ passed: false, rules_file: 'r', exists: true, rule_count: 1, block_count: 0, problems: ['b: 缺 pattern'] }));
   assert.deepEqual(old.ruleProblems, [{ index: null, id: null, field: null, message: 'b: 缺 pattern' }]);
+});
+
+// ---- fetch／install（4.10.0 起）----
+
+const fetchData = (over: Record<string, unknown> = {}) => ({
+  chosen: 'bundled',
+  version: '4.10.0',
+  path: 'C:/ext/payload',
+  remote: { checked: true, reachable: false, latest: null, url: null, reason: 'unreachable' },
+  bundled: { version: '4.10.0', path: 'C:/ext/payload' },
+  cacheDir: 'C:/state/payloads',
+  ...over,
+});
+
+test('fetch：遠端拿不到就退回內附的那一份，而且說得出是為什麼', () => {
+  const f = parseFetch(parseEnvelope(envelope('fetch', fetchData()), 'fetch'));
+  assert.equal(f.chosen, 'bundled');
+  assert.equal(f.path, 'C:/ext/payload');
+  assert.equal(f.remote.reason, 'unreachable');
+
+  const remote = parseFetch(parseEnvelope(envelope('fetch', fetchData({
+    chosen: 'remote', version: '4.11.0', path: 'C:/state/payloads/4.11.0',
+    remote: { checked: true, reachable: true, latest: '4.11.0', url: 'https://example/x.zip', reason: null },
+  })), 'fetch'));
+  assert.equal(remote.chosen, 'remote');
+  assert.equal(remote.remote.latest, '4.11.0');
+});
+
+test('fetch：一份都找不到時 path 是 null（呼叫端不該拿一個空字串去裝）', () => {
+  const f = parseFetch(parseEnvelope(envelope('fetch', fetchData({
+    chosen: 'none', version: null, path: null, bundled: { version: null, path: null },
+  }), { exit: 2 }), 'fetch'));
+  assert.equal(f.chosen, 'none');
+  assert.equal(f.path, null);
+});
+
+test('fetch：欄位改名 → 紅，而且說得出是哪一個', () => {
+  const d = fetchData() as Record<string, unknown>;
+  delete d.cacheDir;
+  assert.throws(() => parseFetch(parseEnvelope(envelope('fetch', d), 'fetch')), /\$\.data\.cacheDir/);
+});
+
+const installData = (over: Record<string, unknown> = {}) => ({
+  mode: 'install',
+  target: 'C:/work/shop',
+  version: '4.10.0',
+  written: 42,
+  needsMerge: [],
+  guidelinesSkeleton: true,
+  config: { created: true, preset: null },
+  tuning: { changed: ['reviewer.toml'], warnings: [] },
+  guidelines: [],
+  lint: { ran: true, passed: true, violations: [] },
+  hooksWritten: true,
+  orchestratorHint: null,
+  editor: { installed: [], vsix: null, requested: false, error: null },
+  ...over,
+});
+
+test('install：裝完的結果讀得出「還差什麼」', () => {
+  const d = parseInstall(parseEnvelope(envelope('install', installData()), 'install'));
+  assert.equal(d.error, null);
+  assert.equal(d.written, 42);
+  assert.equal(d.configCreated, true);
+  assert.ok(d.lint.passed);
+
+  const merge = parseInstall(parseEnvelope(envelope('install', installData({
+    needsMerge: ['AGENTS.md'],
+    lint: { ran: true, passed: false, violations: [{ rule: 'core-drift', detail: 'x', fix: '重跑 install' }] },
+  }), { exit: 2 }), 'install'));
+  assert.deepEqual(merge.needsMerge, ['AGENTS.md']);
+  assert.equal(merge.lint.violations[0].fix, '重跑 install');
+});
+
+test('install：還沒開始複製就失敗 → 只有 error，不該因此解析失敗', () => {
+  const d = parseInstall(parseEnvelope(envelope('install', { error: 'same-path' }, { exit: 2 }), 'install'));
+  assert.equal(d.error, 'same-path');
+  assert.equal(d.written, 0);
+  assert.deepEqual(d.needsMerge, []);
+});
+
+test('update：補工具檔的結果，以及「這個專案沒被接管過」這個要換一條路的失敗', () => {
+  const d = parseUpdate(parseEnvelope(envelope('update', {
+    from: '4.9.0', to: '4.10.0', breaking: false, degraded: false,
+    unchanged: [], modified: ['AGENTS.md'], added: [], removed: [], result: 'applied', backup: 'bdd-docs/.sdlc/backup-1',
+  }), 'update'));
+  assert.equal(d.result, 'applied');
+  assert.deepEqual(d.modified, ['AGENTS.md']);
+  assert.equal(d.backup, 'bdd-docs/.sdlc/backup-1');
+
+  const early = parseUpdate(parseEnvelope(envelope('update', { error: 'not-managed' }, { exit: 2 }), 'update'));
+  assert.equal(early.error, 'not-managed');
 });

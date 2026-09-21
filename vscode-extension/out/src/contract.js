@@ -14,6 +14,9 @@ exports.parseEnvelope = parseEnvelope;
 exports.parseDoctor = parseDoctor;
 exports.parseApply = parseApply;
 exports.parseCheckUpdate = parseCheckUpdate;
+exports.parseFetch = parseFetch;
+exports.parseInstall = parseInstall;
+exports.parseUpdate = parseUpdate;
 exports.parseWhatsNew = parseWhatsNew;
 exports.parseSet = parseSet;
 exports.parseTune = parseTune;
@@ -101,6 +104,19 @@ function parseFinding(v, at) {
     const o = need(isObj(v), at, 'object', v);
     return { level: str(o, 'level', at), code: str(o, 'code', at), text: str(o, 'text', at) };
 }
+// doctor 與 install 各回一份 agent-lint 的結論，形狀一樣（install 的那一份是裝完當場跑的）。
+function parseLint(o, at) {
+    const lint = obj(o, 'lint', at);
+    return {
+        ran: bool(lint, 'ran', `${at}.lint`),
+        passed: bool(lint, 'passed', `${at}.lint`),
+        violations: arr(lint, 'violations', `${at}.lint`).map((v, i) => {
+            const vat = `${at}.lint.violations[${i}]`;
+            const x = need(isObj(v), vat, 'object', v);
+            return { rule: str(x, 'rule', vat), detail: str(x, 'detail', vat), fix: str(x, 'fix', vat) };
+        }),
+    };
+}
 function parseDoctor(env) {
     const d = env.data;
     const at = '$.data';
@@ -108,7 +124,6 @@ function parseDoctor(env) {
     const config = obj(d, 'config', at);
     const tuning = obj(d, 'tuning', at);
     const baseline = obj(d, 'baseline', at);
-    const lint = obj(d, 'lint', at);
     const review = obj(d, 'review', at);
     const hooks = obj(d, 'hooks', at);
     const update = obj(d, 'update', at);
@@ -135,15 +150,7 @@ function parseDoctor(env) {
             fileCount: num(baseline, 'fileCount', `${at}.baseline`),
         },
         guidelines: arr(d, 'guidelines', at).map((f, i) => parseFinding(f, `${at}.guidelines[${i}]`)),
-        lint: {
-            ran: bool(lint, 'ran', `${at}.lint`),
-            passed: bool(lint, 'passed', `${at}.lint`),
-            violations: arr(lint, 'violations', `${at}.lint`).map((v, i) => {
-                const vat = `${at}.lint.violations[${i}]`;
-                const o = need(isObj(v), vat, 'object', v);
-                return { rule: str(o, 'rule', vat), detail: str(o, 'detail', vat), fix: str(o, 'fix', vat) };
-            }),
-        },
+        lint: parseLint(d, at),
         review: {
             maxRounds: num(review, 'maxRounds', `${at}.review`),
             source: str(review, 'source', `${at}.review`),
@@ -186,6 +193,68 @@ function parseCheckUpdate(env) {
         installed: 'installed' in d ? optStr(d, 'installed', '$.data') : null,
         latest: 'latest' in d ? optStr(d, 'latest', '$.data') : null,
         newer: 'newer' in d ? bool(d, 'newer', '$.data') : false,
+    };
+}
+function parseFetch(env) {
+    const d = env.data;
+    const at = '$.data';
+    const remote = obj(d, 'remote', at);
+    const bundled = obj(d, 'bundled', at);
+    return {
+        chosen: str(d, 'chosen', at),
+        version: optStr(d, 'version', at),
+        path: optStr(d, 'path', at),
+        remote: {
+            checked: bool(remote, 'checked', `${at}.remote`),
+            reachable: bool(remote, 'reachable', `${at}.remote`),
+            latest: optStr(remote, 'latest', `${at}.remote`),
+            url: optStr(remote, 'url', `${at}.remote`),
+            reason: optStr(remote, 'reason', `${at}.remote`),
+        },
+        bundled: { version: optStr(bundled, 'version', `${at}.bundled`), path: optStr(bundled, 'path', `${at}.bundled`) },
+        cacheDir: str(d, 'cacheDir', at),
+    };
+}
+const EMPTY_INSTALL = {
+    error: null, mode: '', target: '', version: null, written: 0, needsMerge: [], guidelinesSkeleton: false,
+    configCreated: false, preset: null, hooksWritten: false, lint: { ran: false, passed: false, violations: [] },
+    guidelines: [], orchestratorHint: null,
+};
+function parseInstall(env) {
+    const d = env.data;
+    const at = '$.data';
+    // 還沒開始複製就停下來的失敗（來源不是發佈物、來源＝目標）：只有 error，沒有其他欄位。
+    if ('error' in d)
+        return { ...EMPTY_INSTALL, error: optStr(d, 'error', at) };
+    const config = obj(d, 'config', at);
+    return {
+        error: null,
+        mode: str(d, 'mode', at),
+        target: str(d, 'target', at),
+        version: optStr(d, 'version', at),
+        written: num(d, 'written', at),
+        needsMerge: strArr(d, 'needsMerge', at),
+        guidelinesSkeleton: bool(d, 'guidelinesSkeleton', at),
+        configCreated: bool(config, 'created', `${at}.config`),
+        preset: optStr(config, 'preset', `${at}.config`),
+        hooksWritten: bool(d, 'hooksWritten', at),
+        lint: parseLint(d, at),
+        guidelines: arr(d, 'guidelines', at).map((f, i) => parseFinding(f, `${at}.guidelines[${i}]`)),
+        orchestratorHint: optStr(d, 'orchestratorHint', at),
+    };
+}
+function parseUpdate(env) {
+    const d = env.data;
+    const at = '$.data';
+    if ('error' in d)
+        return { error: optStr(d, 'error', at), result: '', from: null, to: null, modified: [], backup: null };
+    return {
+        error: null,
+        result: 'result' in d ? str(d, 'result', at) : '',
+        from: optStr(d, 'from', at),
+        to: optStr(d, 'to', at),
+        modified: strArr(d, 'modified', at),
+        backup: 'backup' in d ? optStr(d, 'backup', at) : null,
     };
 }
 function parseWhatsNew(env) {
