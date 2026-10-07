@@ -2,7 +2,7 @@
   "name": "codex-sdlc",
   "displayName": "Codex SDLC",
   "description": "Codex SDLC 工作流的駕駛艙：狀態列、設定面板、Problems、一鍵 doctor／apply／tune。它只是 sdlc.ps1 與各 gate 的殼，真相仍在 sdlc.config.json 與腳本裡。",
-  "version": "4.10.0",
+  "version": "4.11.0",
   "publisher": "codex-sdlc",
   "private": true,
   "engines": {

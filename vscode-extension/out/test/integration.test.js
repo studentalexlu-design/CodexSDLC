@@ -61,17 +61,37 @@ const pw = (0, pwsh_1.resolvePwsh)({ env: process.env, platform: process.platfor
     } } });
 let project = '';
 let editorHome = '';
+let fakeTools = '';
 async function sdlc(command, params = []) {
     return sdlcAt(project, project, command, params);
+}
+// doctor 的「環境」一段看的是這台機器上的工具 —— 測試不能跟著機器變（維護者的機器 PATH 上就沒有 git）。
+// 所以 doctor 一律在 PATH 最前面放假的 git 與 codex：環境檢查只看在不在、問版本，不會拿它們做事。
+// codex 回一個比任何實測版本都新的版本號 —— 比實測版本新不算問題，改了實測版本也不必回來改這裡。
+function makeFakeTools(dir) {
+    if (process.platform === 'win32') {
+        fs.writeFileSync(path.join(dir, 'git.cmd'), '@exit /b 0\r\n');
+        fs.writeFileSync(path.join(dir, 'codex.cmd'), '@echo codex-cli 999.0.0\r\n');
+    }
+    else {
+        fs.writeFileSync(path.join(dir, 'git'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+        fs.writeFileSync(path.join(dir, 'codex'), '#!/bin/sh\necho codex-cli 999.0.0\n', { mode: 0o755 });
+    }
+}
+function doctorEnv() {
+    // Windows 的環境變數名稱不分大小寫，但展開成物件之後 Path 與 PATH 是兩個 key —— 沿用原本那一個。
+    const key = Object.keys(process.env).find((k) => k.toLowerCase() === 'path') ?? 'PATH';
+    return { ...process.env, [key]: `${fakeTools}${path.delimiter}${process.env[key] ?? ''}` };
 }
 // scriptRoot 可以不是 target —— 發佈物拿自己的 sdlc.ps1 往別的資料夾裝，正是 extension 的安裝那條路。
 async function sdlcAt(scriptRoot, target, command, params = []) {
     strict_1.default.ok(pw.ok, 'integration test 需要 pwsh 7');
     const script = path.join(scriptRoot, '.codex/scripts/sdlc.ps1');
     const source = scriptRoot === target ? [] : ['-Source', scriptRoot];
-    // doctor 一律隔離：不看這台機器上真正裝的 extension（信任狀態預設就不問了，不必隔離）。
+    // doctor 一律隔離：不看這台機器上真正裝的 extension 與工具（信任狀態預設就不問了，不必隔離）。
     const isolate = command === 'doctor' ? ['-EditorHome', editorHome] : [];
-    const r = await (0, pwsh_1.runPwsh)(pw.path, (0, pwsh_1.fileArgs)(script, [command, ...source, '-Target', target, '-Json', ...isolate, ...params]), { cwd: target, timeoutMs: 180_000 });
+    const env = command === 'doctor' ? doctorEnv() : undefined;
+    const r = await (0, pwsh_1.runPwsh)(pw.path, (0, pwsh_1.fileArgs)(script, [command, ...source, '-Target', target, '-Json', ...isolate, ...params]), { cwd: target, timeoutMs: 180_000, env });
     strict_1.default.equal(r.spawnError, undefined);
     return (0, contract_1.parseEnvelope)(r.stdout, command);
 }
@@ -84,12 +104,14 @@ async function gate(rel, files, extra = []) {
     strict_1.default.ok(pw.ok, `integration test 需要 pwsh 7：${pw.ok ? '' : pw.message}`);
     project = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-sdlc-ext-'));
     editorHome = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-sdlc-ext-home-'));
+    fakeTools = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-sdlc-ext-tools-'));
+    makeFakeTools(fakeTools);
     const r = await (0, pwsh_1.runPwsh)(pw.path, (0, pwsh_1.fileArgs)(path.join(repo, '.codex/scripts/sdlc.ps1'), ['install', '-Source', repo, '-Target', project, '-Json']), { cwd: repo, timeoutMs: 180_000 });
     const env = (0, contract_1.parseEnvelope)(r.stdout, 'install');
     strict_1.default.equal(env.exit, 0, `install 失敗：${env.warnings.join(' | ')}`);
 });
 (0, node_test_1.after)(() => {
-    for (const d of [project, editorHome])
+    for (const d of [project, editorHome, fakeTools])
         if (d)
             fs.rmSync(d, { recursive: true, force: true });
 });
@@ -135,7 +157,11 @@ async function gate(rel, files, extra = []) {
     const view = (0, status_1.statusFromDoctor)(d, new Date());
     strict_1.default.match(view.text, new RegExp(`SDLC ${ver.replace(/\./g, '\\.')}`));
     strict_1.default.equal(d.tuning.status, 'in-sync');
-    strict_1.default.equal(d.problems, 0, `全新安裝的專案 doctor 應該是綠的：${JSON.stringify(d.guidelines)}`);
+    strict_1.default.equal(d.problems, 0, `全新安裝的專案 doctor 應該是綠的：${JSON.stringify(d.guidelines)} ${JSON.stringify(d.environment)}`);
+    // 環境一段：真的 sdlc.ps1 輸出讀得懂，而且這個暫存專案沒有 .NET／Java 專案檔 → 要講出 build-check 空轉。
+    strict_1.default.ok(d.environment.some((e) => e.id === 'git' && e.status === 'ok'), `環境一段沒讀到 git：${JSON.stringify(d.environment)}`);
+    strict_1.default.ok(d.environment.some((e) => e.id === 'codex' && e.status === 'ok'), `環境一段沒讀到 codex：${JSON.stringify(d.environment)}`);
+    strict_1.default.ok(d.environment.some((e) => e.id === 'build-tool' && e.status === 'not-applicable'), '沒有 .NET／Java 專案檔，卻沒說 build-check 空轉');
 });
 (0, node_test_1.test)('set 不 apply → 立刻看到漂移；apply 之後 doctor 是綠的（M1.5 驗收，寫檔改走 set）', async () => {
     const w = (0, contract_1.parseSet)(await sdlc('set', ['agents.reviewer.effort=high']));

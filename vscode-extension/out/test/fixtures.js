@@ -15,6 +15,7 @@ function doctorFixture() {
         hooks: { status: 'trusted', codex: 'C:\\bin\\codex.exe', counts: { total: 4, trusted: 4, untrusted: 0, modified: 0, disabled: 0 } },
         update: { cached: false, stale: false, newer: false, latest: null, seen: false, checkedAt: null, check: 'daily' },
         editor: { installed: [] },
+        environment: [],
         problems: 0,
     };
 }

@@ -69,6 +69,21 @@ const envelope = (command, data, extra = {}) => JSON.stringify({ schema: contrac
     data.config.comments = 'yes';
     strict_1.default.throws(() => (0, contract_1.parseDoctor)((0, contract_1.parseEnvelope)(envelope('doctor', data), 'doctor')), /config\.comments/);
 });
+(0, node_test_1.test)('doctor 的環境一段讀得出來；加入環境檢查之前的 doctor 沒有這一段 → 讀成空的', () => {
+    const data = (0, fixtures_1.doctorFixture)();
+    data.environment = [{ id: 'dotnet-sdk', name: '.NET SDK', status: 'mismatch', found: null, required: '8.0.999', source: 'global.json', breaks: '④', hint: '裝 SDK 8.0.999' }];
+    const d = (0, contract_1.parseDoctor)((0, contract_1.parseEnvelope)(envelope('doctor', data), 'doctor'));
+    strict_1.default.equal(d.environment[0].status, 'mismatch');
+    strict_1.default.equal(d.environment[0].required, '8.0.999');
+    strict_1.default.equal(d.environment[0].found, null);
+    delete data.environment;
+    strict_1.default.deepEqual((0, contract_1.parseDoctor)((0, contract_1.parseEnvelope)(envelope('doctor', data), 'doctor')).environment, []);
+});
+(0, node_test_1.test)('環境的欄位改名 → 紅，而且說得出是哪一項的哪一個欄位', () => {
+    const data = (0, fixtures_1.doctorFixture)();
+    data.environment = [{ id: 'git', name: 'git', status: 'missing', found: null, required: null, source: null, breaksOn: 'x', hint: null }];
+    strict_1.default.throws(() => (0, contract_1.parseDoctor)((0, contract_1.parseEnvelope)(envelope('doctor', data), 'doctor')), /\$\.data\.environment\[0\]\.breaks/);
+});
 (0, node_test_1.test)('set 的結果：變更、錯誤、有沒有寫、有沒有套用；整數值讀成字串給畫面用', () => {
     const ok = (0, contract_1.parseSet)((0, contract_1.parseEnvelope)(envelope('set', {
         changes: [

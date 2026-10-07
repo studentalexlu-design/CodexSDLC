@@ -80,10 +80,23 @@ function Assert-Shape {
 
 $EnvelopeShape = @{ schema = 'int'; command = 'string'; exit = 'int'; data = 'any'; warnings = 'array'; output = 'array' }
 
+# doctor 的「環境」一段看的是這台機器上的工具 —— 測試不能跟著機器變（維護者的機器 PATH 上就沒有 git）。
+# 所以 doctor 一律在 PATH 最前面放一支假的 git：環境檢查只看它在不在，不會執行它。
+# 要測環境檢查本身的，用 Invoke-DoctorEnv（PATH 整個換掉）。
+$DoctorBin = Join-Path ([IO.Path]::GetTempPath()) 'codex-sdlc-doctor-bin'
+function Get-DoctorPath {
+    if (-not (Test-Path (Join-Path $DoctorBin 'git.cmd'))) {
+        New-Item -ItemType Directory -Path $DoctorBin -Force | Out-Null
+        [IO.File]::WriteAllText((Join-Path $DoctorBin 'git.cmd'), "@exit /b 0`r`n", [Text.Encoding]::ASCII)
+    }
+    return "$DoctorBin$([IO.Path]::PathSeparator)$env:PATH"
+}
+
 function Invoke-SdlcJson {
     param([string]$Cmd, [hashtable]$Params = @{}, [hashtable]$Env = @{}, [string[]]$Rest = @())
     $p = @{ Command = $Cmd; Json = $true }
     foreach ($k in $Params.Keys) { $p[$k] = $Params[$k] }
+    if ($Cmd -eq 'doctor' -and -not $Env.ContainsKey('PATH')) { $Env = $Env.Clone(); $Env['PATH'] = Get-DoctorPath }
     $r = Invoke-Script $Sdlc -Params $p -Env $Env -Positional $Rest
     $j = $null
     try { $j = $r.stdout.Trim() | ConvertFrom-Json } catch { throw "-Json 輸出不是 JSON：$($r.stdout) / stderr: $($r.stderr)" }
@@ -655,7 +668,9 @@ while ($null -ne ($line = [Console]::In.ReadLine())) {
     # 4.10.0 起**預設不查**：問它要另外叫起一個 codex（最久 15 秒），而修法永遠是同一句
     # 「去 codex 裡信任」—— doctor 幫不上忙。這三條守的是「預設真的沒查」與「沒查一定要講」，
     # 後者才是關鍵：不講的話「doctor 全綠」會被讀成「強制層在跑」，而那是這裡最貴的誤會。
-    It-Should '預設不查：一次都不叫 codex，狀態是 skipped，不算問題' {
+    It-Should '預設不查：不叫 codex app-server，狀態是 skipped，不算問題' {
+        # doctor 預設會問一次 `codex --version`（環境檢查：毫秒級、不連網，答案「比實測版本舊」使用者修得了）。
+        # 這一條守的是信任狀態那一支：app-server 最久 15 秒，而且它的答案 doctor 修不了 —— 預設不起來。
         $rel = New-SdlcRelease 'r-hs' -WithHooks; $t = New-SdlcTarget 't-hs'
         try {
             Invoke-Sdlc install @{ Source = $rel; Target = $t } | Out-Null
@@ -666,7 +681,8 @@ while ($null -ne ($line = [Console]::In.ReadLine())) {
             $j = Invoke-SdlcJson doctor $p -Env @{ FAKE_TRUST = 'trusted'; FAKE_CODEX_LOG = $log }
             Assert-Equal 'skipped' $j.data.hooks.status
             Assert-Equal 0 $j.exit
-            Assert-True (-not (Test-Path $log)) 'codex 被叫起來了 —— 預設應該連碰都不碰它'
+            $calls = if (Test-Path $log) { Get-Content $log -Raw } else { '' }
+            Assert-True ($calls -notmatch 'args=app-server') 'codex app-server 被叫起來了 —— 信任狀態預設不該去問'
         } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
     }
 
@@ -1077,6 +1093,270 @@ Describe-Suite 'sdlc / 修正輪上限（review.maxRounds）' {
             Assert-Equal 3 $bad.data.review.maxRounds 'doctor 顯示的上限跟 hook 實際用的不一樣'
             Assert-Equal 'default' $bad.data.review.source
             Assert-Equal 2 $bad.exit
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+Describe-Suite 'sdlc / 叫起另一支 pwsh（doctor 的 agent-lint、tune 的 repo-index 都靠它）' {
+
+    # pwsh 以 .NET global tool 安裝時，[Environment]::ProcessPath 是 dotnet.exe。拿它當 pwsh 叫，
+    # doctor 的 agent-lint 一行都不會執行，只報「沒有跑完」—— 維護者的機器就是這種安裝。
+    # 那個情境在一般安裝的機器上重現不出來，所以判斷本身從 sdlc.ps1 的語法樹拿出來、直接餵值驗；
+    # 最後一條走真路徑（這台若是 global tool 安裝，走的就是 dotnet 那一支）。
+    $sdlcAst = [Management.Automation.Language.Parser]::ParseFile((Resolve-Path $Sdlc).Path, [ref]$null, [ref]$null)
+    $launchFn = $sdlcAst.Find({ param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-PwshLaunch' }, $true)
+    if ($launchFn) { Invoke-Expression $launchFn.Extent.Text }
+
+    It-Should '一般安裝：ProcessPath 就是 pwsh，原樣叫' {
+        Assert-True ($null -ne $launchFn) 'sdlc.ps1 裡找不到 Get-PwshLaunch'
+        $fakeHome = Join-Path $SdlcRoot 'pshome-plain'
+        New-SdlcFile (Join-Path $fakeHome 'pwsh.dll') 'x'
+        try {
+            $l = Get-PwshLaunch -processPath 'C:\Program Files\PowerShell\7\pwsh.exe' -pwshHome $fakeHome
+            Assert-Equal 'C:\Program Files\PowerShell\7\pwsh.exe' $l.exe
+            Assert-Equal 0 @($l.prefix).Count '一般安裝不該多帶 pwsh.dll'
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '.NET global tool：ProcessPath 是 dotnet → 第一個參數要是 $PSHOME/pwsh.dll' {
+        Assert-True ($null -ne $launchFn) 'sdlc.ps1 裡找不到 Get-PwshLaunch'
+        $fakeHome = Join-Path $SdlcRoot 'pshome-tool'
+        New-SdlcFile (Join-Path $fakeHome 'pwsh.dll') 'x'
+        try {
+            $l = Get-PwshLaunch -processPath 'C:\Program Files\dotnet\dotnet.exe' -pwshHome $fakeHome
+            Assert-Equal 'C:\Program Files\dotnet\dotnet.exe' $l.exe
+            Assert-Equal 1 @($l.prefix).Count '少了 pwsh.dll —— 跑的會是 `dotnet -NoProfile …`'
+            Assert-Equal (Join-Path $fakeHome 'pwsh.dll') @($l.prefix)[0]
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'sdlc.ps1 裡只有 Get-PwshLaunch 碰 [Environment]::ProcessPath' {
+        # 一般安裝的機器上，下面那條真路徑測不到 dotnet 的情況 —— 這一條守的是「有人又直接拿 ProcessPath 去叫 pwsh」。
+        Assert-True ($null -ne $launchFn) 'sdlc.ps1 裡找不到 Get-PwshLaunch'
+        $uses = @($sdlcAst.FindAll({ param($n)
+            $n -is [Management.Automation.Language.MemberExpressionAst] -and
+            $n.Expression -is [Management.Automation.Language.TypeExpressionAst] -and
+            $n.Expression.TypeName.Name -match '^(System\.)?Environment$' -and
+            $n.Member.Extent.Text -eq 'ProcessPath' }, $true))
+        $outside = @($uses | Where-Object { $_.Extent.StartOffset -lt $launchFn.Extent.StartOffset -or $_.Extent.EndOffset -gt $launchFn.Extent.EndOffset })
+        Assert-Equal 0 $outside.Count "Get-PwshLaunch 以外直接用了 ProcessPath（第 $(@($outside | ForEach-Object { $_.Extent.StartLineNumber }) -join '、') 行）"
+    }
+
+    It-Should 'doctor 叫得起 agent-lint —— 不管 pwsh 是怎麼裝的' {
+        $rel = New-SdlcRelease 'r-pw1'; $t = New-SdlcTarget 't-pw1'
+        try {
+            Invoke-Sdlc install @{ Source = $rel; Target = $t } | Out-Null
+            New-Item -ItemType Directory -Path (Join-Path $t '.codex/scripts') -Force | Out-Null
+            Copy-Item '.codex/scripts/agent-lint.ps1' (Join-Path $t '.codex/scripts/agent-lint.ps1') -Force
+            $lint = (Invoke-SdlcJson doctor (Get-IsolatedDoctorParams $t)).data.lint
+            Assert-True $lint.ran 'doctor 沒有叫 agent-lint'
+            Assert-True (-not $lint.PSObject.Properties['error']) "doctor 叫不起 agent-lint：$($lint.error)"
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+Describe-Suite 'sdlc / doctor 的環境檢查（只偵測、不安裝）' {
+
+    # 每一條都把 PATH 整個換掉，只放那一條要的假工具（環境檢查只看在不在、問版本，不會拿它們做事）。
+    # pwsh 用絕對路徑叫（照 Get-PwshLaunch）：以 .NET global tool 安裝時，用名字叫 pwsh 會先叫起一個 shim，
+    # 而 shim 要從 PATH 找 dotnet —— 那樣 PATH 就換不乾淨，「找不到 dotnet」也就測不到。
+    function New-EnvTool([string]$bin, [string]$name, [string[]]$say = @(), [int]$exitCode = 0) {
+        New-Item -ItemType Directory -Path $bin -Force | Out-Null
+        $body = @($say | ForEach-Object { "@echo $_" }) + "@exit /b $exitCode"
+        [IO.File]::WriteAllText((Join-Path $bin "$name.cmd"), (($body -join "`r`n") + "`r`n"), [Text.Encoding]::ASCII)
+    }
+
+    # 裝好的最小專案：版本檔 ＋ hooks.json（不然 doctor 會因為 no-hooks 紅，量不到環境這一段）＋ 這一條要的檔。
+    function New-EnvTarget([string]$Name, [hashtable]$Files = @{}) {
+        $t = Join-Path $SdlcRoot $Name
+        New-SdlcFile (Join-Path $t '.codex/bdd-workflow/bdd-workflow-version.json') '{ "contract-version": "4.10.0", "min-compatible-version": "4.2.0" }'
+        New-SdlcFile (Join-Path $t '.codex/hooks.json') '{ "hooks": {} }'
+        foreach ($f in $Files.Keys) { New-SdlcFile (Join-Path $t $f) $Files[$f] }
+        return $t
+    }
+
+    function Invoke-DoctorEnv([string]$Target, [string]$Bin, [hashtable]$Env = @{}) {
+        $exe = [Environment]::ProcessPath
+        $pre = if ([IO.Path]::GetFileNameWithoutExtension($exe) -ieq 'dotnet') { @(Join-Path $PSHOME 'pwsh.dll') } else { @() }
+        $psi = [Diagnostics.ProcessStartInfo]::new($exe)
+        foreach ($a in @($pre) + @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Resolve-Path $Sdlc).Path,
+                                    'doctor', '-Target', $Target, '-Json', '-EditorHome', (Join-Path $SdlcRoot 'editor-home'))) { $psi.ArgumentList.Add($a) }
+        $psi.WorkingDirectory       = (Get-Location).Path
+        $psi.UseShellExecute        = $false
+        $psi.RedirectStandardInput  = $true
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError  = $true
+        $psi.StandardOutputEncoding = $Utf8
+        $psi.StandardErrorEncoding  = $Utf8
+        # 系統目錄要留：假工具是 .cmd，要 cmd.exe。這台機器的 JAVA_HOME 不能漏進來。
+        $psi.Environment['PATH'] = (@($Bin, [Environment]::SystemDirectory) | Where-Object { $_ }) -join [IO.Path]::PathSeparator
+        [void]$psi.Environment.Remove('JAVA_HOME')
+        foreach ($k in $Env.Keys) { $psi.Environment[$k] = [string]$Env[$k] }
+        $p = [Diagnostics.Process]::Start($psi)
+        $p.StandardInput.Close()
+        $o = $p.StandardOutput.ReadToEndAsync(); $e = $p.StandardError.ReadToEndAsync()
+        $p.WaitForExit()
+        $stdout = $o.GetAwaiter().GetResult()
+        try { $j = $stdout.Trim() | ConvertFrom-Json } catch { throw "doctor -Json 的輸出不是 JSON：$stdout / stderr: $($e.GetAwaiter().GetResult())" }
+        Assert-Equal $p.ExitCode $j.exit 'JSON 裡的 exit 跟行程的 exit code 不一致'
+        return $j
+    }
+
+    function Get-EnvItem($j, [string]$id) {
+        $i = @($j.data.environment | Where-Object { $_.id -eq $id })
+        if ($i.Count -ne 1) { throw "data.environment 裡的 $id 應該剛好一項，實際 $($i.Count) 項" }
+        return $i[0]
+    }
+
+    It-Should '工具都在、專案用不到 build 工具 → 都不算問題，但 build-check 空轉要講出來' {
+        $bin = Join-Path $SdlcRoot 'bin-all'
+        New-EnvTool $bin 'git'; New-EnvTool $bin 'codex' @('codex-cli 999.0.0')
+        try {
+            $j = Invoke-DoctorEnv (New-EnvTarget 't-env-ok') $bin
+            foreach ($i in @($j.data.environment)) {
+                Assert-Shape $i @{ id = 'string'; name = 'string'; status = 'string'; found = 'string?'; required = 'string?'; source = 'string?'; breaks = 'string'; hint = 'string?' } "環境的 $($i.id)"
+            }
+            # pwsh 7 啟動時會把自己的目錄放進 PATH —— 從 doctor 看出去它永遠在，這一項查了也抓不到東西。
+            Assert-True (-not (@($j.data.environment) | Where-Object { $_.id -eq 'pwsh' })) 'doctor 又在查 pwsh 在不在 PATH —— 在 pwsh 7 裡那永遠是「在」'
+            Assert-Equal 'ok' (Get-EnvItem $j 'git').status
+            Assert-Equal 'ok' (Get-EnvItem $j 'codex').status
+            Assert-Equal '999.0.0' (Get-EnvItem $j 'codex').found
+            Assert-Equal 'not-applicable' (Get-EnvItem $j 'build-tool').status
+            Assert-Match '空轉' (@($j.output) -join "`n") 'build-check 對這個專案是空轉，doctor 卻沒說'
+            Assert-Equal 0 $j.exit "warnings: $($j.warnings -join ' | ')"
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'PATH 上沒有 git → missing，算問題' {
+        $bin = Join-Path $SdlcRoot 'bin-nogit'
+        New-EnvTool $bin 'codex' @('codex-cli 999.0.0')
+        try {
+            $j = Invoke-DoctorEnv (New-EnvTarget 't-env-git') $bin
+            Assert-Equal 'missing' (Get-EnvItem $j 'git').status
+            Assert-Equal 2 $j.exit '⑤ 的必修檢查做不了，doctor 卻是綠的'
+            Assert-True ((@($j.warnings) -match 'git').Count -gt 0) '沒有說缺 git'
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'git 裝了但不在 PATH → 說出要把哪個目錄加進 PATH（再裝一份是錯的修法）' {
+        # 用 LOCALAPPDATA 那個位置：ProgramFiles 是 Windows 依行程位元數替每個行程設的，子行程蓋不掉。
+        # 這台機器若真的在 Program Files 裝了 git（只是不在 PATH），找到的會是那一份 —— 所以只斷言「找到了、說了加哪裡」。
+        $bin = Join-Path $SdlcRoot 'bin-offpath'
+        New-EnvTool $bin 'codex' @('codex-cli 999.0.0')
+        $lad = Join-Path $SdlcRoot 'localappdata'
+        New-SdlcFile (Join-Path $lad 'Programs\Git\cmd\git.exe') 'x'
+        try {
+            $j = Invoke-DoctorEnv (New-EnvTarget 't-env-offpath') $bin @{ LOCALAPPDATA = $lad }
+            $g = Get-EnvItem $j 'git'
+            Assert-Equal 'missing' $g.status
+            Assert-Match '這台有 .*Git\\cmd\\git\.exe —— 把 .*加進 PATH' $g.hint '找到了裝在別處的 git，卻沒說要把哪個目錄加進 PATH'
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'Codex 比實測版本舊 → below-verified，算問題；比較新 → ok，不提示' {
+        $old = Join-Path $SdlcRoot 'bin-codex-old'; $new = Join-Path $SdlcRoot 'bin-codex-new'
+        foreach ($b in @($old, $new)) { New-EnvTool $b 'git' }
+        # 版本號刻意離實測版本很遠：改了 $VerifiedCodexVersion 不必回來改這裡。
+        New-EnvTool $old 'codex' @('codex-cli 0.0.1')
+        New-EnvTool $new 'codex' @('codex-cli 999.0.0')
+        try {
+            $t = New-EnvTarget 't-env-codex'
+            $j = Invoke-DoctorEnv $t $old
+            $c = Get-EnvItem $j 'codex'
+            Assert-Equal 'below-verified' $c.status
+            Assert-Equal '0.0.1' $c.found
+            Assert-Equal 2 $j.exit '強制層沒在這一版 Codex 上驗過，doctor 卻是綠的'
+            $j2 = Invoke-DoctorEnv $t $new
+            Assert-Equal 'ok' (Get-EnvItem $j2 'codex').status
+            Assert-Equal 0 $j2.exit '比實測版本新不該讓 doctor 紅 —— 使用者無從行動'
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '找不到 codex → unknown，不算問題（只用 VS Code 的 Codex 擴充時是正常的）' {
+        $bin = Join-Path $SdlcRoot 'bin-nocodex'
+        New-EnvTool $bin 'git'
+        try {
+            $j = Invoke-DoctorEnv (New-EnvTarget 't-env-nocodex') $bin
+            Assert-Equal 'unknown' (Get-EnvItem $j 'codex').status
+            Assert-Equal 0 $j.exit
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '.NET：global.json 要的 SDK 不在 → mismatch，附上要的版本' {
+        $bin = Join-Path $SdlcRoot 'bin-dn-bad'
+        New-EnvTool $bin 'git'
+        New-EnvTool $bin 'dotnet' @('A compatible .NET SDK was not found.', 'Requested SDK version: 8.0.999') 1
+        try {
+            $t = New-EnvTarget 't-env-dn-bad' @{ 'src/App/App.csproj' = '<Project Sdk="Microsoft.NET.Sdk" />'; 'global.json' = '{ "sdk": { "version": "8.0.999" } }' }
+            $j = Invoke-DoctorEnv $t $bin
+            $d = Get-EnvItem $j 'dotnet-sdk'
+            Assert-Equal 'mismatch' $d.status
+            Assert-Equal '8.0.999' $d.required
+            Assert-Equal 'global.json' $d.source
+            Assert-Equal 2 $j.exit '④ 的每一個 dotnet 指令都會失敗，doctor 卻是綠的'
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '.NET：SDK 在 → ok，記下版本' {
+        $bin = Join-Path $SdlcRoot 'bin-dn-ok'
+        New-EnvTool $bin 'git'; New-EnvTool $bin 'dotnet' @('10.0.401')
+        try {
+            $j = Invoke-DoctorEnv (New-EnvTarget 't-env-dn-ok' @{ 'App.sln' = 'x' }) $bin
+            $d = Get-EnvItem $j 'dotnet-sdk'
+            Assert-Equal 'ok' $d.status
+            Assert-Equal '10.0.401' $d.found
+            Assert-Equal 0 $j.exit
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '.NET：PATH 上沒有 dotnet → missing' {
+        $bin = Join-Path $SdlcRoot 'bin-dn-none'
+        New-EnvTool $bin 'git'
+        try {
+            $j = Invoke-DoctorEnv (New-EnvTarget 't-env-dn-none' @{ 'App.sln' = 'x' }) $bin
+            Assert-Equal 'missing' (Get-EnvItem $j 'dotnet-sdk').status
+            Assert-Equal 2 $j.exit
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'Java：只有 Maven wrapper、沒有全域 mvn → 算有' {
+        $bin = Join-Path $SdlcRoot 'bin-mvnw'
+        New-EnvTool $bin 'git'; New-EnvTool $bin 'java'
+        try {
+            $t = New-EnvTarget 't-env-mvnw' @{ 'pom.xml' = '<project />'; 'mvnw.cmd' = 'x'; '.mvn/wrapper/maven-wrapper.properties' = 'x' }
+            $j = Invoke-DoctorEnv $t $bin
+            $m = Get-EnvItem $j 'maven'
+            Assert-Equal 'ok' $m.status '有 wrapper 卻被判成缺 Maven'
+            Assert-Match '\./mvnw' $m.found
+            Assert-Equal 'ok' (Get-EnvItem $j 'jdk').status
+            Assert-Equal 0 $j.exit
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'Java：只有 wrapper 腳本、沒有設定檔 → 不算 wrapper，缺 Maven（同 repo-index 的判定）' {
+        $bin = Join-Path $SdlcRoot 'bin-mvnw-half'
+        New-EnvTool $bin 'git'; New-EnvTool $bin 'java'
+        try {
+            $j = Invoke-DoctorEnv (New-EnvTarget 't-env-mvnw-half' @{ 'pom.xml' = '<project />'; 'mvnw.cmd' = 'x' }) $bin
+            Assert-Equal 'missing' (Get-EnvItem $j 'maven').status
+            Assert-Equal 2 $j.exit
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'Java：沒有 JDK → missing（wrapper 也要它）；JAVA_HOME 設好就算有' {
+        $bin = Join-Path $SdlcRoot 'bin-nojava'
+        New-EnvTool $bin 'git'
+        $jh = Join-Path $SdlcRoot 'jdk'
+        New-SdlcFile (Join-Path $jh 'bin\java.exe') 'x'
+        try {
+            $t = New-EnvTarget 't-env-jdk' @{ 'build.gradle' = 'x'; 'gradlew.bat' = 'x'; 'gradle/wrapper/gradle-wrapper.properties' = 'x' }
+            $j = Invoke-DoctorEnv $t $bin
+            Assert-Equal 'missing' (Get-EnvItem $j 'jdk').status
+            Assert-Equal 'ok' (Get-EnvItem $j 'gradle').status
+            Assert-Equal 2 $j.exit
+            $j2 = Invoke-DoctorEnv $t $bin @{ JAVA_HOME = $jh }
+            Assert-Equal 'ok' (Get-EnvItem $j2 'jdk').status
+            Assert-Equal 0 $j2.exit
         } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
     }
 }

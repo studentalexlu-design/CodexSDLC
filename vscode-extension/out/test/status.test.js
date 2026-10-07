@@ -99,6 +99,47 @@ const now = new Date('2026-09-13T08:00:00Z');
     strict_1.default.match(v.text, /更新檢查頻率寫壞了$/);
     strict_1.default.doesNotMatch(v.text, /agent-lint/);
 });
+const env = (status, extra = {}) => ({
+    id: 'git', name: 'git', status, found: null, required: null, source: null,
+    breaks: '⑤ 檢查既有 scenario 有沒有被刪（git diff）', hint: '沒裝的話：https://git-scm.com/downloads', ...extra,
+});
+(0, node_test_1.test)('環境缺工具 → 錯誤等級；badge 說缺什麼，detail 帶會壞在哪與怎麼補（只改 doctor 的話，狀態列會是綠的）', () => {
+    const v = (0, status_1.statusFromDoctor)(doctor((d) => { d.environment = [env('missing')]; d.problems = 1; }), now);
+    strict_1.default.equal(v.level, 'error');
+    strict_1.default.match(v.text, /缺 git/);
+    const issue = v.issues.find((i) => /缺 git/.test(i.badge));
+    strict_1.default.ok(issue, '環境的問題沒有上狀態列');
+    strict_1.default.match(issue.detail, /git diff/);
+    strict_1.default.match(issue.detail, /git-scm\.com/);
+});
+(0, node_test_1.test)('global.json 要的 SDK 不在 → 版本不符，說得出要哪一版、要求從哪來', () => {
+    const v = (0, status_1.statusFromDoctor)(doctor((d) => {
+        d.environment = [env('mismatch', { id: 'dotnet-sdk', name: '.NET SDK', required: '8.0.999', source: 'global.json', breaks: '④ 的每一個 dotnet 指令' })];
+    }), now);
+    strict_1.default.equal(v.level, 'error');
+    strict_1.default.match(v.text, /\.NET SDK 版本不符/);
+    strict_1.default.ok(v.tooltip.some((l) => l.includes('8.0.999') && l.includes('global.json')));
+});
+(0, node_test_1.test)('Codex 比實測版本舊 → 錯誤等級', () => {
+    const v = (0, status_1.statusFromDoctor)(doctor((d) => {
+        d.environment = [env('below-verified', { id: 'codex', name: 'Codex', found: '0.150.0', required: '0.154.0', source: '實測版本', breaks: '強制層' })];
+    }), now);
+    strict_1.default.equal(v.level, 'error');
+    strict_1.default.match(v.text, /Codex 太舊/);
+});
+(0, node_test_1.test)('查不到（unknown）與用不到（not-applicable）不算問題，只進 tooltip', () => {
+    const v = (0, status_1.statusFromDoctor)(doctor((d) => {
+        d.environment = [
+            env('unknown', { id: 'codex', name: 'Codex', hint: '找不到 codex 執行檔' }),
+            env('not-applicable', { id: 'build-tool', name: 'build／test 工具', breaks: 'build-check 對這個專案是空轉', hint: null }),
+            env('ok', { found: 'C:\\Git\\cmd\\git.exe' }),
+        ];
+    }), now);
+    strict_1.default.equal(v.level, 'ok');
+    strict_1.default.equal(v.issues.length, 0);
+    strict_1.default.ok(v.tooltip.some((l) => l === 'Codex：查不到 —— 找不到 codex 執行檔'));
+    strict_1.default.ok(v.tooltip.some((l) => l === 'build／test 工具：build-check 對這個專案是空轉'));
+});
 (0, node_test_1.test)('沒有 hooks.json → 錯誤等級（整層強制不存在），而且有一顆按得下去的按鈕', () => {
     const v = (0, status_1.statusFromDoctor)(doctor((d) => { d.hooks = { status: 'no-hooks', codex: null }; d.problems = 1; }), now);
     strict_1.default.equal(v.level, 'error');

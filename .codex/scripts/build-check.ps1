@@ -129,14 +129,21 @@ if ($DebounceSeconds -gt 0 -and (Test-Path $stamp)) {
     if ($age -lt $DebounceSeconds) { exit 0 }   # 上次 build 綠燈且仍在視窗內
 }
 
-# 索引沒給命令時，依專案檔存在性推斷
+# 索引沒給命令時，依專案檔存在性推斷。
+# 專案自帶 wrapper 就用它 —— 理由與判定同 repo-index.ps1 的 wrapper 段（「腳本＋設定檔」都在才算），
+# 兩邊由 test-repo-index.ps1 用同一組 fixture 釘住。
+function Test-Wrapper([string[]]$scripts, [string]$props) {
+    (@($scripts | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf }).Count -gt 0) -and (Test-Path -LiteralPath $props -PathType Leaf)
+}
 if (-not $buildCmd) {
     if (Get-ChildItem -Recurse -Depth 3 -Filter *.sln -ErrorAction SilentlyContinue | Select-Object -First 1) {
         $buildCmd = 'dotnet build --nologo --verbosity quiet'
     } elseif (Get-ChildItem -Recurse -Depth 3 -Filter pom.xml -ErrorAction SilentlyContinue | Select-Object -First 1) {
-        $buildCmd = 'mvn -q -B compile'
+        $mvn = if (Test-Wrapper @('mvnw', 'mvnw.cmd') '.mvn/wrapper/maven-wrapper.properties') { './mvnw' } else { 'mvn' }
+        $buildCmd = "$mvn -q -B compile"
     } elseif (Get-ChildItem -Recurse -Depth 3 -Filter build.gradle* -ErrorAction SilentlyContinue | Select-Object -First 1) {
-        $buildCmd = 'gradle -q compileJava'
+        $gradle = if (Test-Wrapper @('gradlew', 'gradlew.bat') 'gradle/wrapper/gradle-wrapper.properties') { './gradlew' } else { 'gradle' }
+        $buildCmd = "$gradle -q compileJava"
     } else {
         exit 0   # 無可辨識的專案，不阻斷
     }

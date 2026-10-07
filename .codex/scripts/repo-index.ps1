@@ -30,7 +30,9 @@ $digestPath = Join-Path $OutDir 'index-digest.json'
 
 # 索引結構版本。改欄位就要 +1 —— 舊索引缺新欄位（ns／bases／di-registrations），
 # 沿用它會讓下游把「這一版沒掃」讀成「掃過但沒有」，而那是靜默的錯。
-$IndexSchema = 2
+# **欄位的產生規則改了也要 +1**：3 = `commands` 改用專案自帶的 wrapper、`bdd-fallback` 跟著測試框架走。
+# 沒有 +1 的話，專案檔沒動的 repo 會一直沿用舊索引 —— ④ 照舊跑 `mvn`、照舊被建議加 `Reqnroll.xUnit`。
+$IndexSchema = 3
 
 function Get-Sha256([string]$text) {
     $sha = [System.Security.Cryptography.SHA256]::Create()
@@ -80,6 +82,25 @@ $javaFiles  = @(Get-SourceFiles '*.java')
 $appYaml    = @(Get-SourceFiles 'application*.yml') + @(Get-SourceFiles 'application*.yaml') +
               @(Get-SourceFiles 'application*.properties')
 
+# ---------- wrapper ----------
+# 專案自帶的 mvnw／gradlew 釘了它要的 Maven／Gradle 版本，有就一定用它：只有 wrapper、沒裝全域 mvn 的機器上，
+# 寫死 `mvn` 的指令 ④ 根本跑不起來；裝了全域的另一版，也可能 build 不過（Gradle 尤其明顯）。
+# 要「腳本＋設定檔」都在才算 —— 只有一支腳本的 wrapper 跑不起來。
+# 指令一律寫 `./mvnw`：pwsh 7 與 Windows PowerShell 5.1 都會解析到 mvnw.cmd（實測），其他平台就是那支 sh 腳本。
+# build-check.ps1 的退化偵測有同一套判定，兩邊由 test-repo-index.ps1 用同一組 fixture 釘住。
+function Test-Wrapper([string[]]$scripts, [string]$props) {
+    (@($scripts | Where-Object { Test-Path -LiteralPath (Join-Path $Root $_) -PathType Leaf }).Count -gt 0) -and
+        (Test-Path -LiteralPath (Join-Path $Root $props) -PathType Leaf)
+}
+$mvn    = if (Test-Wrapper @('mvnw', 'mvnw.cmd') '.mvn/wrapper/maven-wrapper.properties') { './mvnw' } else { 'mvn' }
+$gradle = if (Test-Wrapper @('gradlew', 'gradlew.bat') 'gradle/wrapper/gradle-wrapper.properties') { './gradlew' } else { 'gradle' }
+# 進 structure hash：加上或拿掉 wrapper 時 commands 要跟著變，而那幾個檔不是專案檔。
+$wrapperFiles = @(@('mvnw', 'mvnw.cmd', '.mvn/wrapper/maven-wrapper.properties',
+                    'gradlew', 'gradlew.bat', 'gradle/wrapper/gradle-wrapper.properties') |
+                  ForEach-Object { Join-Path $Root $_ } |
+                  Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+                  ForEach-Object { Get-Item -LiteralPath $_ })
+
 # ---------- 語言判定 ----------
 # 依原始碼檔數決定主語言；兩者都有且比例接近時標 mixed，由 agent 依 handoff 目標路徑決定。
 $language =
@@ -103,7 +124,7 @@ $srcFiles = @(switch ($language) {
 })
 
 # ---------- 分域 hash ----------
-$structureInput = (@($slnFiles) + @($csprojs) + @($poms) + @($gradles) | Sort-Object FullName | ForEach-Object {
+$structureInput = (@($slnFiles) + @($csprojs) + @($poms) + @($gradles) + $wrapperFiles | Sort-Object FullName | ForEach-Object {
     "$(ConvertTo-RelPath $_.FullName):$($_.Length):$($_.LastWriteTimeUtc.Ticks)" }) -join "`n"
 $structureHash = Get-Sha256 $structureInput
 
@@ -206,6 +227,25 @@ function Find-Pkg([string[]]$names) {
     return $null
 }
 
+# 專案還沒有 BDD 框架時，④ 要加哪個套件。**跟著專案現有的測試框架走** —— 舊版寫死 Reqnroll.xUnit／JUnit 5，
+# NUnit、MSTest、JUnit 4、TestNG 的專案會被建議加錯套件，等於引入第二套測試框架。
+# 套件 ID 是 2026-10 在 nuget.org／Maven Central 查過的正式名稱（Reqnroll.MSTest 的大小寫照官方）。
+function Get-BddFallback([string]$lang) {
+    if ($lang -eq 'java') {
+        switch (Find-Pkg @('junit-jupiter', 'junit', 'testng')) {
+            'junit'  { return 'cucumber-java + cucumber-junit' }
+            'testng' { return 'cucumber-java + cucumber-testng' }
+            default  { return 'cucumber-java + cucumber-junit-platform-engine + junit-platform-suite' }
+        }
+    }
+    if ($allPkgs -match '^xunit\.v3') { return 'Reqnroll.xunit.v3' }
+    switch (Find-Pkg @('xunit', 'NUnit', 'MSTest')) {
+        'NUnit'  { return 'Reqnroll.NUnit' }
+        'MSTest' { return 'Reqnroll.MSTest' }
+        default  { return 'Reqnroll.xUnit' }
+    }
+}
+
 if ($language -eq 'java') {
     $testToolchain = [pscustomobject]@{
         language  = 'java'
@@ -215,7 +255,7 @@ if ($language -eq 'java') {
         assertion = Find-Pkg @('assertj', 'hamcrest', 'truth')
     }
     if (-not $testToolchain.bdd) {
-        $testToolchain | Add-Member -NotePropertyName 'bdd-fallback' -NotePropertyValue 'cucumber-java + cucumber-junit-platform-engine' -Force
+        $testToolchain | Add-Member -NotePropertyName 'bdd-fallback' -NotePropertyValue (Get-BddFallback 'java') -Force
     }
 } else {
     $testToolchain = [pscustomobject]@{
@@ -226,26 +266,26 @@ if ($language -eq 'java') {
         assertion = Find-Pkg @('AwesomeAssertions', 'FluentAssertions', 'Shouldly')
     }
     if (-not $testToolchain.bdd) {
-        $testToolchain | Add-Member -NotePropertyName 'bdd-fallback' -NotePropertyValue 'Reqnroll.xUnit' -Force
+        $testToolchain | Add-Member -NotePropertyName 'bdd-fallback' -NotePropertyValue (Get-BddFallback 'csharp') -Force
     }
     if ($language -eq 'mixed') {
         $testToolchain | Add-Member -NotePropertyName 'java-bdd' -NotePropertyValue (
-            Find-Pkg @('cucumber-java', 'cucumber-junit') ?? 'cucumber-java + cucumber-junit-platform-engine') -Force
+            Find-Pkg @('cucumber-java', 'cucumber-junit') ?? (Get-BddFallback 'java')) -Force
     }
 }
 
 # ---------- build / test 命令（下游一律讀這裡，不得自行硬編） ----------
 $commands = switch ($buildTool) {
     'maven'  { [pscustomobject]@{
-                 'build-tool'='maven';  build='mvn -q -B compile'; test='mvn -q -B test'
-                 'test-filter'='mvn -q -B test -Dtest={pattern}'
-                 acceptance='mvn -q -B test -Dtest=*CucumberTest'
+                 'build-tool'='maven';  build="$mvn -q -B compile"; test="$mvn -q -B test"
+                 'test-filter'="$mvn -q -B test -Dtest={pattern}"
+                 acceptance="$mvn -q -B test -Dtest=*CucumberTest"
                  'source-globs'=@('**/*.java'); 'project-globs'=@('pom.xml')
                  'step-def-glob'='**/*Steps.java'; 'feature-glob'='**/*.feature' } }
     'gradle' { [pscustomobject]@{
-                 'build-tool'='gradle'; build='gradle -q compileJava'; test='gradle -q test'
-                 'test-filter'='gradle -q test --tests {pattern}'
-                 acceptance='gradle -q test --tests *Cucumber*'
+                 'build-tool'='gradle'; build="$gradle -q compileJava"; test="$gradle -q test"
+                 'test-filter'="$gradle -q test --tests {pattern}"
+                 acceptance="$gradle -q test --tests *Cucumber*"
                  'source-globs'=@('**/*.java'); 'project-globs'=@('build.gradle','build.gradle.kts')
                  'step-def-glob'='**/*Steps.java'; 'feature-glob'='**/*.feature' } }
     'dotnet' { [pscustomobject]@{

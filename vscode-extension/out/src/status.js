@@ -8,6 +8,16 @@ exports.issuesFromDoctor = issuesFromDoctor;
 exports.statusFromDoctor = statusFromDoctor;
 exports.statusFromFailure = statusFromFailure;
 const rank = { ok: 0, warn: 1, error: 2 };
+// 環境：只有 doctor 算成問題的那三種上狀態列。名稱、會壞在哪、怎麼補都由 doctor 給 —— 這裡不自己維護一份工具清單。
+// unknown（查不到）與 not-applicable（這個專案用不到）只進 tooltip：理由同 doctor，查不到不等於有問題，但要講。
+function envProblem(e) {
+    switch (e.status) {
+        case 'missing': return { badge: `缺 ${e.name}`, what: `找不到 ${e.name}` };
+        case 'mismatch': return { badge: `${e.name} 版本不符`, what: `${e.name} 的版本對不上（${e.source ?? '專案'} 要 ${e.required ?? '?'}）` };
+        case 'below-verified': return { badge: `${e.name} 太舊`, what: `${e.name} ${e.found ?? ''} 比實測過的 ${e.required ?? ''} 舊` };
+        default: return undefined;
+    }
+}
 function issuesFromDoctor(d) {
     const issues = [];
     // Codex 的信任狀態不在這裡看（4.10.0 起 doctor 預設就不問）：問它要另外叫起一個 codex 子行程，
@@ -72,6 +82,12 @@ function issuesFromDoctor(d) {
     for (const f of d.guidelines.filter((g) => g.level === 'warn')) {
         issues.push({ level: 'warn', badge: '$(law) 規範', detail: f.text });
     }
+    // 只改 doctor 不改這裡的話，終端機紅、狀態列綠 —— 這一段就是為了不讓那件事發生。
+    for (const e of d.environment) {
+        const p = envProblem(e);
+        if (p)
+            issues.push({ level: 'error', badge: `$(tools) ${p.badge}`, detail: `${p.what} —— ${e.breaks}。${e.hint ?? ''}`.trim() });
+    }
     return issues.sort((a, b) => rank[b.level] - rank[a.level]);
 }
 function hookLine(d) {
@@ -97,6 +113,9 @@ function statusFromDoctor(d, now) {
     const hooks = hookLine(d);
     if (hooks)
         tooltip.push(hooks);
+    for (const e of d.environment.filter((x) => x.status === 'unknown' || x.status === 'not-applicable')) {
+        tooltip.push(`${e.name}：${e.status === 'unknown' ? `查不到 —— ${e.hint ?? ''}` : e.breaks}`);
+    }
     tooltip.push(d.tuning.status === 'in-sync' ? '調校：sdlc.config.json 與 agent 定義一致'
         : d.tuning.status === 'no-config' ? '調校：沒有 sdlc.config.json（全部交給 Codex CLI 決定）'
             : `調校：${d.tuning.status}`);

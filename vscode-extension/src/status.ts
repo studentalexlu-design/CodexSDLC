@@ -3,7 +3,7 @@
 // 刻意不推測「現在在流程的第幾步」：流程狀態活在對話裡，磁碟上只有 spec.md，
 // 靠檔案反推會猜錯 —— 一個顯示錯階段的狀態列比沒有狀態列更糟。這裡只顯示**檔案與腳本說得準**的事。
 
-import type { DoctorData } from './contract';
+import type { DoctorData, EnvironmentItem } from './contract';
 
 export type Level = 'ok' | 'warn' | 'error';
 
@@ -25,6 +25,17 @@ export interface StatusView {
 }
 
 const rank: Record<Level, number> = { ok: 0, warn: 1, error: 2 };
+
+// 環境：只有 doctor 算成問題的那三種上狀態列。名稱、會壞在哪、怎麼補都由 doctor 給 —— 這裡不自己維護一份工具清單。
+// unknown（查不到）與 not-applicable（這個專案用不到）只進 tooltip：理由同 doctor，查不到不等於有問題，但要講。
+function envProblem(e: EnvironmentItem): { badge: string; what: string } | undefined {
+  switch (e.status) {
+    case 'missing': return { badge: `缺 ${e.name}`, what: `找不到 ${e.name}` };
+    case 'mismatch': return { badge: `${e.name} 版本不符`, what: `${e.name} 的版本對不上（${e.source ?? '專案'} 要 ${e.required ?? '?'}）` };
+    case 'below-verified': return { badge: `${e.name} 太舊`, what: `${e.name} ${e.found ?? ''} 比實測過的 ${e.required ?? ''} 舊` };
+    default: return undefined;
+  }
+}
 
 export function issuesFromDoctor(d: DoctorData): Issue[] {
   const issues: Issue[] = [];
@@ -92,6 +103,11 @@ export function issuesFromDoctor(d: DoctorData): Issue[] {
   for (const f of d.guidelines.filter((g) => g.level === 'warn')) {
     issues.push({ level: 'warn', badge: '$(law) 規範', detail: f.text });
   }
+  // 只改 doctor 不改這裡的話，終端機紅、狀態列綠 —— 這一段就是為了不讓那件事發生。
+  for (const e of d.environment) {
+    const p = envProblem(e);
+    if (p) issues.push({ level: 'error', badge: `$(tools) ${p.badge}`, detail: `${p.what} —— ${e.breaks}。${e.hint ?? ''}`.trim() });
+  }
   return issues.sort((a, b) => rank[b.level] - rank[a.level]);
 }
 
@@ -115,6 +131,9 @@ export function statusFromDoctor(d: DoctorData, now: Date): StatusView {
   for (const i of issues) tooltip.push(`${i.level === 'error' ? '✖' : '⚠'} ${i.detail}`);
   const hooks = hookLine(d);
   if (hooks) tooltip.push(hooks);
+  for (const e of d.environment.filter((x) => x.status === 'unknown' || x.status === 'not-applicable')) {
+    tooltip.push(`${e.name}：${e.status === 'unknown' ? `查不到 —— ${e.hint ?? ''}` : e.breaks}`);
+  }
   tooltip.push(
     d.tuning.status === 'in-sync' ? '調校：sdlc.config.json 與 agent 定義一致'
       : d.tuning.status === 'no-config' ? '調校：沒有 sdlc.config.json（全部交給 Codex CLI 決定）'

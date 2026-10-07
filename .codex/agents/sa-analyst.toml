@@ -184,6 +184,14 @@ pwsh -NoProfile -File .codex/scripts/impact-scope.ps1 -Keywords '取消,訂單'
 
 `spec.md` 沒談到精度、需求裡也沒有會被計算的數 → 那一行寫「**精度：無**」**就結束**。不要自己去翻資料庫找數字欄位 —— 那是沒有終止條件的掃描。
 
+### 專案還沒有 BDD 框架 —— ③ 要看得到 ④ 會多加一個套件
+
+`index.json` 的 `test-toolchain.bdd` 是空的 → **每個做法的「動到」都多列一項**：測試專案，加上 `bdd-fallback` 那個套件（例：`Orders.Tests.csproj`（加 `Reqnroll.NUnit`））。這是 ④ 一定會做的改動 —— 不列出來，使用者在 ③ 批准做法時不知道專案會多一個套件。
+
+- **測試專案不只一個** → 寫成「`A.Tests` 或 `B.Tests`（③ 選）」，在「我建議」那節講哪一個、為什麼。放哪個由使用者挑。
+- **一個都沒有** → 寫「新建測試專案」，代價算進「工」—— 那是結構決定，不是順手的事。
+- `bdd` 有值（Reqnroll、SpecFlow、Cucumber、JBehave）→ 什麼都不加，④ 沿用既有的那一套。
+
 ### 回什麼
 
 ```text

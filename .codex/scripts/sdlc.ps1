@@ -102,6 +102,9 @@ $ConfigSchemaRef = './.codex/bdd-workflow/sdlc.config.schema.json'   # 寫進 sd
 # effort 是觀測值：Codex 0.154.0 內建模型清單列的 reasoning effort（Codex 本身不檢查這個值，寫錯要到呼叫 API 才出事）。
 # minimal 不在任何一個模型的清單裡，所以拿掉了。Codex 升版時照 docs/vscode-extension-plan.md 的方法重查。
 $KnownEfforts = @('low', 'medium', 'high', 'xhigh', 'max', 'ultra')
+# 強制層（hooks.json 的形狀、commandWindows、payload）是在這一版 Codex 上實測的。比它舊 → doctor 算問題；
+# 比它新不提示（使用者無從行動，修法是維護者重跑實測）。重跑實測之後跟著改這一行（發版清單第 4 條）。
+$VerifiedCodexVersion = '0.154.0'
 $UpdateChecks = @('daily', 'never')
 $GitHubSourcePattern = 'github\.com/([^/]+)/([^/\s]+?)(\.git)?/?$'
 # 修正輪上限的預設值。範圍（1–5）由 handoff-lint 與 agent-lint 檢查 13 判，doctor 讀 lint 的結論。
@@ -272,13 +275,25 @@ function Confirm-Step([string]$question) {
     return ($a -match '^(y|yes)$')
 }
 
+# 怎麼再叫起一支跟現在一樣的 pwsh。一般安裝時 [Environment]::ProcessPath 就是 pwsh(.exe)；
+# 以 .NET global tool 安裝時（dotnet tool install -g powershell），它是 dotnet(.exe)，pwsh 本體是 $PSHOME/pwsh.dll。
+# 直接拿 ProcessPath 當 pwsh 叫，跑的就是 `dotnet -NoProfile …` —— 一行都不會執行：doctor 的 agent-lint 與 rules.json 驗證、
+# tune 的 repo-index 訊號全部「沒有跑完」，而且只有那種安裝的機器會這樣（維護者的機器就是）。
+# 參數只給 test-sdlc.ps1 用：那個情境在一般安裝的機器上重現不出來，只能直接餵值驗這個判斷。
+function Get-PwshLaunch([string]$processPath = [Environment]::ProcessPath, [string]$pwshHome = $PSHOME) {
+    $dll = Join-Path $pwshHome 'pwsh.dll'
+    $viaDotnet = ([IO.Path]::GetFileNameWithoutExtension($processPath) -ieq 'dotnet') -and (Test-Path -LiteralPath $dll -PathType Leaf)
+    return [pscustomobject]@{ exe = $processPath; prefix = @(if ($viaDotnet) { $dll }) }
+}
+
 # 跑另一支 pwsh 腳本並收回輸出，一律 UTF-8。
 # 不用 `& pwsh ... 2>&1`：PowerShell 會拿 console 的 code page 解碼子行程的輸出，
 # 而子行程被重導向時寫的是 UTF-8（見「標準 I/O」段）—— 兩邊對不上，中文就是亂碼，JSON 就解析失敗。
-# 用執行中的這一支 pwsh，不去 PATH 找：從 VS Code 叫起來的時候 PATH 裡不一定有它。
+# 用執行中的這一支 pwsh（Get-PwshLaunch），不去 PATH 找：從 VS Code 叫起來的時候 PATH 裡不一定有它。
 function Invoke-PwshScript([string]$file, [string[]]$arguments = @(), [string]$cwd = (Get-Location).Path) {
-    $psi = [Diagnostics.ProcessStartInfo]::new([Environment]::ProcessPath)
-    foreach ($a in @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $file) + $arguments) { $psi.ArgumentList.Add($a) }
+    $launch = Get-PwshLaunch
+    $psi = [Diagnostics.ProcessStartInfo]::new($launch.exe)
+    foreach ($a in @($launch.prefix) + @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $file) + $arguments) { $psi.ArgumentList.Add($a) }
     $psi.WorkingDirectory       = $cwd
     $psi.UseShellExecute        = $false
     $psi.RedirectStandardInput  = $true
@@ -668,6 +683,218 @@ function Show-HookTrust($trust) {
         }
         default { return 0 }
     }
+}
+
+# ---- 環境：跑這套流程要的工具在不在（只偵測、不安裝）----
+#
+# 每一項都說得出「缺了它，哪一步會壞」，說不出來的不進來 —— 什麼都查的健檢會變成永遠紅、沒人看的健檢
+# （入場條件與取捨見 docs/dependency-preflight-plan.md）。
+#   missing／mismatch／below-verified → 算問題（doctor 紅）。
+#   unknown（查不到）／not-applicable（這個專案用不到）→ 只說明。理由同 -CheckHookTrust 的 unknown：查不到不等於有問題，但一定要講。
+# 刻意不查：JDK 版本、TargetFramework 對 SDK 的主版號（④ 的第一次 build 就會給出清楚的錯誤，implementer 的規則接得住）；
+# Codex 比實測版本新（見 $VerifiedCodexVersion）；
+# pwsh 在不在 PATH —— doctor 自己就跑在 pwsh 7 裡，而 pwsh 7 啟動時會把自己的目錄放到 PATH 最前面（實測），
+# 從這裡看出去它永遠在，查了也抓不到東西。Codex 啟動時的 PATH 裡有沒有它，只有 Codex 那一側看得到。
+# 只說去哪裡裝、要哪一版，不印安裝指令：正確的修法不一定是再裝一份（git 裝了但不在 PATH 就是例子）。
+
+function New-EnvItem($id, $name, $status, $breaks, $found = $null, $required = $null, $source = $null, $hint = $null) {
+    return [ordered]@{ id = $id; name = $name; status = $status; found = $found; required = $required; source = $source; breaks = $breaks; hint = $hint }
+}
+
+function Find-Tool([string]$name) {
+    $c = Get-Command $name -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    return $(if ($c) { $c.Source } else { $null })
+}
+
+# 叫一支外部程式、限時、收回輸出。$envOverrides 的值是 $null 就從子行程的環境拿掉那一個變數。
+# stdin 一開始就關掉：等輸入的程式拿到 EOF 就會結束，不會卡到逾時。
+function Invoke-Probe([string]$exe, [string[]]$arguments, [string]$cwd, [hashtable]$envOverrides = @{}, [int]$timeoutMs = 10000) {
+    $psi = [Diagnostics.ProcessStartInfo]::new($exe)
+    foreach ($a in $arguments) { $psi.ArgumentList.Add($a) }
+    $psi.WorkingDirectory       = $cwd
+    $psi.UseShellExecute        = $false
+    $psi.RedirectStandardInput  = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError  = $true
+    foreach ($k in $envOverrides.Keys) {
+        if ($null -eq $envOverrides[$k]) { [void]$psi.Environment.Remove($k) } else { $psi.Environment[$k] = [string]$envOverrides[$k] }
+    }
+    $p = $null
+    try {
+        $p = [Diagnostics.Process]::Start($psi)
+        $p.StandardInput.Close()
+        $o = $p.StandardOutput.ReadToEndAsync(); $e = $p.StandardError.ReadToEndAsync()
+        if (-not $p.WaitForExit($timeoutMs)) {
+            try { $p.Kill($true) } catch { }
+            return [pscustomobject]@{ exit = $null; stdout = ''; stderr = ''; timedOut = $true }
+        }
+        return [pscustomobject]@{ exit = $p.ExitCode; stdout = $o.GetAwaiter().GetResult(); stderr = $e.GetAwaiter().GetResult(); timedOut = $false }
+    } catch {
+        return [pscustomobject]@{ exit = $null; stdout = ''; stderr = $_.Exception.Message; timedOut = $false }
+    } finally {
+        if ($p) { $p.Dispose() }
+    }
+}
+
+# 「腳本＋設定檔」都在才算 wrapper —— 同 repo-index.ps1 與 build-check.ps1 的 wrapper 段，三邊由測試用同一組 fixture 釘住。
+function Test-ProjectWrapper([string]$root, [string[]]$scripts, [string]$props) {
+    (@($scripts | Where-Object { Test-Path -LiteralPath (Join-Path $root $_) -PathType Leaf }).Count -gt 0) -and
+        (Test-Path -LiteralPath (Join-Path $root $props) -PathType Leaf)
+}
+
+# git 裝了但不在 PATH 的常見位置。找到就直接說要把哪個目錄加進 PATH —— 再裝一份是錯的修法。
+function Find-GitOffPath {
+    $c = @()
+    foreach ($r in @($env:ProgramFiles, ${env:ProgramFiles(x86)})) { if ($r) { $c += Join-Path $r 'Git\cmd\git.exe' } }
+    if ($env:LOCALAPPDATA) {
+        $c += Join-Path $env:LOCALAPPDATA 'Programs\Git\cmd\git.exe'
+        $c += @(Get-ChildItem (Join-Path $env:LOCALAPPDATA 'GitHubDesktop') -Directory -Filter 'app-*' -ErrorAction SilentlyContinue |
+                Sort-Object Name -Descending | ForEach-Object { Join-Path $_.FullName 'resources\app\git\cmd\git.exe' })
+    }
+    if ($env:ProgramFiles) {
+        $vs = Join-Path $env:ProgramFiles 'Microsoft Visual Studio\*\*\Common7\IDE\CommonExtensions\Microsoft\TeamFoundation\Team Explorer\Git\cmd\git.exe'
+        $c += @(Resolve-Path $vs -ErrorAction SilentlyContinue | ForEach-Object { $_.Path })
+    }
+    return ($c | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) } | Select-Object -First 1)
+}
+
+# 專案用哪幾種 build 工具。規則同 build-check 的退化偵測（深度 3 內的專案檔），但一層一層走、跳過相依與產物的目錄 ——
+# VS Code 的背景 doctor 每次都會跑這一段，在帶 node_modules 的 repo 裡整棵樹往下列三層太慢。
+function Get-ProjectKinds([string]$root) {
+    $skip = @('node_modules', 'bin', 'obj', 'packages', '.git', '.vs', 'TestResults', 'dist', 'build', 'target')
+    $seen = @{}
+    $level = @(Get-Item -LiteralPath $root)
+    for ($depth = 0; $depth -le 3 -and $level.Count -gt 0; $depth++) {
+        $next = @()
+        foreach ($d in $level) {
+            foreach ($f in @(Get-ChildItem -LiteralPath $d.FullName -File -ErrorAction SilentlyContinue)) {
+                if ($f.Extension -in @('.sln', '.csproj')) { $seen.dotnet = $true }
+                elseif ($f.Name -eq 'pom.xml') { $seen.maven = $true }
+                elseif ($f.Name -in @('build.gradle', 'build.gradle.kts')) { $seen.gradle = $true }
+            }
+            $next += @(Get-ChildItem -LiteralPath $d.FullName -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -notin $skip })
+        }
+        $level = $next
+    }
+    $kinds = @()
+    if ($seen.dotnet) { $kinds += 'dotnet' }
+    if ($seen.maven) { $kinds += 'maven' } elseif ($seen.gradle) { $kinds += 'gradle' }
+    return $kinds
+}
+
+function Get-EnvironmentReport([string]$target) {
+    $root = (Resolve-Path -LiteralPath $target).Path
+    $items = @()
+
+    $gitBreaks = '⑤ 檢查既有 scenario 有沒有被刪（git diff）、② 驗證系統地圖都靠它'
+    $g = Find-Tool 'git'
+    if ($g) { $items += New-EnvItem 'git' 'git' 'ok' $gitBreaks -found $g }
+    else {
+        $off = Find-GitOffPath
+        $hint = if ($off) { "這台有 $off —— 把 $(Split-Path $off -Parent) 加進 PATH（啟動 Codex 的那個環境）" }
+                else { '沒裝的話：https://git-scm.com/downloads。裝了但不在 PATH（例如只有 GitHub Desktop 或 Visual Studio 內附的那一份），把它的 cmd 目錄加進 PATH' }
+        $items += New-EnvItem 'git' 'git' 'missing' $gitBreaks -hint $hint
+    }
+
+    # Codex：問它自己的版本。子行程的 proxy 指向連不上的位址 —— doctor 從構造上碰不到網路（同 Invoke-CodexHooksList）。
+    $codexBreaks = "機械強制層（hooks.json 的形狀與 payload）是在 Codex $VerifiedCodexVersion 上實測的"
+    $cx = Resolve-Codex
+    if (-not $cx) {
+        $items += New-EnvItem 'codex' 'Codex' 'unknown' $codexBreaks -required $VerifiedCodexVersion -source '實測版本' -hint '找不到 codex 執行檔（只用 VS Code 的 Codex 擴充時是正常的）—— 要查就加 -CodexPath <codex 的完整路徑>'
+    } else {
+        $noNet = [hashtable]::new([StringComparer]::Ordinal)
+        foreach ($k in @('HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy')) { $noNet[$k] = 'http://127.0.0.1:9' }
+        foreach ($k in @('NO_PROXY', 'no_proxy')) { $noNet[$k] = $null }
+        $r = Invoke-Probe $cx @('--version') $root $noNet 10000
+        $m = [regex]::Match([string]$r.stdout, '\d+\.\d+\.\d+')
+        if (-not $m.Success) {
+            $why = if ($r.timedOut) { '逾時' } else { "exit $($r.exit)" }
+            $items += New-EnvItem 'codex' 'Codex' 'unknown' $codexBreaks -found $cx -required $VerifiedCodexVersion -source '實測版本' -hint "codex --version 沒有給出版本（$why）"
+        } elseif ((Compare-Semver $m.Value $VerifiedCodexVersion) -lt 0) {
+            $items += New-EnvItem 'codex' 'Codex' 'below-verified' $codexBreaks -found $m.Value -required $VerifiedCodexVersion -source '實測版本' -hint '更舊的 Codex 上，hook 可能每次都跑、一條都沒擋。照你當初裝 Codex 的方式升級（npm、VS Code 的 Codex 擴充…）'
+        } else {
+            $items += New-EnvItem 'codex' 'Codex' 'ok' $codexBreaks -found $m.Value -required $VerifiedCodexVersion -source '實測版本'
+        }
+    }
+
+    $kinds = @(Get-ProjectKinds $root)
+
+    # .NET：global.json 的 rollForward 交給 dotnet 自己套 —— 在專案根跑 `dotnet --version`，相容規則不在這裡重寫一遍。
+    if ($kinds -contains 'dotnet') {
+        $dnBreaks = '④ 的每一個 dotnet 指令（build／test）'
+        $want = $null
+        $gj = Read-JsonFile (Join-Path $root 'global.json')
+        if ($gj -and $gj.sdk -and $gj.sdk.version) { $want = [string]$gj.sdk.version }
+        $src = $(if ($want) { 'global.json' } else { $null })
+        $dn = Find-Tool 'dotnet'
+        if (-not $dn) {
+            $items += New-EnvItem 'dotnet-sdk' '.NET SDK' 'missing' $dnBreaks -required $want -source $src -hint '裝 .NET SDK：https://dotnet.microsoft.com/download'
+        } else {
+            # DOTNET_NOLOGO：第一次執行的歡迎訊息不要混進版本號。
+            $r = Invoke-Probe $dn @('--version') $root @{ DOTNET_NOLOGO = '1' } 20000
+            $out = "$($r.stdout)`n$($r.stderr)"
+            if ($r.exit -eq 0) {
+                $ver = [regex]::Match([string]$r.stdout, '\d+\.\d+\.\d+\S*').Value
+                $items += New-EnvItem 'dotnet-sdk' '.NET SDK' 'ok' $dnBreaks -found $ver -required $want -source $src
+            } elseif ($null -eq $r.exit) {
+                $why = if ($r.timedOut) { '逾時' } else { $r.stderr }
+                $items += New-EnvItem 'dotnet-sdk' '.NET SDK' 'unknown' $dnBreaks -found $dn -hint "dotnet --version 沒有回應（$why）"
+            } elseif ($want -or $out -match 'Requested SDK version:\s*(\S+)') {
+                if (-not $want) { $want = $Matches[1] }
+                $items += New-EnvItem 'dotnet-sdk' '.NET SDK' 'mismatch' $dnBreaks -required $want -source 'global.json' -hint "裝 global.json 要的 SDK $want：https://dotnet.microsoft.com/download"
+            } else {
+                $items += New-EnvItem 'dotnet-sdk' '.NET SDK' 'missing' $dnBreaks -found $dn -hint 'dotnet 在，但找不到可用的 SDK（只有 runtime）—— 裝 .NET SDK：https://dotnet.microsoft.com/download'
+            }
+        }
+    }
+
+    if ($kinds -contains 'maven' -or $kinds -contains 'gradle') {
+        $jdkBreaks = '④ 的 build／test；專案自帶的 wrapper 也要它'
+        $javaHome = if ($env:JAVA_HOME) { Join-Path $env:JAVA_HOME $(if ($IsWindows) { 'bin\java.exe' } else { 'bin/java' }) } else { $null }
+        $jdk = if ($javaHome -and (Test-Path -LiteralPath $javaHome -PathType Leaf)) { $javaHome } else { Find-Tool 'java' }
+        $items += $(if ($jdk) { New-EnvItem 'jdk' 'JDK' 'ok' $jdkBreaks -found $jdk }
+                    else { New-EnvItem 'jdk' 'JDK' 'missing' $jdkBreaks -hint '裝專案要的 JDK（版本看 pom 的 maven.compiler.release 或 Gradle 的 toolchain），並設好 JAVA_HOME' })
+
+        $t = if ($kinds -contains 'maven') {
+            @{ id = 'maven'; name = 'Maven'; exe = 'mvn'; wrapper = './mvnw'; scripts = @('mvnw', 'mvnw.cmd'); props = '.mvn/wrapper/maven-wrapper.properties'; url = 'https://maven.apache.org/download.cgi' }
+        } else {
+            @{ id = 'gradle'; name = 'Gradle'; exe = 'gradle'; wrapper = './gradlew'; scripts = @('gradlew', 'gradlew.bat'); props = 'gradle/wrapper/gradle-wrapper.properties'; url = 'https://gradle.org/install/' }
+        }
+        $btBreaks = '④ 的 build／test 指令'
+        $global = Find-Tool $t.exe
+        if (Test-ProjectWrapper $root $t.scripts $t.props) { $items += New-EnvItem $t.id $t.name 'ok' $btBreaks -found "$($t.wrapper)（專案自帶的 wrapper）" }
+        elseif ($global) { $items += New-EnvItem $t.id $t.name 'ok' $btBreaks -found $global }
+        else { $items += New-EnvItem $t.id $t.name 'missing' $btBreaks -hint "裝 $($t.name)：$($t.url)（專案改用自帶的 wrapper 的話，就不必裝全域的）" }
+    }
+
+    if ($kinds.Count -eq 0) {
+        $items += New-EnvItem 'build-tool' 'build／test 工具' 'not-applicable' 'build-check 對這個專案是空轉，index.json 也不會有 build／test 指令' -hint '這套只認得 .NET（.sln／.csproj）與 Java（pom.xml／build.gradle）的專案檔；④ 的 implementer 會自己找指令'
+    }
+    return $items
+}
+
+# 一行一項。算問題的走 Warn（跟 doctor 其他問題一樣進 warnings），其餘只說明。回傳算問題的項數。
+function Show-Environment($items) {
+    $n = 0
+    Say '環境：'
+    foreach ($i in $items) {
+        switch ($i.status) {
+            'ok'             { Say "  $($i.name)：$($i.found)" }
+            'unknown'        { Say "  $($i.name)：查不到 —— $($i.hint)" }
+            'not-applicable' { Say "  $($i.name)：$($i.breaks)。$($i.hint)" }
+            default {
+                $what = switch ($i.status) {
+                    'missing'        { "找不到 $($i.name)" }
+                    'mismatch'       { "$($i.name) 的版本對不上（$($i.source) 要 $($i.required)）" }
+                    'below-verified' { "$($i.name) $($i.found) 比實測過的 $($i.required) 舊" }
+                    default          { "$($i.name)：$($i.status)" }
+                }
+                Warn "環境：$what —— $($i.breaks)。$($i.hint)"
+                $n++
+            }
+        }
+    }
+    return $n
 }
 
 # ---- VS Code extension（每台機器一份，不屬於任何一個專案）----
@@ -1125,7 +1352,7 @@ function Invoke-Update {
     Say ''
     if ($breaking) {
         Say "** 破壞性升級 ** 你的 $($tgtVer.contract) 低於新版要求的最低相容版本 $($srcVer.minCompat)。"
-        Say '   升級前先看 README 的「從 v… 升上來」那幾節，手上跑到一半的需求先跑完。'
+        Say '   升級前先看 CHANGELOG.md 的「從 v… 升上來」那幾節（或跑 whatsnew），手上跑到一半的需求先跑完。'
         Say ''
     }
     Say "會覆蓋（你沒動過）：$($unchanged.Count) 個"
@@ -1883,6 +2110,10 @@ function Invoke-Doctor {
     $trust = Get-HookTrust $Target
     $script:Data.hooks = $trust
     $problems += (Show-HookTrust $trust)
+
+    $envItems = @(Get-EnvironmentReport $Target)
+    $script:Data.environment = @($envItems)
+    $problems += (Show-Environment $envItems)
 
     # 更新快取：installed 跟現在的版本對不上 = 升級前留下來的，不當真（見 handoff-lint 尾端同一條）。
     $cache = Read-JsonFile (Join-Path $Target $CacheRel)

@@ -81,6 +81,23 @@ test('4.8 的 doctor（沒有 config.comments／schemaRef）照樣讀得懂，�
   assert.throws(() => parseDoctor(parseEnvelope(envelope('doctor', data), 'doctor')), /config\.comments/);
 });
 
+test('doctor 的環境一段讀得出來；加入環境檢查之前的 doctor 沒有這一段 → 讀成空的', () => {
+  const data = doctorFixture() as Record<string, any>;
+  data.environment = [{ id: 'dotnet-sdk', name: '.NET SDK', status: 'mismatch', found: null, required: '8.0.999', source: 'global.json', breaks: '④', hint: '裝 SDK 8.0.999' }];
+  const d = parseDoctor(parseEnvelope(envelope('doctor', data), 'doctor'));
+  assert.equal(d.environment[0].status, 'mismatch');
+  assert.equal(d.environment[0].required, '8.0.999');
+  assert.equal(d.environment[0].found, null);
+  delete data.environment;
+  assert.deepEqual(parseDoctor(parseEnvelope(envelope('doctor', data), 'doctor')).environment, []);
+});
+
+test('環境的欄位改名 → 紅，而且說得出是哪一項的哪一個欄位', () => {
+  const data = doctorFixture() as Record<string, any>;
+  data.environment = [{ id: 'git', name: 'git', status: 'missing', found: null, required: null, source: null, breaksOn: 'x', hint: null }];
+  assert.throws(() => parseDoctor(parseEnvelope(envelope('doctor', data), 'doctor')), /\$\.data\.environment\[0\]\.breaks/);
+});
+
 test('set 的結果：變更、錯誤、有沒有寫、有沒有套用；整數值讀成字串給畫面用', () => {
   const ok = parseSet(parseEnvelope(envelope('set', {
     changes: [

@@ -106,6 +106,19 @@ export interface InstalledEditor { product: string; version: string; compatible:
 
 export interface LintResult { ran: boolean; passed: boolean; violations: Violation[] }
 
+// doctor 的「環境」一段：跑這套流程要的工具在不在。status 是 ok／missing／mismatch／below-verified（算問題）
+// 或 unknown／not-applicable（只說明）。名稱、會壞在哪、怎麼補都由 sdlc.ps1 給 —— extension 不自己維護一份工具清單。
+export interface EnvironmentItem {
+  id: string;
+  name: string;
+  status: string;
+  found: string | null;
+  required: string | null;
+  source: string | null;
+  breaks: string;
+  hint: string | null;
+}
+
 export interface DoctorData {
   version: { contract: string; minCompatible: string };
   // comments／schemaRef 從 4.9.0 起才有；更舊的 doctor 沒有這兩個欄位，讀成 false。
@@ -119,7 +132,23 @@ export interface DoctorData {
   hooks: HookTrust;
   update: { cached: boolean; stale: boolean; newer: boolean; latest: string | null; seen: boolean; checkedAt: string | null; check: string };
   editor: { installed: InstalledEditor[] };
+  // 加入環境檢查之前的 doctor（4.10.0 與更舊）沒有這一段，讀成空的（同 rule_problems 的做法）。
+  environment: EnvironmentItem[];
   problems: number;
+}
+
+function parseEnvironmentItem(v: unknown, at: string): EnvironmentItem {
+  const o = need<Json>(isObj(v), at, 'object', v);
+  return {
+    id: str(o, 'id', at),
+    name: str(o, 'name', at),
+    status: str(o, 'status', at),
+    found: optStr(o, 'found', at),
+    required: optStr(o, 'required', at),
+    source: optStr(o, 'source', at),
+    breaks: str(o, 'breaks', at),
+    hint: optStr(o, 'hint', at),
+  };
 }
 
 function parseFinding(v: unknown, at: string): Finding {
@@ -204,6 +233,7 @@ export function parseDoctor(env: Envelope): DoctorData {
         return { product: str(o, 'product', xat), version: str(o, 'version', xat), compatible: bool(o, 'compatible', xat) };
       }),
     },
+    environment: 'environment' in d ? arr(d, 'environment', at).map((x, i) => parseEnvironmentItem(x, `${at}.environment[${i}]`)) : [],
     problems: num(d, 'problems', at),
   };
 }

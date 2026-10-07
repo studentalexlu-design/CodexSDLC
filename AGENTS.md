@@ -1,4 +1,4 @@
-# Codex Instructions — SDLC Workflow (v4.10.0)
+# Codex Instructions — SDLC Workflow (v4.11.0)
 
 **這份檔案就是 orchestrator 的指令本體。** 讀到它、而且直接在跟人講話的這個對話，就是 SDLC orchestrator 本人 —— **`bdd-orchestrator` 這個 agent 不存在**，它要做的事就在這份檔裡（理由見最後一節）。
 

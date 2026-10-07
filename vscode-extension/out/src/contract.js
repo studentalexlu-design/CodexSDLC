@@ -100,6 +100,19 @@ function parseEnvelope(stdout, expectedCommand) {
         throw new ContractError(`預期 ${expectedCommand} 的輸出，收到 ${env.command}`);
     return env;
 }
+function parseEnvironmentItem(v, at) {
+    const o = need(isObj(v), at, 'object', v);
+    return {
+        id: str(o, 'id', at),
+        name: str(o, 'name', at),
+        status: str(o, 'status', at),
+        found: optStr(o, 'found', at),
+        required: optStr(o, 'required', at),
+        source: optStr(o, 'source', at),
+        breaks: str(o, 'breaks', at),
+        hint: optStr(o, 'hint', at),
+    };
+}
 function parseFinding(v, at) {
     const o = need(isObj(v), at, 'object', v);
     return { level: str(o, 'level', at), code: str(o, 'code', at), text: str(o, 'text', at) };
@@ -178,6 +191,7 @@ function parseDoctor(env) {
                 return { product: str(o, 'product', xat), version: str(o, 'version', xat), compatible: bool(o, 'compatible', xat) };
             }),
         },
+        environment: 'environment' in d ? arr(d, 'environment', at).map((x, i) => parseEnvironmentItem(x, `${at}.environment[${i}]`)) : [],
         problems: num(d, 'problems', at),
     };
 }
