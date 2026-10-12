@@ -60,13 +60,14 @@ user-invocable: false
 
 第一次中斷後重呼叫時縮小 prompt：只給檔案路徑、審核焦點最多 3 項、要求 `VERDICT` 第一行輸出。
 
-第二次仍中斷 → orchestrator 自己做一次最小審核（只看「測試有沒有真的測到東西」），降級 PASS 前必須以 `Codex user confirmation` 取得使用者同意。
+第二次仍中斷 → orchestrator 自己做一次最小審核（只看「測試有沒有真的測到東西」），降級 PASS 前必須以 `Codex user confirmation` 取得使用者同意。這時 `bdd-docs/{feature-id}/review.md` 還是上一次 reviewer 寫的：最小審核查出要修的東西，修正 handoff 要寫明「review.md 是舊的，以摘要為準」，否則 `implementer` 會照舊的發現修。
 
 ## 子代理回 `partial`
 
-1. 讀它寫的「做完了／沒做完」。
-2. 以 `Codex user confirmation` 提供：繼續下一片／先審核已完成的部分／暫停／✏️ 自行輸入。
-3. 若繼續，新 spawn 帶上「已完成的部分」與「下一件最小的事」。
+1. 讀它寫的「做完了／沒做完」與「風險與待確認」。
+2. **`sa-analyst` 的 `partial`，而且「風險與待確認」裡沒有要問使用者的問題 → 不問，直接再委派一次**，帶 `bdd-docs/{feature-id}/analysis.md` 與它寫的「下一件最小的事」。它停下來是撞到讀量上限，不是需要裁定；先問只是多等一次人，而他多半只會回「繼續」。**同一個需求只自動續跑這一次** —— 第二次 `partial` 照下一條問。
+3. 其餘（第二次 `partial`、有要問的問題、`implementer`／`reviewer` 的 `partial`）→ 以 `Codex user confirmation` 提供：繼續下一片／先審核已完成的部分／暫停／✏️ 自行輸入。`implementer` 的 `partial` 常是「範圍比 spec 大」，那是要使用者決定的事，不能自動續。
+4. 若繼續，新 spawn 帶上「已完成的部分」與「下一件最小的事」。
 
 ## 中斷後續跑
 

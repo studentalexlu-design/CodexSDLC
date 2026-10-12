@@ -1,7 +1,12 @@
 # build-check.ps1
 # 只在 production 程式碼變更時執行 build。
 # 讀 hook payload（stdin），抽出檔案路徑；僅原始碼／專案檔觸發，
-# 且排除 bdd-docs/** 與 *.md。無命中即靜默 exit 0。
+# 且排除 bdd-docs/**、*.md 與測試檔（測試專案、src/test/、*Steps）。無命中即靜默 exit 0。
+#
+# build 的是整個 solution（`commands.build`），不是改到的那個專案：16 個專案的 solution 實測，單一專案的增量 build
+# 只快約 0.7 秒（4.3 vs 5.0 秒；連什麼都沒改都要 4.8 秒，幾乎全是 dotnet 每次呼叫的固定開銷），
+# 而直接 build 單一 csproj 時 $(SolutionDir) 是空的、solution 的組態對應也不套用 —— 舊專案在那裡誤擋的代價大得多。
+# 省時間的是「不叫」：測試檔不觸發、綠燈去抖。
 #
 # 語言與 build 命令取自 repo-index 的 `commands`；索引不存在時退化為副檔名偵測。
 # 支援 .NET（dotnet）與 Java（maven／gradle）。
@@ -38,10 +43,11 @@ param(
 function Read-HookPayload([string]$raw) {
     $result = [pscustomobject]@{ event = ''; paths = @() }
     if (-not $raw) { return $result }
-    $texts = @()
+    $texts = @(); $tool = ''
     try {
         $doc = $raw | ConvertFrom-Json -ErrorAction Stop
         if ($doc -is [pscustomobject] -and $doc.PSObject.Properties['hook_event_name']) { $result.event = [string]$doc.hook_event_name }
+        if ($doc -is [pscustomobject] -and $doc.PSObject.Properties['tool_name']) { $tool = [string]$doc.tool_name }
         $scope = if ($doc -is [pscustomobject] -and $doc.PSObject.Properties['tool_input']) { $doc.tool_input } else { $doc }
         $queue = [System.Collections.Generic.Queue[object]]::new()
         $queue.Enqueue($scope)
@@ -55,18 +61,37 @@ function Read-HookPayload([string]$raw) {
         }
     } catch { $texts = @($raw) }
 
-    $paths = @()
+    $paths = @(); $mentioned = @()
     foreach ($t in $texts) {
         if ($t -match '(?m)^\*\*\* Begin Patch') {
             foreach ($m in [regex]::Matches($t, '(?m)^\*\*\* (?:Add File|Update File|Move to):[ \t]*(.+?)[ \t]*\r?$')) { $paths += $m.Groups[1].Value }
             continue
         }
-        foreach ($m in [regex]::Matches($t, '["'']([^"''\r\n]*?\.[A-Za-z0-9]{1,10})["'']')) { $paths += $m.Groups[1].Value }
-        foreach ($m in [regex]::Matches($t, '["''](bdd-docs[\\/][^"''\r\n]*)["'']')) { $paths += $m.Groups[1].Value }
-        foreach ($m in [regex]::Matches($t, '(?<![\w.\\/-])(bdd-docs[\\/][^\s"''`;|&<>(){}]+)')) { $paths += $m.Groups[1].Value }
-        if ($t -match '^[^"''\r\n*]+\.[A-Za-z0-9]{1,10}$') { $paths += $t }
+        foreach ($m in [regex]::Matches($t, '["'']([^"''\r\n]*?\.[A-Za-z0-9]{1,10})["'']')) { $mentioned += $m.Groups[1].Value }
+        foreach ($m in [regex]::Matches($t, '["''](bdd-docs[\\/][^"''\r\n]*)["'']')) { $mentioned += $m.Groups[1].Value }
+        foreach ($m in [regex]::Matches($t, '(?<![\w.\\/-])(bdd-docs[\\/][^\s"''`;|&<>(){}]+)')) { $mentioned += $m.Groups[1].Value }
+        if ($t -match '^[^"''\r\n*]+\.[A-Za-z0-9]{1,10}$') { $mentioned += $t }
     }
-    $result.paths = @($paths | Where-Object { $_ } | ForEach-Object { $_.Trim() } | Sort-Object -Unique)
+    # shell 指令裡的路徑只是「被提到」：`Get-Content -Path 'legacy/report.sql'`、`rg -n "Status" "x.sql"` 都抽得到，
+    # 而那些檔這次沒被寫。不篩的話，讀一個不合新規範的舊檔就收到一句「現在就改掉」—— 唯讀的 agent 被叫去改舊檔。
+    # 所以只留這次真的被寫到的：修改或建立時間在 120 秒內（建立時間接得住保留修改時間的 Copy-Item）。
+    # 不用 git status：這套流程從不 commit，bdd-docs/ 與上一個需求改過的檔永遠是「已修改／未追蹤」，等於沒篩。
+    # patch 標頭本來就是寫的檔，不篩；其他工具（Edit／Write 的 file_path）也是寫，不篩。
+    if ($tool -match '^(Bash|shell)$') {
+        $now = [DateTime]::UtcNow
+        $mentioned = @($mentioned | Where-Object {
+            $f = $_.Trim()
+            try {
+                if (-not [IO.Path]::IsPathRooted($f)) { $f = Join-Path (Get-Location).Path $f }
+                if (-not [IO.File]::Exists($f)) { return $false }
+                $touched = [IO.File]::GetLastWriteTimeUtc($f)
+                $created = [IO.File]::GetCreationTimeUtc($f)
+                if ($created -gt $touched) { $touched = $created }
+                return (($now - $touched).TotalSeconds -le 120)
+            } catch { return $false }
+        })
+    }
+    $result.paths = @(($paths + $mentioned) | Where-Object { $_ } | ForEach-Object { $_.Trim() } | Sort-Object -Unique)
     return $result
 }
 
@@ -103,14 +128,55 @@ if (Test-Path $IndexPath) {
     } catch { }
 }
 
-$triggering = $paths | Where-Object {
-    $p = $_ -replace '\\', '/'
-    ($p -match $extRe) -and ($p -notmatch '(^|/)bdd-docs/')
+# ---- 測試檔不觸發 ----
+# test-first 先寫測試，這時 production code 還沒寫，本來就編不過。紅燈期間刻意不去抖，於是每個 patch 都重 build 一次
+# 整個 solution，再回一句「Build FAILED after production code change」擋下 —— 改的其實是測試檔。
+# 測試的編譯錯誤 implementer 跑測試時就看得到（④ 的測試指令會先 build），這支 hook 只管 production code。
+# 判定：Java 的 src/test/ 一類目錄、*Steps.cs／*Steps.java（step definitions），以及屬於測試專案的 .cs／.csproj ——
+# 往上找到的第一個 .csproj 檔名以 Test／Tests 結尾、宣告 IsTestProject、用 MSTest.Sdk，或引用了測試框架的套件。
+$script:CsprojIsTest = @{}
+function Test-IsTestCsproj([string]$csproj) {
+    if (-not $script:CsprojIsTest.ContainsKey($csproj)) {
+        $isTest = [IO.Path]::GetFileName($csproj) -match '(?i)tests?\.csproj$'
+        if (-not $isTest) {
+            $x = ''
+            try { $x = [IO.File]::ReadAllText($csproj) } catch { }
+            $isTest = $x -match '(?i)<IsTestProject>\s*true\s*</IsTestProject>|Sdk="MSTest\.Sdk|<PackageReference\s+Include="(Microsoft\.NET\.Test\.Sdk|xunit(\.v3)?|NUnit|MSTest(\.TestFramework)?|Reqnroll[\w.]*|SpecFlow[\w.]*)"'
+        }
+        $script:CsprojIsTest[$csproj] = $isTest
+    }
+    return $script:CsprojIsTest[$csproj]
+}
+function Test-IsTestPath([string]$p) {
+    $rel = $p -replace '\\', '/'
+    if ($rel -match '(?i)(^|/)src/(test|it|integration-?test|testFixtures)/') { return $true }
+    if ($rel -match '(?i)(Steps|StepDefinitions?)\.(cs|java)$') { return $true }
+    if ($rel -notmatch '(?i)\.(cs|csproj)$') { return $false }
+    $root = (Get-Location).Path
+    $full = if ([IO.Path]::IsPathRooted($p)) { $p } else { Join-Path $root $p }
+    if ($rel -match '(?i)\.csproj$') { return (Test-IsTestCsproj $full) }
+    $dir = Split-Path $full -Parent
+    while ($dir -and $dir.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) {
+        $proj = @(Get-ChildItem -LiteralPath $dir -Filter *.csproj -File -ErrorAction SilentlyContinue) | Select-Object -First 1
+        if ($proj) { return (Test-IsTestCsproj $proj.FullName) }
+        $parent = Split-Path $dir -Parent
+        if ($parent -eq $dir) { break }
+        $dir = $parent
+    }
+    return $false
 }
 
+$candidates = @($paths | Where-Object {
+    $p = $_ -replace '\\', '/'
+    ($p -match $extRe) -and ($p -notmatch '(^|/)bdd-docs/')
+})
+$testOnly   = @($candidates | Where-Object { Test-IsTestPath $_ })
+$triggering = @($candidates | Where-Object { $_ -notin $testOnly })
+
 if ($WhatIfPaths) {
-    "detected=$($paths.Count) triggering=$($triggering.Count) build='$buildCmd' extRe='$extRe'"
+    "detected=$($paths.Count) triggering=$($triggering.Count) test-skipped=$($testOnly.Count) build='$buildCmd' extRe='$extRe'"
     $triggering | ForEach-Object { "  TRIGGER $_" }
+    $testOnly   | ForEach-Object { "  SKIP-TEST $_" }
     exit 0
 }
 

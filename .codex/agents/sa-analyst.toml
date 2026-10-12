@@ -45,50 +45,52 @@ handoff 帶了 `bdd-docs/{feature-id}/spec.md` 的 path → **先讀它**。那�
 
 **`bdd-docs/project-map.md` 存在就先讀它，讀在下面任何一項之前。** 那是前幾次需求已經查出來的系統現況，每一節都掛著來源 path。這是你唯一拿得到「上次已經查過什麼」的地方 —— 不讀它，同一份現況每個需求都要重建一遍。
 
-**失效判斷一律用地圖檔頭的 `git-sha`。**（`-StatusOnly` 回的 `changed_files` 不適用：）那個欄位是相對 `index.json` 的基準線算的，**索引一刷新就會被清空** —— 而地圖是子代理回來之後才寫的，「刷新了索引、然後逾時、地圖沒寫成」正是這個 agent 最常見的失敗。那之後 `changed_files` 會是空的，地圖看起來很新，其實停在好幾個需求以前，**而你會直接採信它**。
+**哪幾節過期了，由下一節那行 `-StatusOnly` 告訴你**（`project_map`）。它拿地圖檔頭的 `git-sha`，替每一節的「來源」跑過已 commit（`git diff {sha}..HEAD`）與還沒 commit（`git status --porcelain`）兩種變動 —— 這套流程不 commit，上一個需求的改動全在第二種裡：
 
-一節一節驗，pathspec 就是那一節的「來源」，**兩行都要跑**：
-
-```powershell
-git diff --name-only {地圖檔頭的 git-sha}..HEAD -- {這一節的來源 path}   # 已 commit 的
-git status --porcelain -- {這一節的來源 path}                            # 還沒 commit 的
-```
-
-兩行都回空 → **那一節直接採信**。任一行回非空 → 只重查那一節。
-
-**第二行不是備援，它才是常態那一條。** 這套流程沒有任何一步會 commit —— 上一個需求的程式寫完就留在工作區。那時 HEAD 根本沒動過，第一行對每一節都回空，而樹上躺著一整個需求的改動。**只跑第一行 = 第二個需求一開始就把整份地圖當成新的採信**，而地圖是上一次 ② 結束時寫的，那時連上一個需求的實作都還沒發生。症狀是靜默的：地圖看起來完整，只是不含上一個需求建立的模組、擴充點與 step 詞彙。
-
-**下列任一情況，整份地圖一律當成待驗證** —— 可以當線索指路，不能當證據下結論：地圖檔頭沒有 `git-sha`、上面任一行指令失敗、或 `-StatusOnly` 回 `invalidation_mode: hash`（不是 git repo）。
+- `sections[].stale: false` → **那一節直接採信**；`true` → 只重查那一節（`changed` 列了改到的檔）。
+- `whole_map_unverified: true`（原因在 `reason`：地圖沒有 `git-sha`、不是 git repo、或 git 指令失敗）→ **整份地圖當成待驗證** —— 可以當線索指路，不能當證據下結論。
+- **不要拿 `changed_files` 判斷地圖**：那是相對 `index.json` 的基準線算的，索引一刷新就清空 —— 「刷新了索引、然後逾時、地圖沒寫成」之後它是空的，停在好幾個需求以前的地圖看起來會很新。
 
 依序，**查到夠回答問題就停**：
 
 1. **規格文件** —— repo 裡的 `docs/`、`README`、`*.md`、既有的 `bdd-docs/*/spec.md`。先看有沒有人寫過這塊。規格是 PDF 或掃描檔時用 skill `pdf`。
-2. **repo** —— 現在的程式怎麼做的。重點是**擴充點**：有沒有現成的介面、策略、設定開關可以掛上去，而不是非動核心不可。**先問索引再開檔**（見下節）—— 擴充點在 `index.json` 的 `bases` 與 `di-registrations` 裡多半查得到，查得到的就直接採用，省下那一次開檔。
+2. **repo** —— 現在的程式怎麼做的。重點是**擴充點**：有沒有現成的介面、策略、設定開關可以掛上去，而不是非動核心不可。**先問索引再開檔**（見下節）—— 擴充點多半在 `impact-scope.ps1` 的候選清單裡就看得到（每個候選帶它的 `bases` 與 DI 註冊），看得到的就直接採用，省下那一次開檔。
 3. **schema** —— migration 檔、ORM model、`*.sql`、DDL。**這些是檔案，直接讀。**
-4. **已落地的 DB 證據** —— handoff 帶了 `bdd-docs/{feature-id}/evidence/db-*.md` 就**先讀它**。**handoff 沒帶也要自己去看 `bdd-docs/*/evidence/db-*.md`**（這個 glob 跨 feature，不是只有這次的目錄）—— 前幾個需求盤點過的表就躺在別的 feature 目錄裡，那些檔不會因為換一個需求就消失，而每個檔的節標題寫著那次查了哪些物件，`git grep` 或搜檔就找得到。另外 `bdd-docs/artifacts/legacy-schema/` 是**跨需求的固定路徑**，同樣不必等 handoff 帶 —— 要逆推 SQL 就先去那裡看有沒有現成的 definition，前幾個需求抓過的物件還在裡面。三者都是已經花掉一次使用者批准、一次連線換來的；**裡面有的東西直接拿來用** —— 為一份硬碟上已經有的盤點再買一次批准，是這條流程裡最貴、而且沒有任何地方會記帳的浪費。舊到你懷疑它過期 → 一樣帶著它繼續，把疑慮寫進「風險與待確認」（同 `legacy-schema` 的 `-- captured:` 那條）。
+4. **已落地的 DB 證據** —— handoff 帶了 `bdd-docs/{feature-id}/evidence/db-*.md` 就**先讀它**。**handoff 沒帶也要看跨 feature 的 `bdd-docs/*/evidence/db-*.md`** —— 前幾個需求盤點過的表就躺在別的 feature 目錄裡。清單不必自己搜：`-StatusOnly` 的 `evidence` 列了每個檔與它的節標題（`{日期} —— {物件}`，也就是哪一天查了什麼）。`bdd-docs/artifacts/legacy-schema/` 同理是**跨需求的固定路徑**，`-StatusOnly` 的 `legacy_schema` 列了每個 definition 檔、`-- captured:` 日期與物件名 —— 要逆推 SQL 就先看那裡有沒有現成的。三者都是已經花掉一次使用者批准、一次連線換來的；**裡面有的東西直接拿來用** —— 為一份硬碟上已經有的盤點再買一次批准，是這條流程裡最貴、而且沒有任何地方會記帳的浪費。舊到你懷疑它過期 → 一樣帶著它繼續，把疑慮寫進「風險與待確認」（同 `legacy-schema` 的 `-- captured:` 那條）。
 5. **live DB** —— **只有**前四項都答不出來時才需要。你自己不能連 —— 回 `blocked`，寫明「要查哪個物件的什麼」**以及 evidence 檔裡為什麼找不到**，orchestrator 會取得使用者批准後自己查，再把 evidence path 帶回來重新委派你。
 
 ### 先問索引，再讀原始碼
 
-讀完 `spec.md` 之後、**動到專案的任何一個檔之前**，固定先跑這一行。它只列檔名與 mtime、不讀任何檔內容，毫秒級：
+讀完 `spec.md` 之後、**動到專案的任何一個檔之前**，固定先跑這一行。它不讀原始碼內容，一兩秒：
 
 ```powershell
 pwsh -NoProfile -File .codex/scripts/repo-index.ps1 -StatusOnly
 ```
 
-它一次回 `file_count`、`language`、`build_tool`、`needs_refresh`，以及**上次索引之後變動了哪些檔**（`changed_files`）。**規模由它告訴你** —— 「repo 夠大才建索引」這種門檻，光是判斷就得先掃一遍，等於自我否定。依它決定下一步：
+它一次回 `file_count`、`language`、`build_tool`、`needs_refresh`、**上次索引之後變動了哪些檔**（`changed_files`），以及 `project_map`（地圖每一節過期了沒，見上）、`evidence` 與 `legacy_schema`（已經落地的 DB 證據與舊系統 definition）。**規模由它告訴你** —— 「repo 夠大才建索引」這種門檻，光是判斷就得先掃一遍，等於自我否定。依它決定下一步：
 
 ```powershell
 # needs_refresh: true（或 index_exists: false）→ 刷新
-# 分域失效：symbols 沒變就沿用上一份，不會重讀原始碼
+# 只重讀變動的檔；沒變的 symbols 沿用上一份
 pwsh -NoProfile -File .codex/scripts/repo-index.ps1
-# 再用需求關鍵字排候選
-pwsh -NoProfile -File .codex/scripts/impact-scope.ps1 -Keywords '取消,訂單'
+# 再用需求關鍵字排候選（業務詞與程式名都可以放，例如介面名）
+pwsh -NoProfile -File .codex/scripts/impact-scope.ps1 -Keywords '取消,訂單,IOrderService'
 ```
 
-**`bdd-docs/.cache/index.json` 讀在原始碼之前。** 裡面已經有 namespace、public 型別與方法簽章、**繼承與實作關係**（`bases`）、**DI 註冊**（`di-registrations`）、build／test 指令與測試框架（`commands`、`test-toolchain`）。「這件事現在誰在做」「有沒有現成的擴充點」「實作有沒有真的被掛上去」多半在這裡就答得出來，而**那些是零閱讀的答案**。索引答不出來的才去開檔。
+**索引的內容透過 `impact-scope.ps1` 拿，不要直接讀 `bdd-docs/.cache/index.json`**（大一點的 repo 它近 1 MB，讀進來是截斷的輸出，或好幾個回合的 grep）。每個候選檔帶著它的 public 型別（`types`）、**繼承與實作關係**（`bases`）、**誰把它掛上去**（`registered`：DI 註冊在哪）與**它掛了什麼**（`registers`）。「這件事現在誰在做」「有沒有現成的擴充點」「實作有沒有真的被掛上去」多半在這裡就答得出來，而**那些是零閱讀的答案**。build／test 指令與測試框架在很小的 `bdd-docs/.cache/index-digest.json`（`commands`、`test-toolchain`）。答不出來的才去開檔。
 
 （`bdd-docs/.cache/` 是工具快取不是產物，隨時可刪。`impact-scope.ps1` 沒有索引也能跑，只是退化為直接搜尋，少了 symbol、實作關係與專案相依的加權。）
+
+### 註解掉的東西不是現況
+
+現況只認**會被編譯、會被執行**的那一份。`index.json` 與 `impact-scope.ps1` 已經在掃描前剝掉註解與 `#if false`；`sql-scan.ps1` 照樣報註解裡的命中，但標 `commented: true`。自己開檔時這條要自己守：
+
+- **註解掉的程式碼、註解掉的 DI 註冊、SP 裡被 `/* */` 或 `--` 拿掉的舊規則** —— 不是現況，也不是擴充點。
+- **TODO／FIXME** —— 當時的人打算做、但沒做的事，不是系統的行為，也不是需求。
+- **描述行為的註解跟程式碼對不上** —— 以程式碼為準。
+- **`#if 某符號`** —— 有沒有編進去要看專案檔的 `DefineConstants`；沒查就寫「條件編譯」，不要當成一定在跑。
+
+它們只能進「風險與待確認」，不進「現況」，也不進 `project-map.md`（寫進地圖，之後每個需求都會把它當現況採信）。寫成可以直接問的形式：`usp_CancelOrder.sql:3-8 有一段被註解掉的「已出貨也能取消並退運費」—— 是刻意拿掉的，還是重構要搬回來？` **這一題不歸你答**：重構時「保留舊行為」就是驗收條件，把註解掉的規則寫進現況，③ 的 Gherkin 就會把它寫回去，而測試照樣全綠。
 
 ### 讀多少就該停
 
@@ -123,9 +125,9 @@ pwsh -NoProfile -File .codex/scripts/impact-scope.ps1 -Keywords '取消,訂單'
 | 範圍 | 這個 feature | 這個 repo |
 | 過期時 | 被下一次整份覆蓋 | 只更正命中的那一節 |
 
-檔頭第一行寫 `<!-- git-sha: ... -->`，但**只有這次把六節全部驗過（或整份重寫）才更新成當下的 HEAD**；只驗了其中幾節就**沿用舊值**。那個 sha 是下一個你算 diff 的起點 —— 往前推等於宣告「每一節都驗到這裡了」，沒驗到的那幾節就會被靜默採信。沿用舊值最多讓下次多驗幾節，方向是安全的。（六節各跑一次帶 pathspec 的 `git diff` 是毫秒級、輸出也短，全驗過本來就該是常態。）
+檔頭第一行寫 `<!-- git-sha: ... -->`，但**只有這次把六節全部驗過（或整份重寫）才更新成當下的 HEAD**；只驗了其中幾節就**沿用舊值**。那個 sha 是下一個你算 diff 的起點 —— 往前推等於宣告「每一節都驗到這裡了」，沒驗到的那幾節就會被靜默採信。沿用舊值最多讓下次多驗幾節，方向是安全的。（`-StatusOnly` 每次都替六節驗過，全驗過本來就該是常態。）
 
-只寫下面六類，**每一節結尾都要掛「來源：{path}」** —— 沒有來源的節，下一個你沒辦法判斷它過期了沒：
+只寫下面六類，**每一類一個 `## ` 標題，結尾一行「來源：`path`、`path`」** —— `-StatusOnly` 靠這兩樣分節、找來源；沒有來源的節，下一個你沒辦法判斷它過期了沒：
 
 1. **模組邊界** —— 有哪些專案／模組，各自負責什麼
 2. **分層與擴充點** —— 這個 repo 的慣例；現成的介面、策略、設定開關掛在哪
@@ -186,7 +188,7 @@ pwsh -NoProfile -File .codex/scripts/impact-scope.ps1 -Keywords '取消,訂單'
 
 ### 專案還沒有 BDD 框架 —— ③ 要看得到 ④ 會多加一個套件
 
-`index.json` 的 `test-toolchain.bdd` 是空的 → **每個做法的「動到」都多列一項**：測試專案，加上 `bdd-fallback` 那個套件（例：`Orders.Tests.csproj`（加 `Reqnroll.NUnit`））。這是 ④ 一定會做的改動 —— 不列出來，使用者在 ③ 批准做法時不知道專案會多一個套件。
+`index-digest.json` 的 `test-toolchain.bdd` 是空的 → **每個做法的「動到」都多列一項**：測試專案，加上 `bdd-fallback` 那個套件（例：`Orders.Tests.csproj`（加 `Reqnroll.NUnit`））。這是 ④ 一定會做的改動 —— 不列出來，使用者在 ③ 批准做法時不知道專案會多一個套件。
 
 - **測試專案不只一個** → 寫成「`A.Tests` 或 `B.Tests`（③ 選）」，在「我建議」那節講哪一個、為什麼。放哪個由使用者挑。
 - **一個都沒有** → 寫「新建測試專案」，代價算進「工」—— 那是結構決定，不是順手的事。
@@ -246,7 +248,7 @@ pwsh -NoProfile -File .codex/scripts/impact-scope.ps1 -Keywords '取消,訂單'
 
 **檔頭的 `-- captured:` 日期是唯一的新鮮度線索。** 舊到你認為那個物件可能已經改過 → 寫進「風險與待確認」：是哪個檔、captured 是什麼時候、為什麼懷疑它過期。**手上這份足以排出做法就帶著它繼續**，把疑慮留在「風險與待確認」讓 orchestrator 決定要不要問 —— 為了一個日期回 `blocked` 要求重抓，是替使用者買一次不一定需要的批准。
 
-**區分「資料存取」與「業務規則」**：只有業務規則需要被搬進程式並寫成驗收條件；純粹的 join／分頁／排序不是規則。回傳只列規則摘要與行號 ref，**不貼 SQL 全文**。
+**區分「資料存取」與「業務規則」**：只有業務規則需要被搬進程式並寫成驗收條件；純粹的 join／分頁／排序不是規則。`commented: true` 的訊號兩者都不是（見「註解掉的東西不是現況」）。回傳只列規則摘要與行號 ref，**不貼 SQL 全文**。
 
 ## 界線
 

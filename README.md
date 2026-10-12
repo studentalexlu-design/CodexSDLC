@@ -30,7 +30,7 @@ pwsh <解壓目錄>/.codex/scripts/sdlc.ps1 install -Target C:\你的專案
 ```
 
 - 加 `-WithEditor` 會順便安裝 VS Code extension。裝過一次之後，其他專案可以直接在 VS Code 的 Codex SDLC 面板按「安裝到這個工作區」。
-- 不要把 zip 直接解壓到專案裡：`install` 要先看過現有的檔案才知道怎麼寫。專案已經有 `AGENTS.md` 的話，它不會覆蓋，而是放一份 `AGENTS.md.new` 讓你合併。
+- 不要把 zip 直接解壓到專案裡：`install` 要先看過現有的檔案才知道怎麼寫。專案已經有 `AGENTS.md` 的話，它不會覆蓋，而是放一份 `AGENTS.md.new` 讓你合併。合併後別超過 28 KiB（`doctor` 會檢查）：Codex 只讀專案 `AGENTS.md` 的前 32 KiB，超過的尾段會被靜默截掉 —— 大段的個人指令放 `~/.codex/AGENTS.md`，那一份另計。
 - 以前用手動複製裝過的，跑一次 `sdlc.ps1 install -Adopt` 把現況記成基準線（不會覆蓋任何檔），之後升級才分得出哪些檔是你改過的。
 
 裝好後的結構：
@@ -85,6 +85,7 @@ pwsh .codex/scripts/sdlc.ps1 doctor -CheckHookTrust   # 另外問 Codex hooks �
 | ⑥ 交付 | 回報改了什麼、怎麼驗的、還有什麼風險    | orchestrator             | —                                           |
 
 - ② 的每個做法都會列出：動到哪些檔、風險、工作量，以及影響（會不會動到既有資料、有沒有外部消費者）。
+- ② 只把會編譯、會執行的程式碼當成現況。註解掉的舊碼不算現況、TODO 不算需求，註解跟程式碼對不上時以程式碼為準。重構舊專案時，被註解掉的舊規則會在 ③ 一起問你：是刻意拿掉的，還是要搬回來。
 - 能跳過的步驟會跳過：純技術改動（重構、升套件、重現步驟明確的 bug）通常沒有 ①；小到「一個 commit 就能還原、也沒有要驗收的行為」的改動，它會直接改完。
 
 ### 你只會在這三個地方被問
@@ -179,6 +180,7 @@ pwsh .codex/scripts/sdlc.ps1 doctor -CheckHookTrust   # 另外問 Codex hooks �
 | `bdd-docs/{feature-id}/analysis.md`      | ② 沒做完時的中間分析                                          | 只在 ② 中斷時                                     |
 | `bdd-docs/{feature-id}/contract/`        | API、事件或 schema 的契約                                      | 只在有外部消費者或要改 schema 時                   |
 | `bdd-docs/project-map.md`                | 系統地圖：模組、擴充點、資料存取、已建立的 step 詞彙、領域詞彙 | 每次 ② 結束                                       |
+| `bdd-docs/{feature-id}/review.md`        | ⑤ 審核的結論與發現全文（修正輪從這裡讀要修什麼）              | 每次 ⑤ 審核，整份覆寫                             |
 | `bdd-docs/artifacts/legacy-schema/*.sql` | 舊系統 View／SP 的 definition，用來逆推業務規則                | 只在需要逆推 DB 邏輯、而且經你批准後               |
 | 專案的測試樹                               | `.feature`、step definitions、程式碼與測試                   | ④                                                 |
 
@@ -298,6 +300,7 @@ pwsh <新版解壓目錄>/.codex/scripts/sdlc.ps1 update -Target C:\你的專案
 | 寫進`bdd-docs/` 被擋：殘留敏感資料                         | 寫出的內容含 email、連線字串之類的資料              | 遮蔽後再寫。確定整個專案都沒有敏感資料，才建`bdd-docs/.dlp-disabled`                                                               |
 | 寫檔被擋：`[Hook][Guideline]`                              | 違反`rules.json` 裡 `block` 等級的規則          | 照著改；或把規則降成`warn`、建 `guidelines/.gate-disabled`                                                                       |
 | 跑很久之後逾時                                               | 這次的範圍太大                                      | 選「縮小範圍再跑一次」，單純重試的結果會一樣                                                                                         |
+| ② 還把早就註解掉的舊類別、舊規則當成現況                    | `project-map.md` 是 4.12 以前、照含註解的索引寫的   | 刪掉它第一行的 `<!-- git-sha: … -->`。地圖平常只重查來源檔改過的那幾節；拿掉這行，下一次 ② 會把整份當成待驗證、重查時更正          |
 | `set` 說設定檔裡有註解，沒有寫入                           | `sdlc.config.json` 不支援註解                     | 把說明移到`_note`；或加 `-Yes`（原檔會先備份）                                                                                   |
 | `set` 說「不是合法值」或「不認得的設定」                   | 值或 key 打錯了，整批都沒有寫入                     | 照提示的建議值修正                                                                                                                   |
 | VS Code 裡看不到任何 Codex SDLC 介面                         | extension 沒裝，或開的資料夾不對、工作區沒被信任    | doctor 會告訴你有沒有裝；裝好之後執行`Developer: Reload Window`                                                                    |

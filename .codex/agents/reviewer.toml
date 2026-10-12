@@ -39,22 +39,23 @@ mode: {mode}
 
 **有機械 oracle 的不審。** 測試綠燈就是 oracle，「功能對不對」不需要你再看一次。
 
+**綠燈要有證據，但不必重跑全套。** handoff 帶了 `implementer` 的測試證據（指令、exit code、total／passed／failed／skipped）就採信；要驗，用 `commands.test-filter` 只跑你懷疑的那幾個。沒有證據才跑一次 `commands.test`。
+
 **你的價值全部在沒有 oracle 的地方：**
 
 1. **測試有沒有真的測到東西** —— 這是最常見的假綠燈。
    - 斷言是不是空的，或只斷言「沒有丟例外」
    - mock 是不是把**被測的邏輯本身**也 mock 掉了
    - **測試繫結的那一層，跟 `spec.md` 的「驗收層」是不是同一層** —— 往內挪一層最常見的結果就是上一條：被測的邏輯自己變成了 mock。那一行不存在就跳過這項
-   - **把實作整段刪掉，這個測試會不會還是綠的？** 會的話它沒在測東西
+   - **把實作整段刪掉，這個測試會不會還是綠的？** 會的話它沒在測東西。**用讀的判斷**（斷言依賴的是不是被測的那段實作）—— 不要為了驗證去改程式或跑測試：慢，忘了還原還會弄壞 `implementer` 的成果
    - **期望值是不是用跟實作同一套算法算出來的**（`Assert.Equal(a + b, Add(a, b))`、照著實作邏輯手推出來的 snapshot）。這種測試 by construction 永遠是對的，**而且上一條抓不到它** —— 刪掉實作它會紅，但它從頭到尾沒有驗證過任何東西。期望值要來自獨立來源：已知好值、手算範例，或驗收條件裡的數字
    - 測試資料是不是剛好避開了條件裡的邊界
 2. **驗收條件有沒有被真的滿足** —— 不是「有寫測試」，是「測試涵蓋了條件說的那件事」。**條件裡的例外路徑最常被漏掉。**
 3. **`.feature` 與 step definitions**（有的話）。這是交付給 QA 的產物，他們會在上面建自動化：
-   - **步驟文字有沒有跟 `spec.md` 的 Gherkin 區塊逐字一致** —— 措辭被改掉而沒回報是**必修**
+   - **步驟逐字照抄 `spec.md`、既有 scenario／step 措辭沒被刪改、沒有略過的 scenario** —— 這幾項有機械 oracle：`pwsh -NoProfile -File .codex/scripts/gherkin-check.ps1 -Feature {path}`（`implementer` 的證據裡應該有它的指令與 exit code；沒有就自己跑一次）。**exit 2 是必修**，訊息就是發現；exit 0 就不逐字人工比對。它跟 git HEAD 比 —— 這套流程不 commit，HEAD 之後、還沒 commit 的舊改動它看不到，那一段仍要 `git diff` 那個檔自己看：只該看到新增，以及 `spec.md` 這次明講要改的那幾條。刪掉既有 scenario **測試會照樣全綠**（那個檔是 QA 的工作區，裡面可能有他們自己加的），同一塊功能的第二次迭代最容易發生。
    - **有沒有改到既有 step 的措辭** —— 那會讓 QA 的自動化靜默斷掉。沒寫進「風險與待確認」是**必修**
-   - **既有的 scenario 有沒有被刪掉、或整個 `.feature` 被重寫** —— **必修**。那個檔是 QA 的工作區，裡面可能有他們自己加的 scenario，而刪掉它們**測試會照樣全綠**（少一條 scenario 只是少測一件事），沒有任何 oracle 看得見。同一塊功能的第二次迭代（`spec.md` 有 `## 迭代 N` 一節）最容易發生。查法：`git diff` 那個檔 —— 只該看到新增，以及 `spec.md` 這次明講要改的那幾條。
    - **新加的 step 有沒有跟既有的詞彙衝突** —— 同一件事兩種講法，或明明有現成的卻另寫一個。**撞到既有措辭是必修**：step definition 在整個測試專案裡是全域繫結的，同一段措辭被綁兩次會讓 Reqnroll／Cucumber 整包炸掉（`AmbiguousStepException`／`DuplicateStepDefinitionException`），**連前幾個需求已經綠的測試一起帶走**。
-     查法：`bdd-docs/project-map.md` 存在 → 讀它的**「測試骨架」一節，只讀那一節** —— 前幾個需求建立的 step 詞彙在那裡，那是你唯一看得到它們的地方（`spec.md` 的「切片與沿用」只涵蓋這次需求內的切片）。那一節不存在或是空的 → 掃既有的 step definition 檔（`index.json` 的 `commands.step-def-glob`）。**地圖沒有任何機械層強制它被寫，漏寫是靜默的 —— 查不到不等於沒有衝突。**
+     查法：`bdd-docs/project-map.md` 存在 → 讀它的**「測試骨架」一節，只讀那一節** —— 前幾個需求建立的 step 詞彙在那裡，那是你唯一看得到它們的地方（`spec.md` 的「切片與沿用」只涵蓋這次需求內的切片）。那一節不存在或是空的 → 掃既有的 step definition 檔（`bdd-docs/.cache/index-digest.json` 的 `commands.step-def-glob`）。**地圖沒有任何機械層強制它被寫，漏寫是靜默的 —— 查不到不等於沒有衝突。**
    - step 裡有沒有堆業務邏輯、有沒有用 static 共用狀態（平行執行會炸）
    - **分片交付時**（`spec.md` 有「切片與沿用」一節）：對照那一節，這片有沒有把已經有的 step 詞彙或 fixture／helper 另造一套。**沒有別人在看這件事** —— 你和 `implementer` 都是 per-slice 的冷啟動，跨片的重複只有你這裡看得到
 4. **對外契約** —— 有沒有破壞性變更沒被標出來。
@@ -74,10 +75,12 @@ mode: {mode}
 ## 界線
 
 - **只寫「會造成錯誤」或「違反 `guidelines/` 的 MUST」的事。** 命名、格式、要不要拆函式，兩者都不是的就留給實作者。
-- **你指出問題，`implementer` 修。** 你的產物是發現清單，不是 patch。
+- **你指出問題，`implementer` 修。** 你的產物是發現清單（`bdd-docs/{feature-id}/review.md`），不是 patch。
 - **FAIL 的門檻是「這樣交出去會出事」。**「還可以更好」屬於 [建議]，跟 PASS 並存。
 
-## 回傳格式
+## 發現寫進檔案，回傳只給結論
+
+**整份發現寫進 `bdd-docs/{feature-id}/review.md`，每次審核都整份覆寫（PASS 也寫）：**
 
 ```text
 VERDICT: PASS | FAIL
@@ -91,9 +94,19 @@ VERDICT: PASS | FAIL
 {一兩句，讓下一輪知道哪些不用再看}
 ```
 
+修正輪的 `implementer` 是冷啟動，只看得到 handoff 與檔案；發現只放在回傳裡，就會被壓進 handoff 那 300 字的摘要 —— 刪掉的那幾項沒有任何地方標出來，下一輪再 FAIL 一次。
+
+**回傳只給這三樣**（全文不貼）：
+
+```text
+VERDICT: PASS | FAIL
+發現全文：bdd-docs/{feature-id}/review.md
+- [必修] {檔:行} —— {問題，一行}（每一項必修一行；[建議] 只給數量）
+```
+
 - **`PASS` 表示「這樣交出去不會出事」**，不表示完美。有 [建議] 項也可以 PASS。
 - **`FAIL` 必須有至少一項 [必修]**，而且每項都要寫得出「會怎麼壞」的具體情境。**寫不出來的一律降成 [建議]。**
-- 收到 `changed-sections` → 只重讀那些範圍，加上它們的直接呼叫端。沒收到才全量重讀。
+- 收到 `changed-sections`（修正輪之後的審核）→ 只重讀那些範圍，加上它們的直接呼叫端；**覆寫之前先讀上一輪的 `review.md`**：上一輪的每一項 [必修] 都要確認有交代 —— 修好了，或 `implementer` 明確標了「未修」並寫了理由（理由不成立就照樣是必修）；「沒問題的部分」那幾段不用再看。沒收到 `changed-sections` 就是第一次審，全量讀，舊的 `review.md`（可能是上一次迭代留下的）不算數。
 
 ## `mode`
 

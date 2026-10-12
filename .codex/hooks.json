@@ -2,14 +2,14 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "(?i)(subagent|spawn|^agent$|^task$)",
+        "matcher": "(?i)(subagent|spawn|send_input|^agent$|^task$)",
         "hooks": [
           {
             "type": "command",
             "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .codex/scripts/handoff-lint.ps1",
-            "commandWindows": "pwsh -NoProfile -ExecutionPolicy Bypass -File .codex/scripts/handoff-lint.ps1; exit $LASTEXITCODE",
+            "commandWindows": "$env:PSExecutionPolicyPreference='Bypass'; & ./.codex/scripts/handoff-lint.ps1; exit $LASTEXITCODE",
             "timeout": 15,
-            "statusMessage": "Enforcing handoff contract before subagent spawn"
+            "statusMessage": "Enforcing handoff contract before subagent spawn or send_input"
           }
         ]
       }
@@ -21,7 +21,7 @@
           {
             "type": "command",
             "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .codex/scripts/dlp-gate.ps1",
-            "commandWindows": "pwsh -NoProfile -ExecutionPolicy Bypass -File .codex/scripts/dlp-gate.ps1; exit $LASTEXITCODE",
+            "commandWindows": "$env:PSExecutionPolicyPreference='Bypass'; & ./.codex/scripts/dlp-gate.ps1; exit $LASTEXITCODE",
             "timeout": 30,
             "statusMessage": "DLP residual scan on written artifacts"
           }
@@ -33,7 +33,7 @@
           {
             "type": "command",
             "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .codex/scripts/guideline-gate.ps1",
-            "commandWindows": "pwsh -NoProfile -ExecutionPolicy Bypass -File .codex/scripts/guideline-gate.ps1; exit $LASTEXITCODE",
+            "commandWindows": "$env:PSExecutionPolicyPreference='Bypass'; & ./.codex/scripts/guideline-gate.ps1; exit $LASTEXITCODE",
             "timeout": 30,
             "statusMessage": "Project guideline scan on written files"
           }
@@ -45,7 +45,7 @@
           {
             "type": "command",
             "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File .codex/scripts/build-check.ps1",
-            "commandWindows": "pwsh -NoProfile -ExecutionPolicy Bypass -File .codex/scripts/build-check.ps1; exit $LASTEXITCODE",
+            "commandWindows": "$env:PSExecutionPolicyPreference='Bypass'; & ./.codex/scripts/build-check.ps1; exit $LASTEXITCODE",
             "timeout": 120,
             "statusMessage": "Build check (production code changes only)"
           }

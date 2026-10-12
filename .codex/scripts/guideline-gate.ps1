@@ -93,10 +93,11 @@ function ConvertTo-GlobRegex([string]$glob) {
 function Read-HookPayload([string]$raw) {
     $result = [pscustomobject]@{ event = ''; paths = @() }
     if (-not $raw) { return $result }
-    $texts = @()
+    $texts = @(); $tool = ''
     try {
         $doc = $raw | ConvertFrom-Json -ErrorAction Stop
         if ($doc -is [pscustomobject] -and $doc.PSObject.Properties['hook_event_name']) { $result.event = [string]$doc.hook_event_name }
+        if ($doc -is [pscustomobject] -and $doc.PSObject.Properties['tool_name']) { $tool = [string]$doc.tool_name }
         $scope = if ($doc -is [pscustomobject] -and $doc.PSObject.Properties['tool_input']) { $doc.tool_input } else { $doc }
         $queue = [System.Collections.Generic.Queue[object]]::new()
         $queue.Enqueue($scope)
@@ -110,18 +111,37 @@ function Read-HookPayload([string]$raw) {
         }
     } catch { $texts = @($raw) }
 
-    $paths = @()
+    $paths = @(); $mentioned = @()
     foreach ($t in $texts) {
         if ($t -match '(?m)^\*\*\* Begin Patch') {
             foreach ($m in [regex]::Matches($t, '(?m)^\*\*\* (?:Add File|Update File|Move to):[ \t]*(.+?)[ \t]*\r?$')) { $paths += $m.Groups[1].Value }
             continue
         }
-        foreach ($m in [regex]::Matches($t, '["'']([^"''\r\n]*?\.[A-Za-z0-9]{1,10})["'']')) { $paths += $m.Groups[1].Value }
-        foreach ($m in [regex]::Matches($t, '["''](bdd-docs[\\/][^"''\r\n]*)["'']')) { $paths += $m.Groups[1].Value }
-        foreach ($m in [regex]::Matches($t, '(?<![\w.\\/-])(bdd-docs[\\/][^\s"''`;|&<>(){}]+)')) { $paths += $m.Groups[1].Value }
-        if ($t -match '^[^"''\r\n*]+\.[A-Za-z0-9]{1,10}$') { $paths += $t }
+        foreach ($m in [regex]::Matches($t, '["'']([^"''\r\n]*?\.[A-Za-z0-9]{1,10})["'']')) { $mentioned += $m.Groups[1].Value }
+        foreach ($m in [regex]::Matches($t, '["''](bdd-docs[\\/][^"''\r\n]*)["'']')) { $mentioned += $m.Groups[1].Value }
+        foreach ($m in [regex]::Matches($t, '(?<![\w.\\/-])(bdd-docs[\\/][^\s"''`;|&<>(){}]+)')) { $mentioned += $m.Groups[1].Value }
+        if ($t -match '^[^"''\r\n*]+\.[A-Za-z0-9]{1,10}$') { $mentioned += $t }
     }
-    $result.paths = @($paths | Where-Object { $_ } | ForEach-Object { $_.Trim() } | Sort-Object -Unique)
+    # shell 指令裡的路徑只是「被提到」：`Get-Content -Path 'legacy/report.sql'`、`rg -n "Status" "x.sql"` 都抽得到，
+    # 而那些檔這次沒被寫。不篩的話，讀一個不合新規範的舊檔就收到一句「現在就改掉」—— 唯讀的 agent 被叫去改舊檔。
+    # 所以只留這次真的被寫到的：修改或建立時間在 120 秒內（建立時間接得住保留修改時間的 Copy-Item）。
+    # 不用 git status：這套流程從不 commit，bdd-docs/ 與上一個需求改過的檔永遠是「已修改／未追蹤」，等於沒篩。
+    # patch 標頭本來就是寫的檔，不篩；其他工具（Edit／Write 的 file_path）也是寫，不篩。
+    if ($tool -match '^(Bash|shell)$') {
+        $now = [DateTime]::UtcNow
+        $mentioned = @($mentioned | Where-Object {
+            $f = $_.Trim()
+            try {
+                if (-not [IO.Path]::IsPathRooted($f)) { $f = Join-Path (Get-Location).Path $f }
+                if (-not [IO.File]::Exists($f)) { return $false }
+                $touched = [IO.File]::GetLastWriteTimeUtc($f)
+                $created = [IO.File]::GetCreationTimeUtc($f)
+                if ($created -gt $touched) { $touched = $created }
+                return (($now - $touched).TotalSeconds -le 120)
+            } catch { return $false }
+        })
+    }
+    $result.paths = @(($paths + $mentioned) | Where-Object { $_ } | ForEach-Object { $_.Trim() } | Sort-Object -Unique)
     return $result
 }
 

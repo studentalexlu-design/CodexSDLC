@@ -34,6 +34,14 @@ function New-HpRules([string]$json = $HpRules) {
     return $p
 }
 
+# 把一個檔變成「很久以前寫的」：修改與建立時間都退一小時。shell 指令裡被提到、但這次沒寫的舊檔就長這樣。
+function Set-HpOld([string]$rel) {
+    $f = Join-Path (Get-Location) $rel
+    $old = [DateTime]::UtcNow.AddHours(-1)
+    [IO.File]::SetLastWriteTimeUtc($f, $old)
+    [IO.File]::SetCreationTimeUtc($f, $old)
+}
+
 function Get-HookContext([string]$stdout) {
     # hook 模式下 stdout 只能是一個 JSON 物件（或什麼都沒有）—— 其他東西會讓 Codex 判成 invalid output。
     if (-not $stdout.Trim()) { return $null }
@@ -152,6 +160,71 @@ Describe-Suite 'hook payload / 不是這次寫的檔就不要掃' {
             $r = Invoke-Script $GlGate -Stdin (New-CodexHookPayload -Command $patch) -Params @{ RulesFile = $rules }
             Assert-Equal 0 $r.exit "patch 內文的字串被當成路徑掃了；stderr: $($r.stderr)"
         } finally { Remove-Item $d, $rules -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    # 實測（speedup-plan 第 2 項）：專案放 repo 附的 guidelines/rules.json，舊檔含 WITH (NOLOCK)，
+    # `Get-Content -Path 'legacy/report.sql'` 與 `rg -n "Status" "legacy/report.sql"` 都被 exit 2 擋下：
+    # 「違反專案規範 —— 現在就改掉」。sa-analyst／reviewer 不該改程式，implementer 不該改 spec 範圍外的檔，
+    # 而且 PostToolUse 的阻斷訊息會**取代**工具輸出 —— 它連那個檔的內容都看不到。
+    foreach ($case in @(
+        @{ label = 'Get-Content -Path ''…'''; cmd = { param($p) "Get-Content -Path '$p'" } }
+        @{ label = 'rg -n "Status" "…"';     cmd = { param($p) "rg -n `"Status`" `"$p`"" } }
+    )) {
+        It-Should "guideline-gate：Bash 只是讀一個不合規範的舊檔（$($case.label)）→ 不擋" {
+            $d = "hp-src-$(New-HpId)"; $rules = New-HpRules
+            New-HpFile "$d/report.sql" "SELECT o.Id FROM Orders o WITH (NOLOCK) WHERE o.Status = 2`n"
+            Set-HpOld "$d/report.sql"
+            try {
+                $r = Invoke-Script $GlGate -Stdin (New-CodexHookPayload -Tool 'Bash' -Command (& $case.cmd "$d/report.sql")) -Params @{ RulesFile = $rules }
+                Assert-Equal 0 $r.exit "讀舊檔被當成寫檔擋下了；stderr: $($r.stderr)"
+            } finally { Remove-Item $d, $rules -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+    }
+
+    It-Should 'guideline-gate：Bash 剛寫出同樣內容的檔 → 照樣擋（篩掉的只有舊檔）' {
+        $d = "hp-src-$(New-HpId)"; $rules = New-HpRules
+        New-HpFile "$d/report.sql" "SELECT o.Id FROM Orders o WITH (NOLOCK) WHERE o.Status = 2`n"
+        try {
+            $cmd = "Set-Content -Path '$d/report.sql' -Value `$sql"
+            $r = Invoke-Script $GlGate -Stdin (New-CodexHookPayload -Tool 'Bash' -Command $cmd) -Params @{ RulesFile = $rules }
+            Assert-Equal 2 $r.exit '剛寫的檔沒被掃'
+        } finally { Remove-Item $d, $rules -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'guideline-gate：Copy-Item 保留了修改時間，但建立時間是新的 → 照樣擋' {
+        # Windows 的 Copy-Item 會沿用來源檔的修改時間；只看修改時間的話，複製出來的新檔會被當成舊檔放過。
+        $d = "hp-src-$(New-HpId)"; $rules = New-HpRules
+        New-HpFile "$d/copy.sql" "SELECT Id FROM T WITH (NOLOCK)`n"
+        [IO.File]::SetLastWriteTimeUtc((Join-Path (Get-Location) "$d/copy.sql"), [DateTime]::UtcNow.AddHours(-1))
+        try {
+            $cmd = "Copy-Item 'legacy/q.sql' '$d/copy.sql'"
+            $r = Invoke-Script $GlGate -Stdin (New-CodexHookPayload -Tool 'Bash' -Command $cmd) -Params @{ RulesFile = $rules }
+            Assert-Equal 2 $r.exit '複製出來的新檔被當成舊檔放過了'
+        } finally { Remove-Item $d, $rules -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'guideline-gate：apply_patch 標頭的檔不篩（就算時間戳是舊的）' {
+        # patch 標頭就是這次寫的檔。新鮮度只用來篩 shell 指令裡「被提到」的路徑。
+        $d = "hp-src-$(New-HpId)"; $rules = New-HpRules
+        New-HpFile "$d/q.sql" "SELECT Id FROM T WITH (NOLOCK)`n"
+        Set-HpOld "$d/q.sql"
+        try {
+            $r = Invoke-Script $GlGate -Stdin (New-CodexHookPayload -Command (New-CodexPatch -Update "$d/q.sql")) -Params @{ RulesFile = $rules }
+            Assert-Equal 2 $r.exit 'patch 寫的檔被時間戳篩掉了'
+        } finally { Remove-Item $d, $rules -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'dlp-gate：Bash 讀 bdd-docs/ 裡的舊檔（引號與裸路徑）→ 不掃' {
+        # 每讀一次 spec.md 就掃一次（而且以前要再起一個 pwsh，約 3 秒）—— 它早在寫的那一刻就掃過了。
+        $d = "bdd-docs/hp-$(New-HpId)"
+        New-HpFile "$d/notes.md" "聯絡人 grace@contoso.com`n"
+        Set-HpOld "$d/notes.md"
+        try {
+            foreach ($cmd in @("Get-Content -Path '$d/notes.md'", "cat $d/notes.md")) {
+                $r = Invoke-Script $DlpGate -Stdin (New-CodexHookPayload -Tool 'Bash' -Command $cmd)
+                Assert-Equal 0 $r.exit "「$cmd」把讀當成寫；stderr: $($r.stderr)"
+            }
+        } finally { Remove-Item $d -Recurse -Force -ErrorAction SilentlyContinue }
     }
 
     It-Should 'transcript_path（對話紀錄）不掃' {

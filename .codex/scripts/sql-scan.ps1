@@ -8,6 +8,10 @@
 #
 # LLM 只讀本腳本輸出的訊號清單，判定 data-access vs business-rule（那才是 LLM 的工作）。
 #
+# 註解裡的命中照樣報，但標 `commented: true`，而且不算進 signal-count 與 by-construct（lib/active-code.ps1）。
+# SP 裡被 /* */ 包住的舊規則，單行 context 看不出它在註解裡 —— 不標的話，讀的人會把一條早就被拿掉的規則
+# 當成要保留的現況。不丟掉則是因為「舊規則被註解掉」在重構時本身是一條線索：是刻意拿掉的嗎？
+#
 # DLP：絕不輸出完整 SQL。context 只留 1 行且遮蔽字串常值與數字。
 #
 # Exit: 0 = 完成（含無訊號）；1 = 錯誤。
@@ -21,6 +25,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'lib/active-code.ps1')
 $Root = (Resolve-Path $Root).Path
 $excludeRe = '[\\/](bin|obj|node_modules|packages|\.git|\.vs|TestResults)[\\/]'
 
@@ -62,23 +67,32 @@ $dbObjectPatterns = @(
 function Get-Signals($files, $patterns, [string]$sourceType) {
     $out = @()
     foreach ($f in $files) {
-        # `@()` 不可省：單行檔的 Get-Content 回字串而非陣列，`$lines[$i]` 會取到單一**字元**，
-        # 於是整個檔靜默地掃不出任何訊號。壓成一行的 View／SP 定義正好是最常見的那種。
-        $lines = @(Get-Content $f.FullName -ErrorAction SilentlyContinue)
-        if (-not $lines) { continue }
+        $raw = Get-Content $f.FullName -Raw -ErrorAction SilentlyContinue
+        if (-not $raw) { continue }
+        # 原文與剝掉註解的那一份逐行對齊（Get-ActiveCode 不改行數）。同一行先看剝過的：命中就是現役的訊號；
+        # 只有原文命中，那個構件就在註解裡。
+        # 自己切行、而且留著 `@()`：舊版逐行讀時，單行檔回的是字串不是陣列，`$lines[$i]` 取到單一**字元**，
+        # 整個檔靜默地掃不出任何訊號 —— 壓成一行的 View／SP 定義正好是最常見的那種。
+        $lines = @($raw -split '\r\n|\r|\n')
+        $live  = @((Get-ActiveCode $raw $f.Extension) -split '\r\n|\r|\n')
         for ($i = 0; $i -lt $lines.Count; $i++) {
-            foreach ($p in $patterns) {
-                if ($lines[$i] -match $p.re) {
-                    $out += [pscustomobject]@{
-                        'source-type'   = $sourceType
-                        file            = ConvertTo-RelPath $f.FullName
-                        line            = $i + 1
-                        'construct-type'= $p.type
-                        context         = Protect-Context $lines[$i]
-                    }
-                    break   # 一行只記一個訊號，避免重複膨脹
-                }
+            # 一行只記一個訊號，避免重複膨脹；現役的優先
+            $hit = $null; $commented = $false
+            foreach ($p in $patterns) { if ($live[$i] -match $p.re) { $hit = $p; break } }
+            if (-not $hit -and $live[$i] -ne $lines[$i]) {
+                foreach ($p in $patterns) { if ($lines[$i] -match $p.re) { $hit = $p; $commented = $true; break } }
             }
+            if (-not $hit) { continue }
+            $sig = [ordered]@{
+                'source-type'   = $sourceType
+                file            = ConvertTo-RelPath $f.FullName
+                line            = $i + 1
+                'construct-type'= $hit.type
+                context         = Protect-Context $lines[$i]
+            }
+            # 只在 true 時才寫：上限 300 筆，每筆多一個 false 就是讀者 context 裡多一段沒有資訊的字
+            if ($commented) { $sig.commented = $true }
+            $out += [pscustomobject]$sig
         }
     }
     return $out
@@ -113,23 +127,31 @@ $dbObjectSignals = Get-Signals $sqlFiles $dbObjectPatterns 'db-object'
 $dbObjectSource = if ($sqlFiles.Count -gt 0) { 'ddl-files-found' } else { 'none-found' }
 
 $all = @($inlineSignals) + @($dbObjectSignals)
+$liveSignals      = @($all | Where-Object { -not $_.commented })
+$commentedSignals = @($all | Where-Object { $_.commented })
 $truncated = $all.Count -gt $MaxSignals
-$emit = @($all | Select-Object -First $MaxSignals)
+# 上限先給現役的，註解裡的舊碼只拿剩下的名額
+$emit = @(@($liveSignals) + @($commentedSignals) | Select-Object -First $MaxSignals)
+$liveInline = @($inlineSignals | Where-Object { -not $_.commented }).Count
+$commentedNote = if ($commentedSignals.Count) {
+    "；另有 $($commentedSignals.Count) 個在註解裡（commented: true）—— 那是被拿掉的舊碼，不是現況，只能寫進「風險與待確認」"
+} else { '' }
 
 $result = [pscustomobject]@{
     'scanned-at'        = (Get-Date).ToUniversalTime().ToString('o')
     'db-object-source'  = $dbObjectSource
     'ddl-file-count'    = $sqlFiles.Count
     'cs-file-count'     = $csFiles.Count
-    'signal-count'      = $all.Count
+    'signal-count'      = $liveSignals.Count
+    'commented-signal-count' = $commentedSignals.Count
     truncated           = $truncated
     # 這個欄位會直接進讀者的 context，所以它必須指向現在真的存在的 agent 與 mode。
     # v4.0.0 之前寫的是「analyst 以 sql-logic-extraction mode」—— 那個 agent 和那個 mode
     # 都已經不存在，照著做的人會去找一個叫不出來的東西。
     'next-step'         = if ($truncated) { "訊號超過 $MaxSignals；以 -MaxSignals 提高上限或分批處置" }
-                          elseif ($dbObjectSource -eq 'none-found' -and $inlineSignals.Count -eq 0) { '沒有邏輯訊號，這次不需要 SQL 逆推' }
-                          else { 'sa-analyst（mode: analyze）逐一判定 data-access vs business-rule' }
-    'by-construct'      = ($emit | Group-Object 'construct-type' |
+                          elseif ($dbObjectSource -eq 'none-found' -and $liveInline -eq 0) { "沒有邏輯訊號，這次不需要 SQL 逆推$commentedNote" }
+                          else { "sa-analyst（mode: analyze）逐一判定 data-access vs business-rule$commentedNote" }
+    'by-construct'      = ($emit | Where-Object { -not $_.commented } | Group-Object 'construct-type' |
                             ForEach-Object { [pscustomobject]@{ type=$_.Name; count=$_.Count } })
     signals             = $emit
 }
@@ -145,7 +167,8 @@ if (-not $NoWrite) {
     status = 'completed'
     out_file = if ($NoWrite) { $null } else { $OutFile }
     'db-object-source' = $dbObjectSource
-    signal_count = $all.Count
+    signal_count = $liveSignals.Count
+    commented_count = $commentedSignals.Count
     truncated = $truncated
     by_construct = $result.'by-construct'
     next_step = $result.'next-step'

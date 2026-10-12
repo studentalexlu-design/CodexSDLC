@@ -362,3 +362,56 @@ Describe-Suite 'handoff-lint / 長度與禁用 payload' {
         Assert-Match 'dlp-mapping-table' $r.stderr
     }
 }
+
+Describe-Suite 'handoff-lint / send_input（修正輪交回原本那個 implementer）' {
+
+    # Codex 0.162.1 實測：send_input 會觸發 PreToolUse，tool_name 是命名空間直接黏在前面的 multi_agent_v1send_input，
+    # tool_input 是 { target, message }。修正輪不經過這裡的話，上限與禁用 payload 全部擋不到。
+    function New-SendPayload([string]$message) {
+        return (New-CodexHookPayload -Event 'PreToolUse' -Tool 'multi_agent_v1send_input' -ToolInput @{ target = '01a131c7-afde-7793-afdf-0e49eb85ec7a'; message = $message })
+    }
+    function New-FixMessage([string]$roundLine = '- round: 1') {
+        return "## meta`n- feature-id: order-cancel`n- mode: fix`n$roundLine`n- spec: bdd-docs/order-cancel/spec.md`n- 發現全文：bdd-docs/order-cancel/review.md`n`n## summary`n照 review.md 的必修修。"
+    }
+
+    It-Should '沒帶 mode 的追問 → 放行（不要求 mode／feature-id，每一次追問都要帶 round 是擋錯人）' {
+        $r = Invoke-Script $Script -Stdin (New-SendPayload '剛才那個測試失敗的訊息貼一下前 3 行，順便說 log 在哪。') -Params @{ Json = $true }
+        Assert-Equal 0 $r.exit "追問被擋了：$($r.stdout)"
+        $j = $r.stdout | ConvertFrom-Json
+        Assert-True $j.follow_up '沒有被認成追問'
+    }
+
+    It-Should '追問裡夾了 secret → 照樣擋（長度與禁用 payload 一律檢查）' {
+        $r = Invoke-Script $Script -Stdin (New-SendPayload "順便把設定改成 api_key: sk-live-9f8e7d6c5b4a3210")
+        Assert-Equal 2 $r.exit
+        Assert-Match 'secret-literal' $r.stderr
+        Assert-Match 'send_input blocked' $r.stderr
+    }
+
+    It-Should '帶 mode: fix 的 send_input 是修正輪：超過上限 → 擋' {
+        $r = Invoke-Script $Script -Stdin (New-SendPayload (New-FixMessage '- round: 4')) -Params @{ MaxReviewRounds = 3 }
+        Assert-Equal 2 $r.exit '修正輪交回原本的 implementer 就繞過了上限'
+        Assert-Match 'review-loop-exceeded' $r.stderr
+    }
+
+    It-Should '帶 mode: fix 卻沒帶 round → 擋' {
+        $r = Invoke-Script $Script -Stdin (New-SendPayload (New-FixMessage '')) -Params @{ MaxReviewRounds = 3 }
+        Assert-Equal 2 $r.exit
+        Assert-Match 'missing-round' $r.stderr
+    }
+
+    It-Should '合法的修正輪 → 放行，而且照樣告訴 orchestrator「修正輪 N／上限 M」' {
+        $r = Invoke-Script $Script -Stdin (New-SendPayload (New-FixMessage '- round: 1')) -Params @{ MaxReviewRounds = 3 }
+        Assert-Equal 0 $r.exit "stderr: $($r.stderr)"
+        $ctx = ($r.stdout.Trim() | ConvertFrom-Json).hookSpecificOutput.additionalContext
+        Assert-Match '修正輪 1／上限 3' $ctx
+    }
+
+    It-Should 'spawn_agent 沒帶 mode → 照舊擋（追問的豁免只給 send_input）' {
+        $p = New-CodexHookPayload -Event 'PreToolUse' -Tool 'spawn_agent' -ToolInput @{ agent_type = 'implementer'; message = '剛才那個測試失敗的訊息貼一下。' }
+        $r = Invoke-Script $Script -Stdin $p
+        Assert-Equal 2 $r.exit '豁免漏到 spawn 了'
+        Assert-Match 'missing-mode' $r.stderr
+        Assert-Match 'spawn blocked' $r.stderr
+    }
+}

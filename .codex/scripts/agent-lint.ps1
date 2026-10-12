@@ -26,6 +26,7 @@
 #  12. hooks.json 的形狀在 Codex 上真的擋得住：exit code 傳得出來、matcher 對得上真正的工具名稱
 #  13. sdlc.config.json 的 review.maxRounds 是 1–5 的整數、update.check 是認得的值（寫壞時照預設算，症狀是「設定沒生效」）
 #  14. 合法值的單一來源：sdlc.config.schema.json／rules.schema.json 跟各腳本留的常數一致
+#  15. AGENTS.md 整份讀得進 Codex（≤ 28 KiB；超過的尾段會被靜默截掉）
 #
 # v4.0.0 移除的檢查：skill matrix 覆蓋、gate 定義完整性、回傳 shape 對 policy 檔、
 # tier 表對 route-profiles、findings 段落對 template、合併 mode 矛盾、文件 tier 預算。
@@ -47,6 +48,8 @@ param(
     [string]$ConfigSchema      = '.codex/bdd-workflow/sdlc.config.schema.json',
     [string]$RulesSchema       = '.codex/bdd-workflow/rules.schema.json',
     [string]$ScriptDir         = '.codex/scripts',
+    # 檢查 15 讀使用者層的 project_doc_max_bytes 用。pack 傳空字串：出貨的那一份要在預設上限下讀得完，跟維護者自己怎麼設無關。
+    [string]$CodexHome         = $(if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $HOME '.codex' }),
     [switch]$Json
 )
 
@@ -282,6 +285,10 @@ $artifactContracts = @(
     # 建立的 step 詞彙就會另造一套，撞名時 Reqnroll／Cucumber 整包炸掉 —— 連已經綠的
     # 測試一起帶走。而那是 build 期的失敗，不是這條 lint 抓得到的東西，所以指標本身不能掉。
     @{ path = 'bdd-docs/project-map.md';           roles = @('sa-analyst', 'bdd-orchestrator', 'implementer', 'reviewer') }
+    # v4.13.0：reviewer 的發現。修正輪的 implementer 是冷啟動，發現以前只能壓進 handoff 那 300 字的摘要傳過去 ——
+    # 刪掉的那幾項沒有任何地方標出來，下一輪再 FAIL 一次。生產者 reviewer、路由者 orchestrator（產出物表與 ⑤）、
+    # 消費者 implementer（mode: fix 先讀它）。漏掉消費者的症狀不是報錯，是又回到「只看摘要」。
+    @{ path = 'bdd-docs/{feature-id}/review.md';   roles = @('reviewer', 'bdd-orchestrator', 'implementer') }
     # v4.4.0：團隊規範。生產者是**人**（不是任何 agent），所以這裡只驗消費端。
     # orchestrator 刻意不讀它，但必須列 —— 它是 ③ 唯一會把「這個做法需要規範豁免」
     # 呈到使用者眼前的地方。漏掉的症狀是靜默的：sa-analyst 照樣標出違反 MUST 的做法，
@@ -421,17 +428,27 @@ if ($ver -and $ver.'contract-version' -and (Test-Path $ExtensionManifest)) {
 #   (b) shell 工具在 hook payload 裡叫 **`Bash`**，不是 `shell`。matcher 沒有它，經 shell 寫的檔就不掃。
 #   (c) 引用的腳本要存在 —— 不存在時 hook 以 exit 1 收場，同樣是靜默的「失敗」。
 #
+# v4.13.0 起 commandWindows 直接在 Codex 起的那個 pwsh 裡跑腳本（`& ./腳本`），不再起第二個 pwsh：
+# 每支 hook 省一次 pwsh 冷啟動（約 1 秒；shell 指令兩支並行、patch 三支並行，而 Codex 讀檔多半也走 shell）。
+# 這帶來兩條要守的事（Codex 0.162.1 實測，版本檔 v413-speedup）：
+#   (d) 不得又起一個 pwsh —— 那是把省下的時間加回去，而且症狀只是「變慢」。
+#   (e) 一定要繞過執行原則：zip 解壓出來的腳本帶下載標記，RemoteSigned 會擋下它 —— 而那時 `exit $LASTEXITCODE`
+#       回的是 **0**，Codex 當成通過，強制層靜默消失。用 `$env:PSExecutionPolicyPreference='Bypass'`
+#       （同一個 Process 範圍；`Set-ExecutionPolicy` 要載入模組，多花約 0.6 秒）。
+#
 # (b) 的工具名稱表是觀測值，不是 Codex 的合約。Codex 改名時這張表要跟著改，
-# 而那一天唯一會發現的方法是重跑一次實測（不是讀文件）。
+# 而那一天唯一會發現的方法是重跑一次實測（不是讀文件）。0.162.1 的 shell 工具叫 exec_command，payload 裡仍是 Bash。
 if (Test-Path $HooksFile) {
     $hooksDoc = $null
     try { $hooksDoc = Get-Content $HooksFile -Raw -Encoding UTF8 | ConvertFrom-Json } catch { }
     if (-not $hooksDoc -or -not $hooksDoc.hooks) {
         Add-V 'hooks-unparsable' $HooksFile '修正 JSON 格式 —— Codex 讀不到它時整個機械強制層都不存在，而且不會有任何提示'
     } else {
-        # 腳本 → 它必須攔得到的工具名稱（實測的 hook payload tool_name）
+        # 腳本 → 它必須攔得到的工具名稱（實測的 hook payload tool_name）。
+        # send_input 在 Codex 0.162.1 的 tool_name 是命名空間直接黏在前面的 `multi_agent_v1send_input` —— 錨在開頭的寫法攔不到它；
+        # 攔不到，修正輪交回原本那個 implementer 時，修正輪上限與禁用 payload 就都不檢查了。
         $mustMatch = @{
-            'handoff-lint.ps1'   = @('spawn_agent')
+            'handoff-lint.ps1'   = @('spawn_agent', 'multi_agent_v1send_input')
             'dlp-gate.ps1'       = @('apply_patch', 'Bash')
             'guideline-gate.ps1' = @('apply_patch', 'Bash')
             'build-check.ps1'    = @('apply_patch')
@@ -449,14 +466,21 @@ if (Test-Path $HooksFile) {
                         Add-V 'hook-script-missing' "$label：$script" '修正路徑 —— 腳本不存在時 hook 以 exit 1 收場，Codex 當成失敗略過，什麼都不會擋'
                     }
                     $win = [string]$h.commandWindows
+                    $want = "`$env:PSExecutionPolicyPreference='Bypass'; & ./$script; exit `$LASTEXITCODE"
                     if (-not $win) {
                         Add-V 'hook-exit-code-swallowed' "$label 沒有 commandWindows" `
-                              "補上 `"commandWindows`": `"$($h.command); exit `$LASTEXITCODE`" —— Windows 上 Codex 用 pwsh -Command 包一層，沒有這句 exit 2 會變成 1，阻斷與回饋全部失效"
+                              "補上 `"commandWindows`": `"$want`" —— Windows 上 Codex 用 pwsh -Command 包一層，沒有這句 exit 2 會變成 1，阻斷與回饋全部失效"
                     } elseif ($win -notmatch ';\s*exit\s+\$LASTEXITCODE\s*$') {
                         Add-V 'hook-exit-code-swallowed' "$label 的 commandWindows 沒有以 exit `$LASTEXITCODE 結尾" `
                               "結尾加上 ; exit `$LASTEXITCODE —— 否則外層 pwsh -Command 把 exit 2 回報成 1"
                     } elseif ($win -notmatch [regex]::Escape($script)) {
-                        Add-V 'hook-command-drift' "$label：commandWindows 跑的不是 $script" 'command 與 commandWindows 必須跑同一支腳本，只差結尾的 exit code 傳遞'
+                        Add-V 'hook-command-drift' "$label：commandWindows 跑的不是 $script" "command 與 commandWindows 必須跑同一支腳本：$want"
+                    } elseif ($win -match '(?i)^\s*(&\s*)?["'']?pwsh(\.exe)?["'']?\s') {
+                        Add-V 'hook-nested-pwsh' "$label：commandWindows 又起了一個 pwsh" `
+                              "改成 $want —— Codex 已經用 pwsh -NoProfile -Command 包了一層，再起一個是每次工具呼叫多付一次 pwsh 冷啟動（約 1 秒）"
+                    } elseif ($win -notmatch '(?i)PSExecutionPolicyPreference\s*=\s*["'']?Bypass|Set-ExecutionPolicy\b[^;]*\bBypass') {
+                        Add-V 'hook-execution-policy' "$label：commandWindows 沒有繞過執行原則" `
+                              "改成 $want —— zip 解壓的腳本帶下載標記，RemoteSigned 會擋下它，而那時 exit `$LASTEXITCODE 回 0：Codex 當成通過，強制層靜默消失"
                     }
 
                     $leaf = Split-Path $script -Leaf
@@ -603,6 +627,35 @@ if (Test-Path $RulesSchema) {
     }
 } elseif (Test-Path $gateScript) {
     Add-V 'schema-missing' $RulesSchema '這是工具那半的檔 —— 重跑 update 或從發佈物補回來'
+}
+
+# ---- 15. AGENTS.md 整份讀得進 Codex ----
+# Codex 只讀進專案 AGENTS.md 的前 project_doc_max_bytes（預設 32 KiB），超過的尾段**不會有任何提示**：v4.12.0 的 AGENTS.md
+# 是 39,796 bytes，第 262 行之後（委派的最後一條、使用者互動、失敗處理、機械強制層、調校與升級、路徑）一個字都沒進過模型。
+# Codex 0.162.1 實測（版本檔 v413-speedup）：根目錄到啟動目錄的每一份 AGENTS.md **共用**這個額度、根目錄那份排第一
+# （根目錄那份塞滿時，子目錄那份整份消失）；全域 ~/.codex/AGENTS.md 另計。子代理每次 spawn 也收到整份 —— 大小直接是每次 spawn 的成本。
+# 門檻 = 上限 − 4 KiB：留給子目錄的 AGENTS.md 與使用者合併進來的內容。上限照 Codex 的優先序取：專案的 .codex/config.toml
+# → 使用者的 config.toml → 預設 32 KiB（兩層都實測有效）。只看第一個 [table] 之前的頂層 key。
+# 量的是「每一行都是 CRLF」的大小：Windows 上 autocrlf 檢出、或在 Windows 打包的發佈物，每一行多一個位元組，而 Codex 照位元組算 ——
+# 照檢出狀態量的話，同一份檔在 LF 的機器上綠、在使用者那裡已經超過。
+function Get-ProjectDocMaxBytes([string]$file) {
+    if (-not $file -or -not (Test-Path -LiteralPath $file)) { return $null }
+    $top = ([IO.File]::ReadAllText((Resolve-Path -LiteralPath $file).Path) -split '(?m)^\s*\[', 2)[0]
+    $m = [regex]::Match($top, '(?m)^\s*project_doc_max_bytes\s*=\s*(\d+)')
+    if ($m.Success) { return [int]$m.Groups[1].Value }
+    return $null
+}
+if (Test-Path $OrchestratorFile) {
+    $docLimit = Get-ProjectDocMaxBytes $WorkflowConfig
+    if ($null -eq $docLimit -and $CodexHome) { $docLimit = Get-ProjectDocMaxBytes (Join-Path $CodexHome 'config.toml') }
+    if ($null -eq $docLimit) { $docLimit = 32768 }
+    $agentsMax   = $docLimit - 4096
+    $agentsText  = [IO.File]::ReadAllText((Resolve-Path $OrchestratorFile).Path) -replace "`r`n", "`n"
+    $agentsBytes = [Text.Encoding]::UTF8.GetByteCount($agentsText) + ([regex]::Matches($agentsText, "`n")).Count
+    if ($agentsBytes -gt $agentsMax) {
+        Add-V 'agents-md-too-large' "$OrchestratorFile 是 $agentsBytes bytes（以 CRLF 計），門檻 $agentsMax（Codex 只讀前 $docLimit）" `
+              "縮到門檻以內：只留模型照做需要的，理由搬進 docs/design-rationale.md —— 超過的尾段被靜默截掉，而子代理每次 spawn 也收到整份。自己合進了大段內容的專案：那段可以搬到 ~/.codex/AGENTS.md（另計），或在 ~/.codex/config.toml 調高 project_doc_max_bytes"
+    }
 }
 
 # ---- 輸出 ----

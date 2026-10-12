@@ -73,7 +73,8 @@ if (-not $srcUrl) {
 # ---- 出貨前驗證 ----
 Push-Location $Root
 try {
-    Invoke-Utf8 { & pwsh -NoProfile -ExecutionPolicy Bypass -File '.codex/scripts/agent-lint.ps1' | ForEach-Object { Say "  $_" } }
+    # -CodexHome ''：檢查 15 不看維護者自己 ~/.codex/config.toml 的 project_doc_max_bytes —— 出貨的 AGENTS.md 要在預設上限下讀得完。
+    Invoke-Utf8 { & pwsh -NoProfile -ExecutionPolicy Bypass -File '.codex/scripts/agent-lint.ps1' -CodexHome '' | ForEach-Object { Say "  $_" } }
     if ($LASTEXITCODE -ne 0) { Fail 'agent-lint 紅燈 —— 不出貨。設定不一致的症狀會落在別人的專案裡。' }
     if (-not $SkipTests) {
         Invoke-Utf8 { & pwsh -NoProfile -ExecutionPolicy Bypass -File '.codex/scripts/tests/run-tests.ps1' | ForEach-Object { Say "  $_" } }

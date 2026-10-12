@@ -77,10 +77,11 @@ $ScratchHooks      = Join-Path $Scratch 'hooks.json'
 
 function Invoke-Lint {
     param([hashtable]$Extra = @{})
+    # CodexHome 也要隔離：檢查 15 會讀使用者層的 project_doc_max_bytes，不能拿維護者自己的 ~/.codex 來驗。
     $p = @{
         AgentDir = $Scratch; OrchestratorFile = $ScratchOrchFile; GuidelineDir = $ScratchGuidelines
         ConfigFile = $ScratchConfig; WorkflowConfig = $ScratchWfConfig
-        ExtensionManifest = $ScratchExtension; HooksFile = $ScratchHooks
+        ExtensionManifest = $ScratchExtension; HooksFile = $ScratchHooks; CodexHome = ''
     }
     foreach ($k in $Extra.Keys) { $p[$k] = $Extra[$k] }
     return Invoke-Script $Script -Params $p
@@ -390,6 +391,34 @@ Describe-Suite 'agent-lint / 檢查 6：產物路徑合約' {
         } finally { Remove-Item $Scratch -Recurse -Force -ErrorAction SilentlyContinue }
     }
 
+    It-Should 'review.md 只有 reviewer 與 orchestrator 提到、implementer 沒提到 → 紅燈' {
+        # 修正輪的 implementer 讀不到 reviewer 的發現全文，就又回到「只看 handoff 那 300 字的摘要」——
+        # 被刪掉的必修項沒有任何地方標出來，下一輪再 FAIL 一次。
+        New-CleanScratch | Out-Null
+        New-ScratchOrchestrator @'
+## 委派
+
+| 要什麼 | 給誰 | mode |
+|---|---|---|
+| 查現況 | `sa-analyst` | `analyze` |
+| 實作 | `implementer` | `build`／`fix` |
+| 審核 | `reviewer` | `code` |
+
+發現全文在 `bdd-docs/{feature-id}/review.md`，handoff 帶那個 path。
+'@ | Out-Null
+        New-ScratchAgent 'implementer' '照 spec.md 寫程式。' | Out-Null
+        New-ScratchAgent 'reviewer' '發現寫進 `bdd-docs/{feature-id}/review.md`。' | Out-Null
+        try {
+            $r = Invoke-Lint
+            Assert-Equal 2 $r.exit 'implementer 沒提到 review.md 卻通過了'
+            Assert-Match 'artifact-path-orphan' $r.stderr
+            Assert-Match 'review\.md' $r.stderr
+            New-ScratchAgent 'implementer' 'mode: fix 先讀 `bdd-docs/{feature-id}/review.md`。' | Out-Null
+            $r = Invoke-Lint
+            Assert-Equal 0 $r.exit "三方都提到卻紅了；stderr: $($r.stderr)"
+        } finally { Remove-Item $Scratch -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
     It-Should '沒有人用到的產物不強制' {
         # 這一版可能就是沒有 legacy-schema 的需求，不該因此紅燈。
         New-CleanScratch | Out-Null
@@ -655,6 +684,27 @@ Describe-Suite 'agent-lint / 檢查 12：hooks.json 在 Codex 上真的擋得住
         } finally { Remove-Item $Scratch -Recurse -Force -ErrorAction SilentlyContinue }
     }
 
+    It-Should 'commandWindows 又起一個 pwsh → 紅燈（每次工具呼叫多一次冷啟動）' {
+        # v4.12.0 的形狀：Codex 起的那個 pwsh 再起一個 pwsh -File。每支 hook 約多 1 秒，shell 指令 3.3 → 1.9 秒（實測）。
+        New-CleanScratch | Out-Null
+        New-ScratchHooks { param($h) $x = $h.hooks.PostToolUse[0].hooks[0]; $x.commandWindows = "pwsh -NoProfile -ExecutionPolicy Bypass -File .codex/scripts/dlp-gate.ps1; exit `$LASTEXITCODE" }
+        try {
+            $r = Invoke-Lint
+            Assert-Equal 2 $r.exit
+            Assert-Match 'hook-nested-pwsh' $r.stderr
+        } finally { Remove-Item $Scratch -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'commandWindows 沒有繞過執行原則 → 紅燈（帶下載標記的腳本被擋下，而且 exit 0）' {
+        New-CleanScratch | Out-Null
+        New-ScratchHooks { param($h) $x = $h.hooks.PostToolUse[1].hooks[0]; $x.commandWindows = "& ./.codex/scripts/guideline-gate.ps1; exit `$LASTEXITCODE" }
+        try {
+            $r = Invoke-Lint
+            Assert-Equal 2 $r.exit
+            Assert-Match 'hook-execution-policy' $r.stderr
+        } finally { Remove-Item $Scratch -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
     It-Should 'matcher 攔不到 Bash → 紅燈（經 shell 寫的檔完全不掃）' {
         New-CleanScratch | Out-Null
         New-ScratchHooks { param($h) $h.hooks.PostToolUse[1].matcher = 'Edit|Write|^apply_patch$|^shell$' }
@@ -673,6 +723,18 @@ Describe-Suite 'agent-lint / 檢查 12：hooks.json 在 Codex 上真的擋得住
             $r = Invoke-Lint
             Assert-Equal 2 $r.exit
             Assert-Match 'spawn_agent' $r.stderr
+        } finally { Remove-Item $Scratch -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'handoff-lint 的 matcher 攔不到 send_input → 紅燈（修正輪交回原本的 implementer 時就不檢查了）' {
+        # 0.162.1 的 tool_name 是 multi_agent_v1send_input：v4.12.0 的 matcher 一個字都對不到它。
+        New-CleanScratch | Out-Null
+        New-ScratchHooks { param($h) $h.hooks.PreToolUse[0].matcher = '(?i)(subagent|spawn|^agent$|^task$)' }
+        try {
+            $r = Invoke-Lint
+            Assert-Equal 2 $r.exit
+            Assert-Match 'hook-matcher-misses-tool' $r.stderr
+            Assert-Match 'send_input' $r.stderr
         } finally { Remove-Item $Scratch -Recurse -Force -ErrorAction SilentlyContinue }
     }
 
@@ -842,6 +904,90 @@ Describe-Suite 'agent-lint / 檢查 14：schema 與各腳本的常數一致' {
             $r = Invoke-SchemaLint
             Assert-Equal 2 $r.exit
             Assert-Match 'schema-unparsable' $r.stderr
+        } finally { Remove-Item $Scratch -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+Describe-Suite 'agent-lint / 檢查 15：AGENTS.md 整份讀得進 Codex' {
+
+    # Codex 只讀前 32 KiB（全域 ~/.codex/AGENTS.md 先算），超過的尾段被靜默截掉 —— v4.12.0 的 AGENTS.md 有 6 節讀不到。
+    # 症狀是零，所以沒有這道檢查，下一次加規則就會再超過。
+    # 一行一個中文段落（每行 300 個「字」= 900 bytes ＋ 換行），長度好算、也像真的 AGENTS.md。
+    function New-PaddedOrchestrator([int]$lines, [int]$charsPerLine = 300) {
+        $row = ('字' * $charsPerLine)
+        $pad = (@(1..$lines | ForEach-Object { $row }) -join "`n")
+        New-ScratchOrchestrator @"
+## 委派
+
+| 要什麼 | 給誰 | mode |
+|---|---|---|
+| 查現況 | ``sa-analyst`` | ``analyze`` |
+
+$pad
+"@ | Out-Null
+    }
+
+    It-Should '塞到 33 KiB → 紅燈' {
+        New-CleanScratch | Out-Null
+        New-PaddedOrchestrator 37        # 37 × 901 ≈ 33.3 KB
+        try {
+            $r = Invoke-Lint
+            Assert-Equal 2 $r.exit 'AGENTS.md 超過 Codex 的讀取上限卻通過了'
+            Assert-Match 'agents-md-too-large' $r.stderr
+            Assert-Match 'project_doc_max_bytes' $r.stderr '訊息要給得出另一條路'
+        } finally { Remove-Item $Scratch -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '上限以內 → 綠燈' {
+        New-CleanScratch | Out-Null
+        New-PaddedOrchestrator 30        # ≈ 27 KB
+        try {
+            $r = Invoke-Lint
+            Assert-Equal 0 $r.exit "stderr: $($r.stderr)"
+        } finally { Remove-Item $Scratch -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '使用者層把 project_doc_max_bytes 調高到 64 KiB → 33 KiB 不再紅（那時讀得完）' {
+        # 合併了大段團隊指令的專案，正確的修法之一就是調高上限（Codex 0.162.1 實測使用者層有效）。調了還紅，doctor 就永遠紅。
+        New-CleanScratch | Out-Null
+        New-PaddedOrchestrator 37
+        $home15 = Join-Path $Scratch 'codex-home'
+        New-Item -ItemType Directory -Path $home15 -Force | Out-Null
+        [IO.File]::WriteAllText((Join-Path $home15 'config.toml'), "model = `"gpt-5.5`"`nproject_doc_max_bytes = 65536`n`n[projects.'C:\x']`ntrust_level = `"trusted`"`n", [Text.UTF8Encoding]::new($false))
+        try {
+            $r = Invoke-Lint -Extra @{ CodexHome = $home15 }
+            Assert-Equal 0 $r.exit "stderr: $($r.stderr)"
+        } finally { Remove-Item $Scratch -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '專案層把上限調低到 16 KiB → 20 KiB 就紅（專案層優先）；寫在 [table] 底下的不算' {
+        New-CleanScratch | Out-Null
+        New-PaddedOrchestrator 22        # ≈ 20 KB
+        # 放子目錄：$Scratch 本身是 agent 目錄，裡面的 *.toml 都會被當成 agent 定義檔。
+        $wf = Join-Path $Scratch 'wf/config.toml'
+        New-Item -ItemType Directory -Path (Split-Path $wf -Parent) -Force | Out-Null
+        [IO.File]::WriteAllText($wf, "project_doc_max_bytes = 16384`n`n[agents]`nmax_depth = 2`n", [Text.UTF8Encoding]::new($false))
+        try {
+            $r = Invoke-Lint -Extra @{ WorkflowConfig = $wf }
+            Assert-Equal 2 $r.exit '專案層的上限沒被採用'
+            Assert-Match 'agents-md-too-large' $r.stderr
+            [IO.File]::WriteAllText($wf, "[profiles.small]`nproject_doc_max_bytes = 16384`n", [Text.UTF8Encoding]::new($false))
+            $r = Invoke-Lint -Extra @{ WorkflowConfig = $wf }
+            Assert-Equal 0 $r.exit "[table] 底下的 key 被當成頂層了；stderr: $($r.stderr)"
+        } finally { Remove-Item $Scratch -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '以 CRLF 計：LF 檢出時看起來沒超過、換成 CRLF 就超過 → 紅燈' {
+        # 使用者在 Windows 拿到的是 CRLF（autocrlf 檢出、或 Windows 打包的發佈物），Codex 照位元組算。
+        # 照檢出狀態量的話，同一份檔在維護者的 LF 工作區是綠的。
+        New-CleanScratch | Out-Null
+        New-PaddedOrchestrator 1460 6    # 短行：LF 1460 × 19 ≈ 27.9 KB（以內），CRLF 每行多 1 → ≈ 29.3 KB（超過）
+        try {
+            $lfBytes = [Text.Encoding]::UTF8.GetByteCount(([IO.File]::ReadAllText($ScratchOrchFile) -replace "`r`n", "`n"))
+            Assert-True ($lfBytes -lt 28672) "前提：LF 的大小要在上限以內（實際 $lfBytes）"
+            $r = Invoke-Lint
+            Assert-Equal 2 $r.exit 'CRLF 的那一份超過上限卻通過了'
+            Assert-Match 'agents-md-too-large' $r.stderr
         } finally { Remove-Item $Scratch -Recurse -Force -ErrorAction SilentlyContinue }
     }
 }

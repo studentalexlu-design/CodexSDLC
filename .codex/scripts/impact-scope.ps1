@@ -7,6 +7,16 @@
 # 而它們的檔名通常跟需求關鍵字完全不同，純靠檔名／內容比對排不出來。
 # 優先使用 repo-index.ps1 產生的索引；索引不存在時退化為直接搜尋。
 #
+# 內容命中只算會被編譯的程式碼（lib/active-code.ps1）：只在註解、TODO 或註解掉的舊碼裡提到關鍵字的檔不加分。
+# 讀者只讀前 N 名，一個整檔都是註解的舊實作排上去，就佔掉一個真的實作的位置。
+#
+# 每個候選檔帶著索引裡它的 `types`、`bases` 與 DI 註冊（`registered`：誰把它掛上去；`registers`：它掛了什麼）。
+# 「有沒有現成的擴充點」「實作有沒有真的被掛上去」多半在這裡就答得出來 —— sa-analyst 不必去讀 index.json
+# （2,000 檔的專案就近 1 MB，模型讀不下）。
+#
+# 內容比對在 git repo 裡先用 `git grep` 篩出有關鍵字的檔，只對那些檔讀全文、剝註解、計分；以前每次都把每個
+# .cs／.java／.sql 讀一遍。非 git 照舊逐檔讀。
+#
 # Exit: 0 = 完成；1 = 錯誤。
 
 [CmdletBinding()]
@@ -18,10 +28,13 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'lib/active-code.ps1')
+. (Join-Path $PSScriptRoot 'lib/source-files.ps1')
 $Root = (Resolve-Path $Root).Path
-$excludeRe = '[\\/](bin|obj|node_modules|packages|\.git|\.vs|TestResults)[\\/]'
+$excludeDirs = @('bin', 'obj', 'node_modules', 'packages', '.git', '.vs', 'TestResults')
 
 function ConvertTo-RelPath([string]$full) {
+    if ($full.StartsWith($Root, [StringComparison]::Ordinal)) { return $full.Substring($Root.Length).TrimStart('\', '/').Replace('\', '/') }
     ($full -replace [regex]::Escape($Root), '').TrimStart('\', '/') -replace '\\', '/'
 }
 
@@ -75,18 +88,51 @@ if ($indexUsed -and $index.symbols) {
 }
 
 # ---------- 2. 檔名命中（權重 2） ----------
-$allFiles = @(Get-ChildItem -Path $Root -Recurse -File -Include '*.cs','*.java','*.csproj','*.json','*.sql','*.xml' -ErrorAction SilentlyContinue |
-              Where-Object { $_.FullName -notmatch $excludeRe })
+# 整棵樹只走一次，排除的目錄不進去（lib/source-files.ps1）。
+$allFiles = @(Select-WorkspaceFiles -Files (Get-WorkspaceFiles -Root $Root -ExcludeDirs $excludeDirs) -Patterns '*.cs', '*.java', '*.csproj', '*.json', '*.sql', '*.xml')
 foreach ($f in $allFiles) {
     if ($f.BaseName -match $termRe) { Add-Score (ConvertTo-RelPath $f.FullName) 2 "filename:$($f.BaseName)" }
 }
 
 # ---------- 3. 內容命中（權重 1） ----------
-foreach ($f in ($allFiles | Where-Object { $_.Extension -in '.cs', '.java', '.sql' })) {
+$contentFiles = @($allFiles | Where-Object { $_.Extension -in '.cs', '.java', '.sql' })
+
+# git repo：先用 git grep 篩出「有任一個關鍵字」的檔，只讀那些。-F 逐詞（避開 PowerShell regex 與 git ERE 的語法差異）、
+# -i 跟 -match 一樣不分大小寫；--untracked 一定要 —— 這套流程不 commit，上一個需求新增的檔全是未追蹤的；
+# --no-exclude-standard 讓被 .gitignore 掉、但不在排除目錄裡的檔照樣算（跟逐檔讀的集合一樣），最後再跟走訪的結果取交集。
+# git grep 讀不到 UTF-16（SSMS 舊版存 .sql 的預設），所以帶 UTF-16 BOM 的 .sql 另外補回來，照舊逐檔讀。
+$grepHits = $null
+$null = & git -C $Root rev-parse --is-inside-work-tree 2>$null
+if ($LASTEXITCODE -eq 0) {
+    $gitArgs = @('-C', $Root, 'grep', '-l', '-i', '-F', '--untracked', '--no-exclude-standard')
+    foreach ($term in $terms) { $gitArgs += @('-e', $term) }
+    $gitArgs += @('--', '*.cs', '*.java', '*.sql')
+    $out = & git @gitArgs 2>$null
+    if ($LASTEXITCODE -le 1) {   # 0 = 有命中、1 = 沒有命中；其他是錯誤 → 退回逐檔讀
+        $grepHits = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+        foreach ($l in @($out)) { if ($l) { [void]$grepHits.Add(($l -replace '\\', '/')) } }
+    }
+}
+if ($null -ne $grepHits) {
+    $contentFiles = @($contentFiles | Where-Object {
+        $rel = ConvertTo-RelPath $_.FullName
+        if ($grepHits.Contains($rel)) { return $true }
+        if ($_.Extension -ne '.sql' -or $_.Length -lt 2) { return $false }
+        $b = [byte[]]::new(2)
+        try { $s = [IO.File]::OpenRead($_.FullName); try { [void]$s.Read($b, 0, 2) } finally { $s.Dispose() } } catch { return $false }
+        return (($b[0] -eq 0xFF -and $b[1] -eq 0xFE) -or ($b[0] -eq 0xFE -and $b[1] -eq 0xFF))
+    })
+}
+
+foreach ($f in $contentFiles) {
     $txt = Get-Content $f.FullName -Raw -ErrorAction SilentlyContinue
+    # 先用原文篩（便宜），命中了才剝註解再算 —— 多數檔一個關鍵字都沒有，不必替它們付剝註解的成本。
     if ($txt -and $txt -match $termRe) {
-        $n = ([regex]::Matches($txt, $termRe)).Count
-        Add-Score (ConvertTo-RelPath $f.FullName) ([Math]::Min($n, 5)) "content x$n"
+        $txt = Get-ActiveCode $txt $f.Extension
+        if ($txt -match $termRe) {
+            $n = ([regex]::Matches($txt, $termRe)).Count
+            Add-Score (ConvertTo-RelPath $f.FullName) ([Math]::Min($n, 5)) "content x$n"
+        }
     }
 }
 
@@ -110,22 +156,43 @@ if ($indexUsed -and $index.projects) {
 }
 
 # ---------- 輸出 ----------
+# 每個候選檔帶著索引裡它自己的那一份：types／bases，以及 DI —— registered = 誰把這個檔的型別掛上去（服務或實作是它），
+# registers = 這個檔自己掛了什麼（組合根）。沒有索引就只有 file／score／reasons。
+$symByFile = @{}
+if ($indexUsed) { foreach ($s in @($index.symbols)) { $symByFile[$s.file] = $s } }
+function Get-DiText($d) { if ($d.impl) { "$($d.kind)<$($d.service), $($d.impl)>" } else { "$($d.kind) $($d.service)" } }
+
 $ranked = @($scores.GetEnumerator() |
     Sort-Object { $_.Value.score } -Descending |
     Select-Object -First $TopN |
     ForEach-Object {
-        [pscustomobject]@{
+        $c = [ordered]@{
             file    = $_.Key
             score   = $_.Value.score
             reasons = @($_.Value.reasons | Select-Object -First 4)
         }
+        if ($indexUsed) {
+            $s = $symByFile[$_.Key]
+            if ($s) {
+                $c.types = @($s.types | Select-Object -First 5)
+                if ($s.bases) { $c.bases = @($s.bases | Select-Object -First 5) }
+                $names = @($s.types | ForEach-Object { ($_ -split '\s+')[-1] })
+                $reg = @($index.'di-registrations' | Where-Object { $_.file -ne $c.file -and ($_.service -in $names -or $_.impl -in $names) } |
+                         Select-Object -First 3 | ForEach-Object { "$(Get-DiText $_) @ $($_.file)" })
+                if ($reg.Count) { $c.registered = $reg }
+            }
+            $own = @($index.'di-registrations' | Where-Object { $_.file -eq $c.file } | Select-Object -First 5 | ForEach-Object { Get-DiText $_ })
+            if ($own.Count) { $c.registers = $own }
+        }
+        [pscustomobject]$c
     })
 
 [pscustomobject]@{
     status         = 'completed'
     keywords       = $terms
     'index-used'   = $indexUsed
-    'index-note'   = if ($indexUsed) { $null } else { 'index 不存在，已退化為直接搜尋；建議先跑 repo-index.ps1' }
+    'index-note'   = if ($indexUsed) { $null } else { 'index 不存在，已退化為直接搜尋（候選檔不帶 types／bases／DI）；建議先跑 repo-index.ps1' }
+    'content-scan' = if ($null -ne $grepHits) { 'git-grep' } else { 'read-all' }
     'total-matched'= $scores.Count
     'returned'     = $ranked.Count
     'read-budget'  = "只讀下列 top-$TopN；不得讀清單外檔案，除非追蹤呼叫鏈必要並在回傳中說明"

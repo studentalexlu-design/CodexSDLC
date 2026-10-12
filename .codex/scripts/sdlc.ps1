@@ -101,9 +101,11 @@ $RulesSchemaRel  = '.codex/bdd-workflow/rules.schema.json'
 $ConfigSchemaRef = './.codex/bdd-workflow/sdlc.config.schema.json'   # 寫進 sdlc.config.json 的 $schema（相對於專案根）
 # effort 是觀測值：Codex 0.154.0 內建模型清單列的 reasoning effort（Codex 本身不檢查這個值，寫錯要到呼叫 API 才出事）。
 # minimal 不在任何一個模型的清單裡，所以拿掉了。Codex 升版時照 docs/vscode-extension-plan.md 的方法重查。
+# 0.162.1 重查過（spawn_agent 工具說明列的模型 effort）：同一組。
 $KnownEfforts = @('low', 'medium', 'high', 'xhigh', 'max', 'ultra')
-# 強制層（hooks.json 的形狀、commandWindows、payload）是在這一版 Codex 上實測的。比它舊 → doctor 算問題；
+# 強制層（hooks.json 的形狀、commandWindows、payload）實測過的最舊一版。比它舊 → doctor 算問題；
 # 比它新不提示（使用者無從行動，修法是維護者重跑實測）。重跑實測之後跟著改這一行（發版清單第 4 條）。
+# v4.13.0 的 commandWindows（單一 pwsh）在 0.154.0 與 0.162.1 各端到端跑過一次（版本檔 v413-speedup），所以仍是 0.154.0。
 $VerifiedCodexVersion = '0.154.0'
 $UpdateChecks = @('daily', 'never')
 $GitHubSourcePattern = 'github\.com/([^/]+)/([^/\s]+?)(\.git)?/?$'

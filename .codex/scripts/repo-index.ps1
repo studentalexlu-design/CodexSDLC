@@ -6,11 +6,19 @@
 # LLM 只讀本腳本輸出的 index.json —— 包含 `meta.language`、`test-toolchain`
 # 與 `commands`，下游 agent 一律讀 `commands`，**不得自行硬編 dotnet／mvn／gradle**。
 #
-# 失效判定：偵測到 git → git diff；非 git → 檔案 hash 比對。分域失效，只重掃有變的 scope
-# —— `symbols` 是唯一要讀進每個檔內容的 scope，也是唯一值得沿用的；它沒失效就直接搬上一份。
+# 符號、DI 註冊與專案檔只看「會被編譯的那一份」：註解與 C# 的 `#if false` 先換成空白（lib/active-code.ps1）。
+# 索引是 sa-analyst 不開檔就採信的答案，註解掉的舊類別或舊註冊一旦進來，它就被當成現役的擴充點。
 #
-# `-StatusOnly` 只列檔名／大小／mtime，不讀任何檔內容，是下游 agent 的固定第一動作：
-# 一次呼叫就回規模、語言、建置工具與「上次索引之後變了哪些檔」，不必自己數檔案。
+# 失效判定：偵測到 git → git diff；非 git → 檔案 hash 比對。分域失效，只重掃有變的 scope
+# —— `symbols` 是唯一要讀進每個檔內容的 scope，也是唯一值得沿用的；它沒失效就直接搬上一份，
+# 失效了也只重掃變動的檔（每個檔的大小＋修改時間記在 symbol-cache.json）。上一個需求一定改過程式，
+# 所以以前第二個需求以後的每次 ② 都是全量重建 —— 正好是 repo 最大、最需要索引的時候。
+#
+# 目錄樹只走一次（lib/source-files.ps1），排除的目錄不進去。
+#
+# `-StatusOnly` 不讀原始碼內容，是下游 agent 的固定第一動作：一次呼叫就回規模、語言、建置工具、
+# 「上次索引之後變了哪些檔」，以及 project-map.md 每一節過期了沒、跨 feature 的 DB 證據與 legacy-schema 清單
+# （lib/map-status.ps1）—— 以前 sa-analyst 為了這些要自己跑十幾次 git 與搜檔。
 #
 # Exit: 0 = 索引為最新或已成功刷新；1 = 錯誤。
 
@@ -24,15 +32,22 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'lib/source-files.ps1')
+. (Join-Path $PSScriptRoot 'lib/map-status.ps1')
+# lib/active-code.ps1（剝註解）只有真的要讀原始碼時才載入 —— -StatusOnly 用不到，而光是載入它就要兩三百毫秒。
 $Root = (Resolve-Path $Root).Path
 $indexPath  = Join-Path $OutDir 'index.json'
 $digestPath = Join-Path $OutDir 'index-digest.json'
+$symCachePath = Join-Path $OutDir 'symbol-cache.json'
 
 # 索引結構版本。改欄位就要 +1 —— 舊索引缺新欄位（ns／bases／di-registrations），
 # 沿用它會讓下游把「這一版沒掃」讀成「掃過但沒有」，而那是靜默的錯。
 # **欄位的產生規則改了也要 +1**：3 = `commands` 改用專案自帶的 wrapper、`bdd-fallback` 跟著測試框架走。
 # 沒有 +1 的話，專案檔沒動的 repo 會一直沿用舊索引 —— ④ 照舊跑 `mvn`、照舊被建議加 `Reqnroll.xUnit`。
-$IndexSchema = 3
+# 4 = 掃描前先剝掉註解與 `#if false`。原始碼沒動的 repo 若沿用 3，註解掉的類別與 DI 註冊會一直留在索引裡。
+# 5 = dotnet 的 test／test-filter／acceptance 拿掉 `--no-build`（沿用 4 的 repo 會一直測到舊的 DLL）；
+#     `.slnx`（.NET 9 起 `dotnet new sln` 的預設）也算 solution；symbols 改成逐檔增量（symbol-cache.json 記同一個 schema）。
+$IndexSchema = 5
 
 function Get-Sha256([string]$text) {
     $sha = [System.Security.Cryptography.SHA256]::Create()
@@ -40,14 +55,17 @@ function Get-Sha256([string]$text) {
     finally { $sha.Dispose() }
 }
 
-$excludeRe = '[\\/](bin|obj|node_modules|packages|\.git|\.vs|TestResults|dist|build)[\\/]'
+$excludeDirs = @('bin', 'obj', 'node_modules', 'packages', '.git', '.vs', 'TestResults', 'dist', 'build')
+$excludeRe = '[\\/](bin|obj|node_modules|packages|\.git|\.vs|TestResults|dist|build)[\\/]'   # git diff 的輸出用
 
-function Get-SourceFiles([string]$pattern) {
-    Get-ChildItem -Path $Root -Recurse -File -Filter $pattern -ErrorAction SilentlyContinue |
-        Where-Object { $_.FullName -notmatch $excludeRe }
-}
+# 整棵樹只走一次；底下每一種檔都從這一份挑（順序跟走訪順序一樣，等同以前的 Get-ChildItem -Recurse -Filter）。
+$workspace = Get-WorkspaceFiles -Root $Root -ExcludeDirs $excludeDirs
+function Get-SourceFiles([string[]]$patterns) { Select-WorkspaceFiles -Files $workspace -Patterns $patterns }
 
 function ConvertTo-RelPath([string]$full) {
+    # 走訪出來的檔一定以 $Root 開頭，直接切掉前綴（逐檔跑 regex 在幾千個檔上看得出來；
+    # 而且 -replace 會把路徑中段再出現一次的 $Root 也刪掉 —— Linux 上 /src/app/src/x.cs 會變成 app/x.cs）。
+    if ($full.StartsWith($Root, [StringComparison]::Ordinal)) { return $full.Substring($Root.Length).TrimStart('\', '/').Replace('\', '/') }
     ($full -replace [regex]::Escape($Root), '').TrimStart('\', '/') -replace '\\', '/'
 }
 
@@ -70,7 +88,7 @@ if ((Test-Path $indexPath) -and -not $Force) {
 if ($prev -and $prev.meta.'index-schema' -ne $IndexSchema) { $prev = $null }
 
 # ---------- 掃描輸入 ----------
-$slnFiles   = @(Get-SourceFiles '*.sln')
+$slnFiles   = @(Get-SourceFiles '*.sln') + @(Get-SourceFiles '*.slnx')
 $csprojs    = @(Get-SourceFiles '*.csproj')
 $csFiles    = @(Get-SourceFiles '*.cs')
 $appsettings= @(Get-SourceFiles 'appsettings*.json')
@@ -124,17 +142,17 @@ $srcFiles = @(switch ($language) {
 })
 
 # ---------- 分域 hash ----------
-$structureInput = (@($slnFiles) + @($csprojs) + @($poms) + @($gradles) + $wrapperFiles | Sort-Object FullName | ForEach-Object {
-    "$(ConvertTo-RelPath $_.FullName):$($_.Length):$($_.LastWriteTimeUtc.Ticks)" }) -join "`n"
-$structureHash = Get-Sha256 $structureInput
-
-$configInput = (@($appsettings) + @($appYaml) | Sort-Object FullName | ForEach-Object {
-    "$(ConvertTo-RelPath $_.FullName):$($_.Length)" }) -join "`n"
-$configHash = Get-Sha256 $configInput
-
-$symbolInput = ($srcFiles | Sort-Object FullName | ForEach-Object {
-    "$(ConvertTo-RelPath $_.FullName):$($_.Length):$($_.LastWriteTimeUtc.Ticks)" }) -join "`n"
-$symbolHash = Get-Sha256 $symbolInput
+# 「相對路徑:大小[:修改時間]」一行一個、照完整路徑排序 —— 跟以前的 ForEach-Object 逐位元相同，只是 foreach 快得多。
+function Get-FileListInput($files, [bool]$withTicks) {
+    $lines = [Collections.Generic.List[string]]::new()
+    foreach ($f in @($files | Sort-Object FullName)) {
+        $lines.Add($(if ($withTicks) { "$(ConvertTo-RelPath $f.FullName):$($f.Length):$($f.LastWriteTimeUtc.Ticks)" } else { "$(ConvertTo-RelPath $f.FullName):$($f.Length)" }))
+    }
+    return ($lines -join "`n")
+}
+$structureHash = Get-Sha256 (Get-FileListInput (@($slnFiles) + @($csprojs) + @($poms) + @($gradles) + $wrapperFiles) $true)
+$configHash    = Get-Sha256 (Get-FileListInput (@($appsettings) + @($appYaml)) $false)
+$symbolHash    = Get-Sha256 (Get-FileListInput $srcFiles $true)
 
 # ---------- staleness ----------
 $stale = @()
@@ -160,6 +178,8 @@ if ($gitSha -and $prev -and $prev.meta.'git-sha' -and $prev.meta.'git-sha' -ne $
 if ($StatusOnly) {
     # 這份輸出要讓 agent 一次呼叫就決定得了下一步，所以規模與工具鏈也一起回 ——
     # 沒有它們，agent 為了知道「這個 repo 多大」還是得自己掃一遍，門檻等於自我否定。
+    # 地圖的新鮮度只能用地圖自己的 git-sha 算（不是 changed_files：那是相對 index.json 的基準線，索引一刷新就清空）。
+    $mapStatus = Get-MapStatus -Root $Root -IsGit ([bool]$gitSha)
     [pscustomobject]@{
         index_exists       = [bool]$prev
         index_path         = ($indexPath -replace '\\', '/')
@@ -174,7 +194,10 @@ if ($StatusOnly) {
         changed_file_count = $changedFiles.Count
         changed_files      = @($changedFiles | Select-Object -First 200)
         needs_refresh      = ($stale.Count -gt 0)
-    } | ConvertTo-Json -Depth 4 -Compress
+        project_map        = $mapStatus.project_map
+        evidence           = @($mapStatus.evidence)
+        legacy_schema      = @($mapStatus.legacy_schema)
+    } | ConvertTo-Json -Depth 6 -Compress
     exit 0
 }
 
@@ -186,10 +209,13 @@ if ($stale.Count -eq 0 -and $prev) {
     exit 0
 }
 
+. (Join-Path $PSScriptRoot 'lib/active-code.ps1')
+
 # ---------- projects ----------
 $projects = @()
 foreach ($p in $csprojs) {
-    $x = Get-Content $p.FullName -Raw
+    # 註解掉的 <PackageReference> 不算：否則 test-toolchain 會說專案已經有 Reqnroll，④ 就不會去加它。
+    $x = Get-ActiveCode (Get-Content $p.FullName -Raw) $p.Extension
     $projects += [pscustomobject]@{
         name              = $p.BaseName
         path              = ConvertTo-RelPath $p.FullName
@@ -203,7 +229,7 @@ foreach ($p in $csprojs) {
 
 # ---------- Java 專案（Maven / Gradle） ----------
 foreach ($p in (@($poms) + @($gradles))) {
-    $x = Get-Content $p.FullName -Raw -ErrorAction SilentlyContinue
+    $x = Get-ActiveCode (Get-Content $p.FullName -Raw -ErrorAction SilentlyContinue) $p.Extension
     if (-not $x) { continue }
     $deps = if ($p.Name -eq 'pom.xml') {
         @([regex]::Matches($x, '<artifactId>\s*([^<\s]+)\s*</artifactId>') | ForEach-Object { $_.Groups[1].Value })
@@ -288,10 +314,12 @@ $commands = switch ($buildTool) {
                  acceptance="$gradle -q test --tests *Cucumber*"
                  'source-globs'=@('**/*.java'); 'project-globs'=@('build.gradle','build.gradle.kts')
                  'step-def-glob'='**/*Steps.java'; 'feature-glob'='**/*.feature' } }
+    # dotnet test 自己會增量 build —— 不能帶 --no-build：build-check 綠燈後 90 秒內不 build，
+    # 帶著它跑的測試就是改之前那一份 DLL，紅綠判斷錯（在已經修好的地方繼續修，或帶著假綠燈交出去）。
     'dotnet' { [pscustomobject]@{
-                 'build-tool'='dotnet';  build='dotnet build --nologo'; test='dotnet test --no-build'
-                 'test-filter'='dotnet test --no-build --filter {pattern}'
-                 acceptance='dotnet test --no-build --filter Category=Acceptance'
+                 'build-tool'='dotnet';  build='dotnet build --nologo'; test='dotnet test'
+                 'test-filter'='dotnet test --filter {pattern}'
+                 acceptance='dotnet test --filter Category=Acceptance'
                  'source-globs'=@('**/*.cs'); 'project-globs'=@('*.sln','*.csproj')
                  'step-def-glob'='**/*Steps.cs'; 'feature-glob'='**/*.feature' } }
     default  { $null }
@@ -347,17 +375,18 @@ function Get-ShortName([string]$raw) {
     return $n
 }
 
+$symbolsRescanned = 0
 if ($prev -and ('symbols' -notin $stale)) {
     $symbols         = @($prev.symbols)
     $diRegistrations = @($prev.'di-registrations')
 } else {
 
-$symFiles = $srcFiles | Select-Object -First $MaxSymbolFiles
-foreach ($f in $symFiles) {
-    $txt = Get-Content $f.FullName -Raw -ErrorAction SilentlyContinue
-    if (-not $txt) { continue }
+# 一個檔的 symbols 與 DI 註冊。結果放進 $sym（[ref]）與 $di，不碰全域陣列 —— 快取存的就是這兩樣。
+function Get-FileSymbols([IO.FileInfo]$f, [string]$rel, [ref]$sym, $di) {
+    # 註解掉的類別、DI 註冊與 #if false 裡的方法都不是現況 —— 下面每一條樣式都只看剝過的這一份。
+    $txt = Get-ActiveCode (Get-Content $f.FullName -Raw -ErrorAction SilentlyContinue) $f.Extension
+    if (-not $txt) { return }
     $isJava = $f.Extension -eq '.java'
-    $rel = ConvertTo-RelPath $f.FullName
 
     # namespace / package：讓「這個型別住在哪一層」不必開檔就看得出來
     $ns = if ($isJava) {
@@ -415,17 +444,17 @@ foreach ($f in $symFiles) {
         $primary = if ($types.Count) { ($types[0] -split '\s+')[-1] } else { $f.BaseName }
         foreach ($a in @([regex]::Matches($txt, '(?m)^\s*@(Service|Component|Repository|Configuration|RestController)\b') |
                          ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)) {
-            $diRegistrations += [pscustomobject]@{ file = $rel; kind = "@$a"; service = $primary; impl = $null }
+            $di.Add([ordered]@{ file = $rel; kind = "@$a"; service = $primary; impl = $null })
         }
     } else {
         foreach ($m in [regex]::Matches($txt,
             '\.(?:Try)?Add(Scoped|Singleton|Transient|HostedService)\s*<\s*([\w.]+(?:<[^>]*>)?)\s*(?:,\s*([\w.]+(?:<[^>]*>)?)\s*)?>')) {
-            $diRegistrations += [pscustomobject]@{
+            $di.Add([ordered]@{
                 file    = $rel
                 kind    = "Add$($m.Groups[1].Value)"
                 service = (Get-ShortName $m.Groups[2].Value)
                 impl    = if ($m.Groups[3].Success) { Get-ShortName $m.Groups[3].Value } else { $null }
-            }
+            })
         }
     }
 
@@ -435,11 +464,47 @@ foreach ($f in $symFiles) {
         $entry.types = $types
         if ($bases.Count)  { $entry.bases = $bases }
         $entry.methods = @($methods | Select-Object -First 40)
-        $symbols += [pscustomobject]$entry
+        $sym.Value = $entry
     }
 }
 
+# 逐檔沿用：大小＋修改時間沒變的檔，沿用上一次掃出來的 symbols 與 DI 註冊；只重讀新增與變動的檔，刪掉的自然不在。
+# 快取存的是**每個檔各自**的結果（DI 不截斷），所以組出來的 symbols／di-registrations 跟全量重建逐位元相同：
+# 順序照走訪順序，DI 一樣在最後才截到 300。上一份索引不能用（第一次、schema 換了）或 -Force 時不沿用。
+$symCache = @{}
+if ($prev -and -not $Force -and (Test-Path $symCachePath)) {
+    try {
+        $c = Get-Content $symCachePath -Raw -Encoding UTF8 | ConvertFrom-Json -AsHashtable
+        if ($c -and $c['index-schema'] -eq $IndexSchema -and $c['files']) { $symCache = $c['files'] }
+    } catch { $symCache = @{} }
+}
+$newCache = [ordered]@{}
+
+$symFiles = $srcFiles | Select-Object -First $MaxSymbolFiles
+foreach ($f in $symFiles) {
+    $rel = ConvertTo-RelPath $f.FullName
+    $fp  = "$($f.Length):$($f.LastWriteTimeUtc.Ticks)"
+    $hit = $symCache[$rel]
+    if ($hit -and $hit['fp'] -eq $fp) {
+        $fileSym = $hit['sym']
+        $fileDi  = @($hit['di'] | Where-Object { $_ })
+    } else {
+        $symbolsRescanned++
+        $ref = [ref]$null
+        $list = [Collections.Generic.List[object]]::new()
+        Get-FileSymbols $f $rel $ref $list
+        $fileSym = $ref.Value
+        $fileDi  = @($list)
+    }
+    $newCache[$rel] = [ordered]@{ fp = $fp; sym = $fileSym; di = @($fileDi) }
+    if ($fileSym) { $symbols += [pscustomobject]$fileSym }
+    foreach ($d in $fileDi) { $diRegistrations += [pscustomobject]$d }
+}
+
 $diRegistrations = @($diRegistrations | Select-Object -First 300)
+
+New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
+[ordered]@{ 'index-schema' = $IndexSchema; files = $newCache } | ConvertTo-Json -Depth 10 -Compress | Set-Content $symCachePath -Encoding UTF8
 
 }   # end: symbols 重掃
 
@@ -487,13 +552,22 @@ $json | Set-Content $indexPath -Encoding UTF8
     summary  = "$language/$buildTool, $($projects.Count) projects, $($srcFiles.Count) source files, $($symbols.Count) symbol entries, $($diRegistrations.Count) DI registrations"
     counts   = [pscustomobject]@{ projects=$projects.Count; files=$srcFiles.Count; entrypoints=$entrypoints.Count; di=$diRegistrations.Count }
     open_questions = 0
+    # 下面這幾欄是 implementer／reviewer 要的：build／test 指令、測試框架、step definition 與 .feature 的落點。
+    # index.json 一個 2,000 檔的專案就近 1 MB，模型讀不下 —— 拿到的是截斷的輸出，或花好幾個回合 grep 它。
+    meta     = [pscustomobject]@{
+        'index-schema' = $IndexSchema; 'git-sha' = $gitSha; 'language' = $language; 'build-tool' = $buildTool
+        'file-count' = $srcFiles.Count; 'project-count' = $projects.Count; 'symbol-truncated' = ($srcFiles.Count -gt $MaxSymbolFiles)
+    }
+    commands         = $commands
+    'test-toolchain' = $testToolchain
+    solutions        = @(@($slnFiles) + @($poms) + @($gradles) | ForEach-Object { ConvertTo-RelPath $_.FullName })
 } | ConvertTo-Json -Depth 5 | Set-Content $digestPath -Encoding UTF8
 
 [pscustomobject]@{
     status = 'refreshed'; index_path = $indexPath; digest_path = $digestPath
     stale_scopes = $stale; invalidation_mode = $invalidationMode
     index_bytes = $json.Length; index_schema = $IndexSchema
-    symbols_reused = [bool]($prev -and ('symbols' -notin $stale))
+    symbols_reused = [bool]($prev -and ('symbols' -notin $stale)); symbols_rescanned = $symbolsRescanned
     file_count = $srcFiles.Count; project_count = $projects.Count; language = $language; build_tool = $buildTool
     di_count = $diRegistrations.Count
 } | ConvertTo-Json -Depth 4 -Compress

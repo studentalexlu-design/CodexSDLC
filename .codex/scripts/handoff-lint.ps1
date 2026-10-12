@@ -1,6 +1,11 @@
 # handoff-lint.ps1
 # 在 subagent spawn 前機械強制 handoff contract。把 prompt 裡的「規則」變成「保證」。
 #
+# v4.13.0 起也攔 send_input（Codex 0.162.1 的 tool_name 是 `multi_agent_v1send_input`）：修正輪改成把修正交回
+# 原本那個 implementer，那則訊息不經過這裡的話，修正輪上限與禁用 payload 就擋不到。規則：
+#   send_input 的訊息**帶了 `mode:`** → 就是一次 handoff，檢查跟 spawn 一模一樣（mode: fix 要 round、spec.md 路徑、受上限）；
+#   **沒帶** → 那是追問或補資料，只查長度與禁用 payload，不要求 mode／feature-id（每一次追問都要帶 round 是擋錯人）。
+#
 # 檢查項：
 #   1. handoff 長度 <= MaxChars（預設 1200）
 #   2. 單一 operation mode（不得同時出現多個 mode 宣告）
@@ -47,10 +52,14 @@ $violations = @()
 
 # hook 在叫的時候 payload 帶 hook_event_name —— 只有那時才寫給 Codex 的 additionalContext。
 $hookEvent = ''
+$toolName  = ''
 try {
     $doc = $Payload | ConvertFrom-Json -ErrorAction Stop
     if ($doc -is [pscustomobject] -and $doc.PSObject.Properties['hook_event_name']) { $hookEvent = [string]$doc.hook_event_name }
+    if ($doc -is [pscustomobject] -and $doc.PSObject.Properties['tool_name']) { $toolName = [string]$doc.tool_name }
 } catch { }
+$isSendInput = $toolName -match 'send_input'
+$verb = if ($isSendInput) { 'send_input' } else { 'spawn' }
 
 # ---- 修正輪上限：使用者在 sdlc.config.json 的 review.maxRounds 決定 ----
 # 由這支 hook **每次現讀**，不寫進 hooks.json：hook 指令一改，Codex 會把那條 hook 標成「改過、待重審」，
@@ -162,10 +171,12 @@ if ($modes.Count -gt 1) {
 }
 
 # --- 3. 必填 meta ---
-if ($modes.Count -eq 0) {
+# 沒帶 mode 的 send_input 是追問或補資料，不是 handoff —— 不要求 mode／feature-id（長度與禁用 payload 照查）。
+$isFollowUp = $isSendInput -and $modes.Count -eq 0
+if ($modes.Count -eq 0 -and -not $isFollowUp) {
     $violations += [pscustomobject]@{ rule='missing-mode'; detail='no mode: field'; fix='meta 區塊補 mode' }
 }
-if ($prompt -notmatch '(?im)^\s*[-*]?\s*feature-id\s*:\s*\S') {
+if (-not $isFollowUp -and $prompt -notmatch '(?im)^\s*[-*]?\s*feature-id\s*:\s*\S') {
     $violations += [pscustomobject]@{
         rule = 'missing-feature-id'
         detail = 'no feature-id: field'
@@ -230,6 +241,8 @@ if ($Json) {
         passed = ($violations.Count -eq 0)
         violation_count = $violations.Count
         prompt_chars = $prompt.Length
+        tool = $verb
+        follow_up = $isFollowUp
         modes = $modes
         round = $round
         max_review_rounds = $MaxReviewRounds
@@ -241,7 +254,7 @@ if ($Json) {
 
 if ($violations.Count -gt 0) {
     if (-not $Json) {
-        [Console]::Error.WriteLine("[Hook][handoff-lint] $($violations.Count) violation(s), spawn blocked:")
+        [Console]::Error.WriteLine("[Hook][handoff-lint] $($violations.Count) violation(s), $verb blocked:")
         foreach ($v in $violations) {
             [Console]::Error.WriteLine("  - $($v.rule): $($v.detail)")
             [Console]::Error.WriteLine("    fix: $($v.fix)")

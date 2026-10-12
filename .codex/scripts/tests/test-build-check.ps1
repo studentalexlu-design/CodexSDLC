@@ -54,6 +54,67 @@ Describe-Suite 'build-check / 觸發判定' {
     }
 }
 
+Describe-Suite 'build-check / 測試檔不觸發（test-first 的紅燈期間）' {
+
+    # test-first 先寫測試、production code 還沒寫，本來就編不過。以前每個這種 patch 都 build 整個 solution，
+    # 再回「Build FAILED after production code change」擋下 —— 改的其實是測試檔。
+    function New-BcProject([hashtable]$files) {
+        $root = "bc-$([guid]::NewGuid().ToString('N').Substring(0, 8))"
+        foreach ($k in $files.Keys) {
+            $p = Join-Path (Get-Location) "$root/$k"
+            New-Item -ItemType Directory -Path (Split-Path $p -Parent) -Force | Out-Null
+            [IO.File]::WriteAllText($p, $files[$k], [Text.UTF8Encoding]::new($false))
+        }
+        return $root
+    }
+
+    It-Should '只改測試專案裡的檔 → 不觸發' {
+        $r0 = New-BcProject @{
+            'App.Tests/App.Tests.csproj' = '<Project Sdk="Microsoft.NET.Sdk"></Project>'
+            'App.Tests/Orders/CancelOrderTests.cs' = 'public class CancelOrderTests { }'
+        }
+        try {
+            $r = Invoke-Script $Script -Stdin (New-CodexHookPayload -Command (New-CodexPatch -Update "$r0/App.Tests/Orders/CancelOrderTests.cs")) -Params @{ WhatIfPaths = $true }
+            Assert-Match 'triggering=0' $r.stdout "測試檔觸發了 build：$($r.stdout)"
+            Assert-Match 'test-skipped=1' $r.stdout
+        } finally { Remove-Item $r0 -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '檔名不像測試、但引用了測試框架的專案也算測試專案' {
+        $r0 = New-BcProject @{
+            'App.Specs/App.Specs.csproj' = '<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="Reqnroll.NUnit" Version="2.0.0" /></ItemGroup></Project>'
+            'App.Specs/Hooks.cs' = 'public class Hooks { }'
+        }
+        try {
+            $r = Invoke-Script $Script -Stdin (New-CodexHookPayload -Command (New-CodexPatch -Update "$r0/App.Specs/Hooks.cs", "$r0/App.Specs/App.Specs.csproj")) -Params @{ WhatIfPaths = $true }
+            Assert-Match 'triggering=0' $r.stdout $r.stdout
+        } finally { Remove-Item $r0 -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'step definitions 與 Java 的 src/test/ → 不觸發' {
+        $patch = New-CodexPatch -Update 'src/Orders.Bdd/CancelOrderSteps.cs', 'src/test/java/com/acme/OrderTest.java', 'module-a/src/test/java/StepsConfig.java'
+        $r = Invoke-Script $Script -Stdin (New-CodexHookPayload -Command $patch) -Params @{ WhatIfPaths = $true }
+        Assert-Match 'triggering=0' $r.stdout $r.stdout
+        Assert-Match 'test-skipped=3' $r.stdout
+    }
+
+    It-Should 'production 專案的檔照樣觸發；混在一起時只算 production 那個' {
+        $r0 = New-BcProject @{
+            'App/App.csproj' = '<Project Sdk="Microsoft.NET.Sdk"></Project>'
+            'App/Orders/OrderService.cs' = 'public class OrderService { }'
+            'App.Tests/App.Tests.csproj' = '<Project Sdk="Microsoft.NET.Sdk"></Project>'
+            'App.Tests/OrderServiceTests.cs' = 'public class OrderServiceTests { }'
+        }
+        try {
+            $patch = New-CodexPatch -Update "$r0/App/Orders/OrderService.cs", "$r0/App.Tests/OrderServiceTests.cs"
+            $r = Invoke-Script $Script -Stdin (New-CodexHookPayload -Command $patch) -Params @{ WhatIfPaths = $true }
+            Assert-Match 'triggering=1' $r.stdout $r.stdout
+            Assert-Match "TRIGGER $r0/App/Orders/OrderService\.cs" $r.stdout
+            Assert-Match 'test-skipped=1' $r.stdout
+        } finally { Remove-Item $r0 -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
 Describe-Suite 'build-check / 綠燈去抖' {
 
     # 去抖時間戳依 cwd 雜湊命名，路徑要與腳本內的算法一致才能操作它。
