@@ -17,6 +17,10 @@
       "type": "string",
       "description": "建立或上次升級這份設定時的工作流版本。由 install／update 維護，不要手改。"
     },
+    "models-checked-with": {
+      "type": "string",
+      "description": "最後一次用 set 改 model／effort 時，那台機器的 Codex 版本。別台的 doctor 靠它分辨「這台的 Codex 太舊，該升級」還是「新版 Codex 拿掉了那個模型，該換」。由 set 維護，不要手改。"
+    },
     "update": {
       "type": "object",
       "description": "更新檢查。只影響「有新版」的通知，不影響任何流程。",
@@ -24,9 +28,9 @@
         "source": {
           "type": "string",
           "title": "來源",
-          "description": "這套工作流發佈的 GitHub repo 網址，例如 https://github.com/<owner>/<repo>。由發佈物帶進來；空字串 = 不會有更新通知。",
-          "pattern": "^$|github\\.com/([^/]+)/([^/\\s]+?)(\\.git)?/?$",
-          "patternErrorMessage": "要是 GitHub repo 的網址（https://github.com/<owner>/<repo>），或留空。"
+          "description": "這套工作流發佈的 repo 網址。github.com、gitlab.com 直接寫（https://github.com/<owner>/<repo>、https://gitlab.com/<group>/<project>）；自架的在前面標明是哪一家：gitea:https://<主機>/<owner>/<repo>、gitlab:https://<主機>/<group>/<project>、github:https://<主機>/<owner>/<repo>（GitHub Enterprise）。私有 repo 的 token 放環境變數 CODEX_SDLC_TOKEN_<主機名稱大寫、非英數換成 _>，不要寫在這裡。由發佈物帶進來；空字串 = 不會有更新通知。",
+          "pattern": "^$|^(?:https?://(?:www\\.)?github\\.com/[^/\\s]+/[^/\\s]+?|https?://gitlab\\.com/[^/\\s]+(?:/[^/\\s]+)+?|(?:github|gitlab|gitea):https?://[^/\\s]+(?:/[^/\\s]+){2,}?)(?:\\.git)?/?$",
+          "patternErrorMessage": "要是 github.com／gitlab.com 的 repo 網址，或在自架的網址前面標明 gitea:、gitlab:、github:（例如 gitea:https://git.example.com/team/codex-sdlc），或留空。"
         },
         "check": {
           "title": "檢查頻率",
@@ -85,25 +89,25 @@
       "pattern": "^\\S+$",
       "patternErrorMessage": "模型名稱不能有空白。不想釘就寫 inherit。",
       "default": "inherit",
-      "description": "模型名稱。inherit = agent 定義裡不寫這一行，交給 Codex CLI。⚠ 這個 key 尚未在本工作流驗證過 —— Codex 若忽略它，會靜默地用預設模型跑。",
-      "examples": ["inherit", "gpt-5.5", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-5.6-luna", "gpt-6-astra", "gpt-5.2"],
-      "x-examples-source": "Codex 0.154.0 內建模型清單裡列出來的模型（觀測值；Codex 升版時重查）"
+      "description": "模型名稱。inherit = agent 定義裡不寫這一行，跟主對話用同一個模型。能用哪些由這台的 Codex 決定（每一版內建的清單都不一樣）：pwsh .codex/scripts/sdlc.ps1 models 列出來，set 照它驗。",
+      "examples": ["inherit"],
+      "x-examples-source": "只列 inherit：模型清單每一版 Codex 都不一樣，寫死在這裡一定會過期（0.162.1 就拿掉了 gpt-5.2）。設定面板與 set 直接問這台的 Codex。"
     },
     "effort": {
       "title": "effort",
-      "description": "推理深度。inherit = agent 定義裡不寫這一行，交給 Codex CLI 決定。能用哪幾個值由模型決定，Codex 本身不檢查 —— 寫了模型不支援的值，要到呼叫 API 時才出事。",
+      "description": "推理深度。inherit = agent 定義裡不寫這一行，跟主對話一樣。能用哪幾個由模型決定：子代理的 effort 不在它的模型支援之列，Codex 會直接拒絕那次 spawn（實測）—— set 會照這台 Codex 的模型清單擋下來，pwsh .codex/scripts/sdlc.ps1 models 列出每個模型支援哪些。",
       "enum": ["inherit", "low", "medium", "high", "xhigh", "max", "ultra"],
       "enumDescriptions": [
         "不釘，交給 Codex CLI 決定。每個 agent 的預設；大型 repo 維持這個",
         "淺",
         "中",
         "深",
-        "更深。Codex 0.154 內建清單裡每個模型都支援",
-        "要模型支援 —— Codex 0.154 內建清單裡只有 gpt-5.6 系列與 gpt-6-astra",
-        "要模型支援 —— Codex 0.154 內建清單裡只有 gpt-5.6-sol、gpt-5.6-terra、gpt-6-astra"
+        "更深",
+        "要模型支援 —— 哪些模型支援，看 sdlc.ps1 models",
+        "要模型支援 —— 哪些模型支援，看 sdlc.ps1 models"
       ],
       "default": "inherit",
-      "x-values-source": "Codex 0.154.0 內建模型清單的 reasoning effort（觀測值；Codex 升版時重查）。minimal 不在任何一個模型的清單裡，所以不列。",
+      "x-values-source": "Codex 模型清單裡出現過的 effort（0.154.0 與 0.162.1 都是這一組）。只給編輯器補全、以及找不到 codex 時的 set 用；能不能用由這台 Codex 的模型清單決定（set、doctor 會問它）。minimal 不在任何一個模型的清單裡，所以不列。",
       "x-agent-hints": {
         "sa-analyst": {
           "low": "repo 很大時的建議值 —— 它的失敗模式是逾時，不是想得不夠深",

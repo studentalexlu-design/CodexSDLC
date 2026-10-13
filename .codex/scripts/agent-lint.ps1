@@ -608,9 +608,9 @@ if ($cs) {
     }
 
     $srcPattern = [string]$cs.properties.update.properties.source.pattern
-    $ghPattern = Get-ScriptConstant $sdlcScript 'GitHubSourcePattern'
-    if ($null -ne $ghPattern -and $srcPattern -cne ('^$|' + $ghPattern)) {
-        Add-V 'schema-drift' "update.source：schema 的 pattern 是 $srcPattern，應該是 ^`$| 加上 sdlc.ps1 的 `$GitHubSourcePattern（$ghPattern）" $schemaFix
+    $relPattern = Get-ScriptConstant $sdlcScript 'ReleaseSourcePattern'
+    if ($null -ne $relPattern -and $srcPattern -cne ('^$|' + $relPattern)) {
+        Add-V 'schema-drift' "update.source：schema 的 pattern 是 $srcPattern，應該是 ^`$| 加上 sdlc.ps1 的 `$ReleaseSourcePattern（$relPattern）" $schemaFix
     }
 }
 

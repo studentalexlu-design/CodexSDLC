@@ -23,6 +23,24 @@ $ErrorActionPreference = 'Stop'
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
 Push-Location $RepoRoot
 
+# --- 跟這台機器隔開 ---
+# 受測腳本會去問 codex（版本、模型清單）、讀使用者的 ~/.codex/config.toml、在 LocalAppData 留快取 ——
+# 結果不能跟著「這台有沒有裝 codex、裝哪一版、主對話設了什麼模型」變。整個 run 期間：
+#   PATH 拿掉放著 codex 的目錄（要 codex 的測試自己給一支假的：-CodexPath，或自己的 PATH）
+#   CODEX_HOME、CODEX_SDLC_STATE_DIR 指到這次 run 專用的暫存目錄，結束時還原、刪掉
+$SavedMachineEnv = @{ PATH = $env:PATH; CODEX_HOME = $env:CODEX_HOME; CODEX_SDLC_STATE_DIR = $env:CODEX_SDLC_STATE_DIR }
+$MachineIsolation = Join-Path ([IO.Path]::GetTempPath()) ('codex-sdlc-test-machine-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+$env:CODEX_HOME = Join-Path $MachineIsolation 'codex-home'
+$env:CODEX_SDLC_STATE_DIR = Join-Path $MachineIsolation 'sdlc-state'
+$env:PATH = @(foreach ($d in ($env:PATH -split [IO.Path]::PathSeparator)) {
+    if (-not $d) { continue }
+    $hasCodex = $false
+    foreach ($n in @('codex.exe', 'codex.cmd', 'codex.ps1', 'codex')) {
+        try { if (Test-Path -LiteralPath (Join-Path $d $n) -PathType Leaf) { $hasCodex = $true; break } } catch { }
+    }
+    if (-not $hasCodex) { $d }
+}) -join [IO.Path]::PathSeparator
+
 $script:Results = @()
 $script:CurrentSuite = ''
 
@@ -169,6 +187,9 @@ foreach ($f in $testFiles) { . $f.FullName }
 if (-not $bddDocsPreexisting -and (Test-Path 'bdd-docs')) {
     Remove-Item 'bdd-docs' -Recurse -Force -ErrorAction SilentlyContinue
 }
+
+foreach ($k in $SavedMachineEnv.Keys) { [Environment]::SetEnvironmentVariable($k, $SavedMachineEnv[$k]) }
+Remove-Item $MachineIsolation -Recurse -Force -ErrorAction SilentlyContinue
 
 Pop-Location
 

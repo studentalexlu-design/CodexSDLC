@@ -415,3 +415,97 @@ Describe-Suite 'handoff-lint / send_input（修正輪交回原本那個 implemen
         Assert-Match 'spawn blocked' $r.stderr
     }
 }
+
+Describe-Suite 'handoff-lint / spawn 前先看 effort 跟模型對不對得上（這次 spawn 會不會被 Codex 拒絕）' {
+
+    # Codex（0.154.0／0.162.1 實測）對「effort 不在模型支援之列」的 spawn 直接回錯，子代理根本起不來。
+    # 這裡擋下來只是把理由換成改得動的那一句 —— 所以判不準的一律放行（沒有清單快取、清單裡沒有那個模型）。
+    # agent 定義從 cwd 的 .codex/agents 讀，所以在暫存專案裡跑（腳本用絕對路徑）。
+    $HandoffAbs = (Resolve-Path $Script).Path
+    $SpawnRoot = Join-Path ([IO.Path]::GetTempPath()) 'codex-sdlc-spawn-tests'
+
+    function New-SpawnProject([string[]]$tuning) {
+        Remove-Item $SpawnRoot -Recurse -Force -ErrorAction SilentlyContinue
+        $agents = Join-Path $SpawnRoot 'proj/.codex/agents'
+        New-Item -ItemType Directory -Path $agents -Force | Out-Null
+        $lines = @('name = "reviewer"', 'description = "x"') + $tuning + @("developer_instructions = '''", '# Reviewer', "'''")
+        [IO.File]::WriteAllText((Join-Path $agents 'reviewer.toml'), (($lines -join "`n") + "`n"), [Text.UTF8Encoding]::new($false))
+        return (Join-Path $SpawnRoot 'proj')
+    }
+    # sdlc.ps1 問過 codex 之後留下的那份快取（形狀同 Get-ModelCatalog 寫的）。
+    function New-CatalogCache {
+        $state = Join-Path $SpawnRoot 'state'
+        New-Item -ItemType Directory -Path $state -Force | Out-Null
+        $doc = [ordered]@{
+            codex = [ordered]@{ path = 'C:\fake\codex.exe'; version = '0.162.1' }; 'read-at' = (Get-Date).ToUniversalTime().ToString('o'); default = 'gpt-big'
+            models = @(
+                [ordered]@{ slug = 'gpt-big'; visible = $true; priority = 1; defaultEffort = 'low'; efforts = @('low', 'medium', 'high', 'xhigh', 'max', 'ultra') }
+                [ordered]@{ slug = 'gpt-mid'; visible = $true; priority = 2; defaultEffort = 'medium'; efforts = @('low', 'medium', 'high', 'xhigh') }
+            )
+        }
+        [IO.File]::WriteAllText((Join-Path $state 'codex-models.json'), ($doc | ConvertTo-Json -Depth 6), [Text.UTF8Encoding]::new($false))
+        return $state
+    }
+    function Invoke-Spawn([string]$proj, [string]$sessionModel, [string]$state, [hashtable]$extraInput = @{}) {
+        $ti = @{ agent_type = 'reviewer'; message = $ValidAnalyze }
+        foreach ($k in $extraInput.Keys) { $ti[$k] = $extraInput[$k] }
+        Push-Location $proj
+        try {
+            # payload 的 model = 主對話當下用的模型（New-CodexHookPayload 寫死 gpt-5.5，換掉）
+            $payload = (New-CodexHookPayload -Event 'PreToolUse' -Tool 'spawn_agent' -ToolInput $ti).Replace('"model":"gpt-5.5"', "`"model`":`"$sessionModel`"")
+            return Invoke-Script $HandoffAbs -Stdin $payload -Env @{ CODEX_SDLC_STATE_DIR = $state }
+        } finally { Pop-Location }
+    }
+
+    It-Should 'agent 釘的 effort 主對話的模型不支援 → 擋，理由附改法、並說不必重開對話；換成支援的模型就放行' {
+        $proj = New-SpawnProject @('model_reasoning_effort = "ultra"')
+        $state = New-CatalogCache
+        try {
+            $r = Invoke-Spawn $proj 'gpt-mid' $state
+            Assert-Equal 2 $r.exit "stderr: $($r.stderr)"
+            Assert-Match 'effort-unsupported' $r.stderr
+            Assert-Match 'set agents\.reviewer\.effort=xhigh -Apply' $r.stderr '沒給改法 —— orchestrator 只能把 Codex 的錯原樣丟給使用者'
+            Assert-Match '不必重開對話' $r.stderr
+            $ok = Invoke-Spawn $proj 'gpt-big' $state
+            Assert-Equal 0 $ok.exit "主對話用支援 ultra 的模型，卻被擋了：$($ok.stderr)"
+        } finally { Remove-Item $SpawnRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'agent 自己釘了模型 → 看那個模型，不看主對話的' {
+        $proj = New-SpawnProject @('model = "gpt-big"', 'model_reasoning_effort = "ultra"')
+        $state = New-CatalogCache
+        try {
+            $r = Invoke-Spawn $proj 'gpt-mid' $state
+            Assert-Equal 0 $r.exit "agent 用的是 gpt-big（支援 ultra），卻拿主對話的 gpt-mid 判：$($r.stderr)"
+        } finally { Remove-Item $SpawnRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '判不準就不判：這台還沒有模型清單的快取 → 放行' {
+        $proj = New-SpawnProject @('model_reasoning_effort = "ultra"')
+        try {
+            $r = Invoke-Spawn $proj 'gpt-mid' (Join-Path $SpawnRoot 'no-state')
+            Assert-Equal 0 $r.exit "沒有清單也擋 —— 擋下的理由沒有根據：$($r.stderr)"
+        } finally { Remove-Item $SpawnRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'spawn 參數帶了模型不支援的 reasoning_effort → 擋，叫它拿掉' {
+        $proj = New-SpawnProject @()
+        $state = New-CatalogCache
+        try {
+            $r = Invoke-Spawn $proj 'gpt-mid' $state @{ reasoning_effort = 'ultra' }
+            Assert-Equal 2 $r.exit "stderr: $($r.stderr)"
+            Assert-Match '拿掉 reasoning_effort' $r.stderr
+        } finally { Remove-Item $SpawnRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'agent 釘了這台清單裡沒有的模型 → 不擋（Codex 會用 fallback 照跑），但要提醒一行' {
+        $proj = New-SpawnProject @('model = "gpt-new"', 'model_reasoning_effort = "high"')
+        $state = New-CatalogCache
+        try {
+            $r = Invoke-Spawn $proj 'gpt-mid' $state
+            Assert-Equal 0 $r.exit "stderr: $($r.stderr)"
+            Assert-Match '不在這台 Codex 的模型清單裡' $r.stderr
+            Assert-Match 'additionalContext' $r.stdout '提醒沒有送到 orchestrator（exit 0 的 stderr 會被 Codex 丟掉）'
+        } finally { Remove-Item $SpawnRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}

@@ -21,6 +21,7 @@
 | 機械強制層在不在（`.codex/hooks.json`） | `doctor`。**不在時面板那一行點下去就能補回工具檔**（跑發佈物的 `update`） |
 | 「安裝到這個工作區」要用哪一份發佈物 | `sdlc.ps1 fetch`（遠端優先、內附墊底、一律驗 sha），`AGENTS.md.new` 還在時面板常駐一行提醒合併 |
 | 審核修正輪上限（寫壞時亮警示） | `doctor` 的 `review` |
+| model／effort 能選哪些、哪個 agent 在這台跑不起來 | `doctor` 的 `models`：清單是 `sdlc.ps1` 問這台的 Codex 要來的（`codex debug models`），extension 自己不留一份。effort 只列 agent 實際用的那個模型支援的值；跑不起來的那一行標紅，狀態列也會紅。找不到 codex 時退回 schema 的選項 |
 | 有新版 | 更新快取；背景每小時問一次 `sdlc.ps1 check-update -IfDue`（`update.check = never` 時一條連線都沒有） |
 | tune 的建議（面板與 `sdlc.config.json` 上方的「採用」） | `sdlc.ps1 tune` 存下來的那份提議 |
 | Problems：團隊規範違規 | 存檔時跑 `guideline-gate.ps1 -Json` |
@@ -47,7 +48,7 @@
 
 - **PowerShell 7（`pwsh`）。** 找不到時它會說，並讓你選檔（寫進 `codexSdlc.pwshPath`）。Windows PowerShell 5.1 不行。
 - 工作流 **4.8.0 以上**才有狀態列與 Problems；**4.9.0 以上**才能在面板裡改設定（`set` 與 schema 從那一版開始）。版本太舊時會直接講。
-- 安裝／補工具檔要有一份發佈物：**vsix 內附**（從發佈物裝的 extension 都有）、`codexSdlc.releaseSource` 指到的 GitHub repo，或你自己用「選擇發佈物安裝…」指一份資料夾／`.zip`。三種都沒有時它會直接講，不會裝到一半。
+- 安裝／補工具檔要有一份發佈物：**vsix 內附**（從發佈物裝的 extension 都有）、`codexSdlc.releaseSource` 指到的 repo（GitHub、GitLab、Gitea，含自架；寫法與私有 repo 的 token 見工作流 README 的〈升級〉），或你自己用「選擇發佈物安裝…」指一份資料夾／`.zip`。三種都沒有時它會直接講，不會裝到一半。
 
 受限模式（不信任的工作區）下它不啟動 —— 它會執行 `.ps1`。這跟 Codex 的 hooks 信任是兩回事：VS Code 信任了工作區，Codex 那邊仍要在專案裡開一次 `codex` 信任，而**這個 extension 不會替你確認那一項**。
 
@@ -77,5 +78,5 @@ code --uninstall-extension codex-sdlc.codex-sdlc
 
 - 只在 Windows ＋ VS Code 上實測過；macOS／Linux、Cursor／Windsurf／VSCodium 沒有實際跑過。
 - 設定面板與安裝流程裡要人點的那一段（選值的彈出框、確認框、選檔對話框）沒有自動測試；它們後面的 `fetch`／`install`／`update`／`set` 有，而且是拿真的腳本跑的。
-- **「先看發佈物來源有沒有新版」目前是空轉的**：`bdd-workflow-version.json` 的 `source` 還是空的，這個 repo 也沒有發佈到任何 GitHub repo。在那個網址填上（或設 `codexSdlc.releaseSource`）之前，安裝一律用內附的那一份，「有新版」的背景檢查也查不到東西。
+- **「先看發佈物來源有沒有新版」目前是空轉的**：`bdd-workflow-version.json` 的 `source` 還是空的，這個 repo 也還沒有發佈到任何地方。在那個網址填上（或設 `codexSdlc.releaseSource`）之前，安裝一律用內附的那一份，「有新版」的背景檢查也查不到東西。
 - 遠端有比這個 extension 新的版本時，裝出來的工作流可能吐出這一版讀不懂的 `-Json` —— 面板會說「版本不相容」，換一版 extension 就好。

@@ -872,7 +872,8 @@ Describe-Suite 'agent-lint / 檢查 14：schema 與各腳本的常數一致' {
         @{ name = 'handoff-lint 的修正輪上限改成 6（UI 只給選到 5）'; rel = 'scripts/handoff-lint.ps1'; from = '$MaxAllowedReviewRounds = 5'; to = '$MaxAllowedReviewRounds = 6' }
         @{ name = 'schema 的修正輪預設改成 2（hook 還是照 3 算）'; rel = 'bdd/sdlc.config.schema.json'; from = '"default": 3'; to = '"default": 2' }
         @{ name = 'schema 的 update.check 多一個 weekly（腳本不認得，照 daily 算）'; rel = 'bdd/sdlc.config.schema.json'; from = '"enum": ["daily", "never"]'; to = '"enum": ["daily", "never", "weekly"]' }
-        @{ name = 'schema 的 update.source 格式跟 check-update 認的不一樣'; rel = 'bdd/sdlc.config.schema.json'; from = '"^$|github'; to = '"^$|gitlab' }
+        @{ name = 'schema 的 update.source 不認 gitea:（UI 說不合法、check-update 卻認得）'; rel = 'bdd/sdlc.config.schema.json'; from = '(?:github|gitlab|gitea):'; to = '(?:github|gitlab):' }
+        @{ name = 'sdlc.ps1 的 $ReleaseSourcePattern 多認 forgejo:（schema 不給設、check-update 卻認得）'; rel = 'scripts/sdlc.ps1'; from = '(?:github|gitlab|gitea):'; to = '(?:github|gitlab|gitea|forgejo):' }
         @{ name = 'guideline-gate 多認一個 severity（schema 會把它標成錯）'; rel = 'scripts/guideline-gate.ps1'; from = "`$Severities = @('block', 'warn')"; to = "`$Severities = @('block', 'warn', 'info')" }
     )
     foreach ($c in $cases) {

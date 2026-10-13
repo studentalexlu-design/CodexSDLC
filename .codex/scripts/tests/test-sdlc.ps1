@@ -159,20 +159,6 @@ Describe-Suite 'sdlc / 調校：inherit 必須真的留白' {
         } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
     }
 
-    It-Should '設了 model 一定要喊 —— 這個 key 沒有驗證過，被忽略時症狀是靜默的' {
-        $rel = New-SdlcRelease 'r-model'; $t = New-SdlcTarget 't-model'
-        try {
-            Invoke-Sdlc install @{ Source = $rel; Target = $t } | Out-Null
-            $p = Join-Path $t 'sdlc.config.json'
-            $c = Get-Content $p -Raw -Encoding UTF8 | ConvertFrom-Json
-            $c.agents.'sa-analyst'.model = 'some-model'
-            [IO.File]::WriteAllText($p, ($c | ConvertTo-Json -Depth 8), $Utf8)
-            $r = Invoke-Sdlc apply @{ Target = $t }
-            Assert-Match '尚未在本工作流驗證過' $r.stderr '未驗證的 key 被安靜地渲染出去了'
-            Assert-Match 'model = "some-model"' (Get-Toml $t 'sa-analyst') '喊歸喊，還是要寫出去'
-        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
-    }
-
     It-Should '未知的 effort 值照寫但要喊（手改的人不擋在門口；擋的是 set）' {
         $rel = New-SdlcRelease 'r-unknown'; $t = New-SdlcTarget 't-unknown'
         try {
@@ -932,6 +918,416 @@ Describe-Suite 'sdlc / check-update 的頻率與網路' {
     }
 }
 
+Describe-Suite 'sdlc / 發佈來源不只 GitHub：Gitea、GitLab（含自架）' {
+
+    # 公司內部多半是自架的 Gitea／GitLab，而且是私有的（要 token）。這一組守的全是靜默的失效：
+    #   自架的來源認不得           → 更新通知從此沒有，沒有人會發現
+    #   token 跟著轉址送到別台主機 → GitLab 的 PRIVATE-TOKEN 不會被自動轉址拿掉，附件又常轉到物件儲存；外流了也沒有症狀
+    #   token 用通用的環境變數名   → 專案設定檔（進版控）裡的來源被改掉，token 就送到別人的主機
+    #
+    # 一台假的發佈站，兩個 port = 兩個站台：a 是發佈來源，b 是「別台主機」（物件儲存那類）。
+    # 照路徑表（完整網址 → 回應）回；每個請求記一行「網址 | 收到的 token 標頭」—— token 有沒有外流就看這一份。
+    function Start-StubForge {
+        $forge = [pscustomobject]@{ a = $null; b = $null; listeners = @(); jobs = @(); log = $null; routes = [hashtable]::Synchronized(@{}) }
+        foreach ($name in 'a', 'b') {
+            $l = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0); $l.Start()
+            $origin = "http://127.0.0.1:$(([Net.IPEndPoint]$l.LocalEndpoint).Port)"
+            $forge.$name = $origin; $forge.listeners += $l
+            if (-not $forge.log) {
+                $forge.log = Join-Path ([IO.Path]::GetTempPath()) "codex-sdlc-forge-$(([Net.IPEndPoint]$l.LocalEndpoint).Port).log"
+                Remove-Item $forge.log -ErrorAction SilentlyContinue
+            }
+            $forge.jobs += Start-ThreadJob -ArgumentList $l, $origin, $forge.routes, $forge.log -ScriptBlock {
+                param($listener, $origin, $routes, $log)
+                while ($true) {
+                    try { $c = $listener.AcceptTcpClient() } catch { break }
+                    try {
+                        $s = $c.GetStream(); $rd = [IO.StreamReader]::new($s, [Text.Encoding]::ASCII)
+                        $url = $origin + (($rd.ReadLine()) -split ' ')[1]
+                        $hdr = @{}
+                        while ($line = $rd.ReadLine()) { $i = $line.IndexOf(':'); if ($i -gt 0) { $hdr[$line.Substring(0, $i).Trim()] = $line.Substring($i + 1).Trim() } }
+                        [IO.File]::AppendAllText($log, "$url | authorization=$($hdr['Authorization']) | private-token=$($hdr['PRIVATE-TOKEN'])`n")
+                        $r = $routes[$url]
+                        $status = if ($r) { [int]$r.status } else { 404 }
+                        $body = if ($r -and $r.body -is [byte[]]) { $r.body } elseif ($r -and $r.body) { [Text.Encoding]::UTF8.GetBytes([string]$r.body) } else { [byte[]]::new(0) }
+                        $head = "HTTP/1.1 $status X`r`nContent-Length: $($body.Length)`r`nConnection: close`r`n"
+                        if ($r -and $r.type) { $head += "Content-Type: $($r.type)`r`n" }
+                        if ($r -and $r.location) { $head += "Location: $($r.location)`r`n" }
+                        $hb = [Text.Encoding]::ASCII.GetBytes($head + "`r`n")
+                        $s.Write($hb, 0, $hb.Length); $s.Write($body, 0, $body.Length); $s.Flush()
+                    } catch { } finally { $c.Close() }
+                }
+            }
+        }
+        return $forge
+    }
+    function Stop-StubForge($forge) {
+        foreach ($l in $forge.listeners) { $l.Stop() }
+        foreach ($j in $forge.jobs) { $null = Wait-Job $j -Timeout 5; Remove-Job $j -Force -ErrorAction SilentlyContinue }
+        $lines = @(if (Test-Path $forge.log) { Get-Content $forge.log -Encoding UTF8 })
+        Remove-Item $forge.log -ErrorAction SilentlyContinue
+        return $lines
+    }
+    # 子行程不准走 proxy（假站台在本機），而且 token 只有測試明講的那一個 —— 開發機上真的設了也不算數。
+    function Get-ForgeEnv([hashtable]$extra = @{}) {
+        $e = @{ HTTPS_PROXY = ''; HTTP_PROXY = ''; ALL_PROXY = ''; NO_PROXY = '127.0.0.1,localhost'; CODEX_SDLC_TOKEN_127_0_0_1 = '' }
+        foreach ($k in $extra.Keys) { $e[$k] = $extra[$k] }
+        return $e
+    }
+    function New-ForgeTarget([string]$name, [string]$source) {
+        $rel = New-SdlcRelease "r-$name" -SourceUrl $source; $t = New-SdlcTarget "t-$name"
+        Invoke-Sdlc install @{ Source = $rel; Target = $t } | Out-Null
+        return $t
+    }
+    # Gitea／GitHub 的 release 長一樣；Content-Type 不帶 charset（GitLab 就是這樣回），中文說明照樣要讀對。
+    function Add-GiteaRelease($forge, [string]$api, [string]$web) {
+        $forge.routes["$api/releases/latest"] = @{ status = 200; type = 'application/json'; body = (@{
+            tag_name = 'v9.9.0'; body = '新增：自架的發佈來源'; html_url = "$web/releases/tag/v9.9.0"; draft = $false; prerelease = $false
+            assets = @(@{ name = 'codex-sdlc-9.9.0.zip'; browser_download_url = "$web/releases/download/v9.9.0/codex-sdlc-9.9.0.zip" })
+        } | ConvertTo-Json -Depth 5) }
+    }
+    function Get-PayloadBytes([string]$version) {
+        $rel = New-SdlcRelease "r-payload-$version" -Version $version
+        $zip = Join-Path $SdlcRoot "dl/codex-sdlc-$version.zip"
+        New-Item -ItemType Directory -Path (Split-Path $zip -Parent) -Force | Out-Null
+        Compress-Archive -Path (Join-Path $rel '*') -DestinationPath $zip -Force
+        return , [IO.File]::ReadAllBytes($zip)
+    }
+
+    It-Should '自架 Gitea（裝在子路徑底下）：check-update 查得到新版，中文說明與發佈頁網址都對' {
+        $forge = Start-StubForge
+        try {
+            Add-GiteaRelease $forge "$($forge.a)/git/api/v1/repos/team/flow" "$($forge.a)/git/team/flow"
+            $t = New-ForgeTarget 'gt1' "gitea:$($forge.a)/git/team/flow"
+            $j = Invoke-SdlcJson check-update @{ Target = $t } -Env (Get-ForgeEnv)
+            $seen = Stop-StubForge $forge; $forge = $null
+            Assert-Equal 'newer' $j.data.status "warnings: $($j.warnings -join ' | ') / 站台收到：$($seen -join ' ; ')"
+            Assert-Equal '9.9.0' $j.data.latest
+            Assert-Equal 'gitea' $j.data.provider
+            Assert-Match '/git/team/flow/releases/tag/v9\.9\.0$' $j.data.url
+            $cache = Get-Content (Join-Path $t 'bdd-docs/.sdlc/update-cache.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+            Assert-Equal '新增：自架的發佈來源' $cache.notes '沒帶 charset 的 JSON 被用錯的編碼解了 —— whatsnew 唸出來是亂碼'
+        } finally { if ($forge) { Stop-StubForge $forge | Out-Null }; Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '自架 GitLab（巢狀群組）：跳過還沒到發佈日的；fetch 下載附件，token 不跟著轉址送到物件儲存' {
+        $forge = Start-StubForge
+        try {
+            $api = "$($forge.a)/api/v4/projects/group%2Fsub%2Fflow"
+            $pkg = "$($forge.a)/api/v4/projects/7/packages/generic/codex-sdlc/9.9.0/codex-sdlc-9.9.0.zip"
+            $perma = "$($forge.a)/group/sub/flow/-/releases/v9.9.0/downloads/codex-sdlc-9.9.0.zip"
+            $forge.routes["$api/releases?per_page=5"] = @{ status = 200; type = 'application/json'; body = (ConvertTo-Json -Depth 6 -InputObject @(
+                @{ tag_name = 'v10.0.0'; upcoming_release = $true; description = '還沒到發佈日'; assets = @{ links = @() } }
+                @{ tag_name = 'v9.9.0'; upcoming_release = $false; description = '正式版'; _links = @{ self = "$($forge.a)/group/sub/flow/-/releases/v9.9.0" }
+                   assets = @{ links = @(@{ name = 'codex-sdlc-9.9.0.zip'; url = $pkg; direct_asset_url = $perma }) } }
+            )) }
+            # 套件庫轉到物件儲存（另一個站台、帶簽章的網址，不需要 token）。
+            $forge.routes[$pkg] = @{ status = 302; location = "$($forge.b)/bucket/codex-sdlc-9.9.0.zip?X-Amz-Signature=abc" }
+            $forge.routes["$($forge.b)/bucket/codex-sdlc-9.9.0.zip?X-Amz-Signature=abc"] = @{ status = 200; type = 'application/zip'; body = (Get-PayloadBytes '9.9.0') }
+            # 網頁路由的永久連結：私有專案拿 token 打它只會被轉到登入頁 —— 用了它，下載回來的是一頁 HTML。
+            $forge.routes[$perma] = @{ status = 302; location = "$($forge.a)/users/sign_in" }
+            $forge.routes["$($forge.a)/users/sign_in"] = @{ status = 200; type = 'text/html'; body = '<html>sign in</html>' }
+
+            # 本機那一份明講沒有（-Bundled ''）：拿得到的只可能是遠端那一份。
+            $rel = New-SdlcRelease 'r-gl1'; $t = New-SdlcTarget 't-gl1'
+            $j = Invoke-SdlcJson fetch @{ Source = $rel; Target = $t; Bundled = ''; SourceUrl = "gitlab:$($forge.a)/group/sub/flow"; CacheDir = (Join-Path $SdlcRoot 'cache') } `
+                     -Env (Get-ForgeEnv @{ CODEX_SDLC_TOKEN_127_0_0_1 = 'glpat-test' })
+            $siteB = $forge.b
+            $seen = Stop-StubForge $forge; $forge = $null
+            Assert-Equal 'remote' $j.data.chosen "warnings: $($j.warnings -join ' | ') / 站台收到：$($seen -join ' ; ')"
+            Assert-Equal '9.9.0' $j.data.version '拿了還沒到發佈日的那一版，或拿錯附件'
+            Assert-Equal 'gitlab' $j.data.remote.provider
+            $toA = @($seen | Where-Object { $_.StartsWith($api) -or $_.StartsWith($pkg) })
+            Assert-Equal 2 $toA.Count "來源站台該收到 API 與套件庫各一次：$($seen -join ' ; ')"
+            foreach ($line in $toA) { Assert-Match 'private-token=glpat-test' $line '私有專案的 token 沒有送到來源站台 —— 查不到也下載不了' }
+            $toB = @($seen | Where-Object { $_.StartsWith($siteB) })
+            Assert-Equal 1 $toB.Count
+            Assert-Match 'authorization= \| private-token=$' $toB[0] "token 跟著轉址送到別台主機了：$($toB[0])"
+        } finally { if ($forge) { Stop-StubForge $forge | Out-Null }; Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '三家各用自己認得的 token 標頭（GitHub Enterprise Bearer、Gitea token、GitLab PRIVATE-TOKEN）' {
+        $forge = Start-StubForge
+        try {
+            Add-GiteaRelease $forge "$($forge.a)/api/v1/repos/team/flow" "$($forge.a)/team/flow"
+            Add-GiteaRelease $forge "$($forge.a)/api/v3/repos/team/flow" "$($forge.a)/team/flow"
+            $forge.routes["$($forge.a)/api/v4/projects/team%2Fflow/releases?per_page=5"] = @{ status = 200; type = 'application/json'
+                body = (ConvertTo-Json -Depth 6 -InputObject @(@{ tag_name = 'v9.9.0'; description = ''; assets = @{ links = @() } })) }
+            $fenv = Get-ForgeEnv @{ CODEX_SDLC_TOKEN_127_0_0_1 = 'tkn' }
+            $got = @{}
+            foreach ($p in 'gitea', 'github', 'gitlab') {
+                $t = New-ForgeTarget "hd-$p" "${p}:$($forge.a)/team/flow"
+                $got[$p] = Invoke-SdlcJson check-update @{ Target = $t } -Env $fenv
+            }
+            $seen = Stop-StubForge $forge; $forge = $null
+            foreach ($p in 'gitea', 'github', 'gitlab') { Assert-Equal 'newer' $got[$p].data.status "$p 查不到：$($seen -join ' ; ')" }
+            Assert-Match 'authorization=token tkn \|' (@($seen | Where-Object { $_ -match '/api/v1/' })[0])
+            Assert-Match 'authorization=Bearer tkn \|' (@($seen | Where-Object { $_ -match '/api/v3/' })[0])
+            Assert-Match 'authorization= \| private-token=tkn$' (@($seen | Where-Object { $_ -match '/api/v4/' })[0])
+        } finally { if ($forge) { Stop-StubForge $forge | Out-Null }; Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'token 綁主機：通用名字（GITEA_TOKEN 這類）與別台主機的 token 一個都不送' {
+        $forge = Start-StubForge
+        try {
+            Add-GiteaRelease $forge "$($forge.a)/api/v1/repos/team/flow" "$($forge.a)/team/flow"
+            $t = New-ForgeTarget 'bind' "gitea:$($forge.a)/team/flow"
+            $fenv = Get-ForgeEnv @{ GITEA_TOKEN = 'leak1'; GITLAB_TOKEN = 'leak2'; GITHUB_TOKEN = 'leak3'; CODEX_SDLC_TOKEN_GIT_ACME_LOCAL = 'leak4' }
+            $j = Invoke-SdlcJson check-update @{ Target = $t } -Env $fenv
+            $seen = Stop-StubForge $forge; $forge = $null
+            Assert-Equal 'newer' $j.data.status "對照組：沒有 token 的公開 repo 照樣要查得到 / 站台收到：$($seen -join ' ; ')"
+            Assert-True ($seen.Count -gt 0) '站台一個請求都沒收到，下面那條斷言證明不了任何事'
+            Assert-True (-not ($seen -match 'leak')) "送出了不屬於這台主機的 token：$($seen -join ' ; ')"
+        } finally { if ($forge) { Stop-StubForge $forge | Out-Null }; Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    # 4.14 把認得的寫法收窄了（舊的 GitHub pattern 開頭沒錨定）。升級後還留著舊寫法 = 更新通知從此靜默消失。
+    It-Should '升級：4.13 以前收過的 GitHub 寫法換成認得的；換不了的原樣留著，update 與 doctor 都要講' {
+        foreach ($c in @(
+            @{ old = 'github.com/acme/flow'; want = 'https://github.com/acme/flow'; migrated = $true }
+            @{ old = 'ssh://git@github.com/acme/flow.git'; want = 'https://github.com/acme/flow'; migrated = $true }
+            @{ old = 'https://git.acme.local/team/flow'; want = 'https://git.acme.local/team/flow'; migrated = $false }
+            @{ old = 'gitea:https://git.acme.local/team/flow'; want = 'gitea:https://git.acme.local/team/flow'; migrated = $false }   # 對照組：本來就認得
+        )) {
+            $r1 = New-SdlcRelease 'r-mig1'; $t = New-SdlcTarget 't-mig'
+            try {
+                Invoke-Sdlc install @{ Source = $r1; Target = $t } | Out-Null
+                $p = Join-Path $t 'sdlc.config.json'
+                $cfg = Get-Content $p -Raw -Encoding UTF8 | ConvertFrom-Json
+                $cfg.update.source = $c.old
+                [IO.File]::WriteAllText($p, ($cfg | ConvertTo-Json -Depth 8), $Utf8)
+                $r2 = New-SdlcRelease 'r-mig2' -Version '4.7.0'
+                $j = Invoke-SdlcJson update @{ Source = $r2; Target = $t; Yes = $true }
+                Assert-Equal $c.want (Get-Content $p -Raw -Encoding UTF8 | ConvertFrom-Json).update.source "升級後的 update.source（原本 $($c.old)）"
+                Assert-Equal $c.migrated ($null -ne $j.data.sourceMigrated) "$($c.old)：sourceMigrated 不對"
+                $recognized = $c.migrated -or $c.old.StartsWith('gitea:')
+                $warned = (@($j.warnings) -match 'update\.source 認不得').Count -gt 0
+                Assert-Equal (-not $recognized) $warned "$($c.old)：update 該講的沒講，或不該講的講了"
+                $dj = Invoke-SdlcJson doctor (Get-IsolatedDoctorParams $t)
+                Assert-Equal (-not $recognized) ((@($dj.warnings) -match 'update\.source 認不得').Count -gt 0) "$($c.old)：doctor 該講的沒講，或不該講的講了"
+            } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+    }
+
+    It-Should '沒標明是哪一家的自架網址 → 認不得，並且講清楚怎麼寫' {
+        $t = New-ForgeTarget 'unk' 'https://git.acme.local/team/flow'
+        try {
+            $j = Invoke-SdlcJson check-update @{ Target = $t } -Env (Get-ForgeEnv)
+            Assert-Equal 'unsupported-source' $j.data.status
+            Assert-True ((@($j.warnings) -match 'gitea:').Count -gt 0) '只說認不得，沒說要怎麼寫'
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+Describe-Suite 'sdlc / model／effort 對這台的 Codex（清單問 codex 本身）' {
+
+    # sdlc.config.json 全隊共用，Codex 卻各台各裝，每一版的模型清單都不一樣。對不上時 Codex 的行為（版本檔 v415-models）：
+    #   子代理的 effort 不在它的模型支援之列 → spawn 直接失敗
+    #   這版 Codex 不認得的模型               → 照樣 spawn、用 fallback 的模型資料，沒有任何提示
+    # 所以 set 擋前者與後者，doctor／apply 講，而且「能用哪些」只問 codex（這裡是一支回固定清單的假 codex）。
+
+    $FakeModelsCodexBody = @'
+$log = $env:FAKE_CODEX_LOG
+if ($log) { Add-Content -LiteralPath $log ("args=" + ($args -join ' ')) }
+if ($args[0] -eq '--version') { [Console]::Out.WriteLine("codex-cli $(if ($env:FAKE_CODEX_VERSION) { $env:FAKE_CODEX_VERSION } else { '0.162.1' })"); exit 0 }
+if ($args[0] -eq 'debug' -and $args[1] -eq 'models') {
+    if ($env:FAKE_CODEX_NO_MODELS) { [Console]::Error.WriteLine("error: unrecognized subcommand 'models'"); exit 2 }
+    [Console]::Out.Write([IO.File]::ReadAllText((Join-Path $PSScriptRoot 'models.json'))); exit 0
+}
+exit 0
+'@
+    # 形狀照 codex 0.162.1 的 debug models（只留用得到的欄位）：大的支援到 ultra（再加一個 schema 還不認得的 hyper，
+    # 代表 Codex 升版新增的值）、中的只到 xhigh、隱藏的不列。
+    function New-ModelEntry([string]$slug, [string]$vis, [int]$prio, [string]$def, [string[]]$efforts) {
+        return [ordered]@{ slug = $slug; display_name = $slug; visibility = $vis; priority = $prio; default_reasoning_level = $def
+                           supported_reasoning_levels = @($efforts | ForEach-Object { [ordered]@{ effort = $_; description = "$_ reasoning" } }) }
+    }
+    function New-ModelsCodex {
+        $dir = Join-Path $SdlcRoot 'fake-codex'
+        New-SdlcFile (Join-Path $dir 'fake-codex.ps1') $FakeModelsCodexBody
+        $catalog = @(
+            (New-ModelEntry 'gpt-big' 'list' 1 'low' @('low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'hyper'))
+            (New-ModelEntry 'gpt-mid' 'list' 2 'medium' @('low', 'medium', 'high', 'xhigh'))
+            (New-ModelEntry 'gpt-secret' 'hide' 9 'medium' @('low', 'medium'))
+        )
+        New-SdlcFile (Join-Path $dir 'models.json') ([ordered]@{ models = $catalog } | ConvertTo-Json -Depth 8)
+        $cmd = Join-Path $dir 'codex.cmd'
+        [IO.File]::WriteAllText($cmd, "@pwsh -NoProfile -ExecutionPolicy Bypass -File `"%~dp0fake-codex.ps1`" %*`r`n", [Text.Encoding]::ASCII)
+        return $cmd
+    }
+    # 這台機器：模型清單快取的位置、CODEX_HOME（給了 $sessionModel 就放一份 config.toml 指定主對話的模型）、假 codex 的版本與呼叫紀錄。
+    function Get-MachineEnv([string]$sessionModel = '', [string]$version = '0.162.1', [hashtable]$extra = @{}) {
+        $codexHome = Join-Path $SdlcRoot 'machine/codex-home'
+        New-Item -ItemType Directory -Path $codexHome -Force | Out-Null
+        $toml = Join-Path $codexHome 'config.toml'
+        if ($sessionModel) { New-SdlcFile $toml "model = `"$sessionModel`"`n" } else { Remove-Item $toml -ErrorAction SilentlyContinue }
+        $e = @{ CODEX_HOME = $codexHome; CODEX_SDLC_STATE_DIR = (Join-Path $SdlcRoot 'machine/state'); FAKE_CODEX_LOG = (Join-Path $SdlcRoot 'machine/codex.log'); FAKE_CODEX_VERSION = $version }
+        foreach ($k in $extra.Keys) { $e[$k] = $extra[$k] }
+        return $e
+    }
+    function New-ModelsTarget([string]$name) {
+        $rel = New-SdlcRelease "r-$name" -Agents @('sa-analyst', 'implementer', 'reviewer') -WithSchema -WithHooks
+        $t = New-SdlcTarget "t-$name"
+        Invoke-Sdlc install @{ Source = $rel; Target = $t } | Out-Null
+        return $t
+    }
+    # 跳過 set，直接把值寫進設定檔（手改的人、或在別台用 set 選的值）。
+    function Set-AgentValues([string]$t, [string]$agent, [string]$model, [string]$effort, [string]$checkedWith = '') {
+        $p = Join-Path $t 'sdlc.config.json'
+        $c = Get-Content $p -Raw -Encoding UTF8 | ConvertFrom-Json
+        $c.agents.$agent.model = $model; $c.agents.$agent.effort = $effort
+        if ($checkedWith) { $c | Add-Member -NotePropertyName 'models-checked-with' -NotePropertyValue $checkedWith -Force }
+        [IO.File]::WriteAllText($p, ($c | ConvertTo-Json -Depth 8), $Utf8)
+    }
+    function Get-CodexCalls([string]$what) {
+        $log = Join-Path $SdlcRoot 'machine/codex.log'
+        return @(if (Test-Path $log) { Get-Content $log | Where-Object { $_ -match $what } })
+    }
+    function Get-Finding($j, [string]$agent) { return @($j.data.models.agents | Where-Object agent -eq $agent)[0] }
+
+    It-Should 'models：列出這台 Codex 的清單；沒設主對話模型時，inherit 用 priority 最小的那個；隱藏的不列' {
+        $t = New-ModelsTarget 'm1'; $codex = New-ModelsCodex
+        try {
+            $j = Invoke-SdlcJson models @{ Target = $t; CodexPath = $codex } -Env (Get-MachineEnv)
+            Assert-Equal 0 $j.exit "warnings: $($j.warnings -join ' | ')"
+            Assert-Shape $j.data.models @{
+                catalog = @{ available = 'bool'; reason = 'string?'; codexVersion = 'string?'; default = 'string?'; models = 'array' }
+                session = @{ model = 'string?'; source = 'string?' }; checkedWith = 'string?'; agents = 'array'
+            }
+            Assert-Equal '0.162.1' $j.data.models.catalog.codexVersion
+            Assert-Equal 'gpt-big' $j.data.models.catalog.default
+            Assert-Equal 'gpt-big' $j.data.models.session.model '沒設主對話模型時，inherit 的 agent 跟著 Codex 的預設'
+            Assert-Equal 'low,medium,high,xhigh' (@(@($j.data.models.catalog.models | Where-Object slug -eq 'gpt-mid')[0].efforts) -join ',')
+            Assert-True (-not (($j.output -join "`n") -match '(?m)^\s+gpt-secret\s')) '隱藏的模型被列成可以選的'
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'set：effort 超出模型上限 → 擋（子代理會起不來）、建議那個模型的上限、一個字都沒寫；配上支援它的模型就收，並記下是哪一版 Codex' {
+        $t = New-ModelsTarget 'm2'; $codex = New-ModelsCodex
+        try {
+            $cfgPath = Join-Path $t 'sdlc.config.json'
+            $before = [IO.File]::ReadAllText($cfgPath)
+            $j = Invoke-SdlcJson set @{ Target = $t; CodexPath = $codex } -Env (Get-MachineEnv 'gpt-mid') -Rest @('agents.reviewer.effort=ultra')
+            Assert-Equal 2 $j.exit
+            $e = @($j.data.errors)[0]
+            Assert-Equal 'agents.reviewer.effort' $e.key
+            Assert-Equal 'agents.reviewer.effort=xhigh' $e.suggestion
+            Assert-Equal $before ([IO.File]::ReadAllText($cfgPath)) '擋了還寫'
+            $ok = Invoke-SdlcJson set @{ Target = $t; CodexPath = $codex } -Env (Get-MachineEnv 'gpt-mid') -Rest @('agents.reviewer.model=gpt-big', 'agents.reviewer.effort=ultra')
+            Assert-Equal 0 $ok.exit "model 與 effort 要一起看：$($ok.warnings -join ' | ')"
+            $cfg = Get-Content $cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            Assert-Equal 'ultra' $cfg.agents.reviewer.effort
+            Assert-Equal '0.162.1' $cfg.'models-checked-with' '沒記下這組值是在哪一版 Codex 上選的 —— 別台分不出該升級還是該換'
+            Assert-Equal 2 (Invoke-SdlcJson set @{ Target = $t; CodexPath = $codex } -Env (Get-MachineEnv 'gpt-mid') -Rest @('models-checked-with=9.9.9')).exit '工具維護的欄位被手動改掉了'
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'set：這版 Codex 不認得的模型 → 擋，給最接近的；只差大小寫也擋' {
+        $t = New-ModelsTarget 'm3'; $codex = New-ModelsCodex
+        try {
+            foreach ($c in @(@{ raw = 'gpt-mdi'; want = 'gpt-mid' }, @{ raw = 'GPT-MID'; want = 'gpt-mid' })) {
+                $j = Invoke-SdlcJson set @{ Target = $t; CodexPath = $codex } -Env (Get-MachineEnv) -Rest @("agents.reviewer.model=$($c.raw)")
+                Assert-Equal 2 $j.exit "$($c.raw) 被收了"
+                Assert-Equal "agents.reviewer.model=$($c.want)" @($j.data.errors)[0].suggestion
+            }
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'set：Codex 新增、schema 還沒列的 effort → 這台的 Codex 認得就收（面板列得出來，就要寫得進去）；問不到 Codex 時照 schema 擋' {
+        $t = New-ModelsTarget 'm3b'; $codex = New-ModelsCodex
+        try {
+            $j = Invoke-SdlcJson set @{ Target = $t; CodexPath = $codex } -Env (Get-MachineEnv) -Rest @('agents.reviewer.model=gpt-big', 'agents.reviewer.effort=hyper')
+            Assert-Equal 0 $j.exit "等下一版工作流才能用 Codex 的新值：$(@($j.data.errors | ForEach-Object { $_.message }) -join ' | ')"
+            $mid = Invoke-SdlcJson set @{ Target = $t; CodexPath = $codex } -Env (Get-MachineEnv) -Rest @('agents.reviewer.model=gpt-mid')
+            Assert-Equal 2 $mid.exit '換成不支援 hyper 的模型卻收了 —— 新值也要跟 model 一起驗'
+            $none = Invoke-SdlcJson set @{ Target = $t; CodexPath = (Join-Path $SdlcRoot 'no-such-codex.exe') } -Env (Get-MachineEnv) -Rest @('agents.implementer.effort=hyper')
+            Assert-Equal 2 $none.exit '問不到 Codex 時沒有根據收一個 schema 不認得的值'
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'set：model 是 inherit、effort 只有部分模型支援 → 這台沒事就收，但要講換了主對話模型的人會起不來' {
+        $t = New-ModelsTarget 'm4'; $codex = New-ModelsCodex
+        try {
+            $j = Invoke-SdlcJson set @{ Target = $t; CodexPath = $codex } -Env (Get-MachineEnv 'gpt-big') -Rest @('agents.implementer.effort=max')
+            Assert-Equal 0 $j.exit "warnings: $($j.warnings -join ' | ')"
+            Assert-True ((@($j.warnings) -match 'gpt-mid.*implementer 會起不來').Count -gt 0) "沒講別台的風險：$($j.warnings -join ' | ')"
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'set：問不到 Codex（找不到、或太舊沒有 debug models）→ 退回 schema 驗、照寫，並明講沒驗' {
+        $t = New-ModelsTarget 'm5'; $codex = New-ModelsCodex
+        try {
+            foreach ($case in @(
+                @{ codex = (Join-Path $SdlcRoot 'no-such-codex.exe'); env = (Get-MachineEnv 'gpt-mid') }
+                @{ codex = $codex; env = (Get-MachineEnv 'gpt-mid' '0.150.0' @{ FAKE_CODEX_NO_MODELS = '1' }) }
+            )) {
+                $j = Invoke-SdlcJson set @{ Target = $t; CodexPath = $case.codex } -Env $case.env -Rest @('agents.reviewer.effort=ultra')
+                Assert-Equal 0 $j.exit "問不到清單就不該擋：$($j.warnings -join ' | ')"
+                Assert-Match '只照 schema 驗' ($j.output -join "`n") '沒講這次沒有對 Codex 驗'
+                Assert-True (-not (Get-Content (Join-Path $t 'sdlc.config.json') -Raw | ConvertFrom-Json).PSObject.Properties['models-checked-with']) '沒驗過卻記了版本'
+                Set-AgentValues $t 'reviewer' 'inherit' 'inherit'
+            }
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'doctor：會讓子代理起不來的算問題（多一個），只在別台才出事的只講' {
+        $t = New-ModelsTarget 'm6'; $codex = New-ModelsCodex
+        try {
+            $base = Invoke-SdlcJson doctor @{ Target = $t; CodexPath = $codex; EditorHome = (Join-Path $SdlcRoot 'editor-home') } -Env (Get-MachineEnv 'gpt-mid')
+            Set-AgentValues $t 'reviewer' 'inherit' 'ultra'
+            Invoke-Sdlc apply @{ Target = $t } | Out-Null      # 調校區塊同步，免得「沒 apply」也算進問題數
+            $bad = Invoke-SdlcJson doctor @{ Target = $t; CodexPath = $codex; EditorHome = (Join-Path $SdlcRoot 'editor-home') } -Env (Get-MachineEnv 'gpt-mid')
+            $f = Get-Finding $bad 'reviewer'
+            Assert-Equal 'effort-unsupported' $f.status
+            Assert-Equal 'problem' $f.level
+            Assert-Equal ($base.data.problems + 1) $bad.data.problems '子代理起不來，doctor 卻沒算成問題'
+            Assert-True ((@($bad.warnings) -match 'reviewer.*set agents\.reviewer\.effort=xhigh -Apply').Count -gt 0) '沒給改法'
+
+            Set-AgentValues $t 'reviewer' 'inherit' 'max'
+            Invoke-Sdlc apply @{ Target = $t } | Out-Null
+            $warn = Invoke-SdlcJson doctor @{ Target = $t; CodexPath = $codex; EditorHome = (Join-Path $SdlcRoot 'editor-home') } -Env (Get-MachineEnv 'gpt-big')
+            Assert-Equal 'depends-on-model' (Get-Finding $warn 'reviewer').status
+            Assert-Equal $base.data.problems $warn.data.problems '這台跑得起來的值被算成問題'
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'doctor：這台不認得的模型 —— 設定是在較新的 Codex 上選的就叫人升級，不是的話叫人換' {
+        $t = New-ModelsTarget 'm7'; $codex = New-ModelsCodex
+        try {
+            Set-AgentValues $t 'reviewer' 'gpt-next' 'inherit' '0.170.0'
+            $newer = Invoke-SdlcJson doctor @{ Target = $t; CodexPath = $codex; EditorHome = (Join-Path $SdlcRoot 'editor-home') } -Env (Get-MachineEnv)
+            Assert-Equal 'unknown-model' (Get-Finding $newer 'reviewer').status
+            Assert-Match '升級這台的 Codex' (Get-Finding $newer 'reviewer').message
+            Set-AgentValues $t 'reviewer' 'gpt-old' 'inherit' '0.150.0'
+            $older = Invoke-SdlcJson doctor @{ Target = $t; CodexPath = $codex; EditorHome = (Join-Path $SdlcRoot 'editor-home') } -Env (Get-MachineEnv)
+            Assert-Match '拿掉.*這台有：gpt-big、gpt-mid' (Get-Finding $older 'reviewer').message
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '清單快取：同一版 Codex 一天內只問一次 debug models；Codex 換版就重問' {
+        $t = New-ModelsTarget 'm8'; $codex = New-ModelsCodex
+        try {
+            1..2 | ForEach-Object { Invoke-SdlcJson models @{ Target = $t; CodexPath = $codex } -Env (Get-MachineEnv) | Out-Null }
+            Assert-Equal 1 (Get-CodexCalls 'debug models').Count 'VS Code 的背景 doctor 每次都問一次 codex'
+            Invoke-SdlcJson models @{ Target = $t; CodexPath = $codex } -Env (Get-MachineEnv '' '0.163.0') | Out-Null
+            Assert-Equal 2 (Get-CodexCalls 'debug models').Count 'Codex 升版了還在用舊版的清單'
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'apply：這台會出事的值照寫（擋在 set；apply 也跑在 update 裡），但每一個都講' {
+        $t = New-ModelsTarget 'm9'; $codex = New-ModelsCodex
+        try {
+            Set-AgentValues $t 'reviewer' 'gpt-old' 'inherit'
+            Set-AgentValues $t 'implementer' 'inherit' 'ultra'
+            $r = Invoke-Script $Sdlc -Params @{ Command = 'apply'; Target = $t; CodexPath = $codex } -Env (Get-MachineEnv 'gpt-mid')
+            Assert-Equal 0 $r.exit "stderr: $($r.stderr)"
+            Assert-Match 'model = "gpt-old"' (Get-Toml $t 'reviewer') '喊歸喊，還是要寫出去'
+            Assert-Match '不認得 gpt-old' $r.stderr
+            Assert-Match 'implementer 會起不來' $r.stderr
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
 Describe-Suite 'sdlc / VS Code extension（每台機器一份，不屬於任何專案）' {
 
     # 測試絕不碰這台機器上真正的編輯器：PATH 只放一支假的 code.cmd，編輯器家目錄指向 scratch。
@@ -1481,11 +1877,24 @@ Describe-Suite 'sdlc / set：改設定的單一入口（先驗完才寫）' {
     It-Should '範圍外、型別錯、格式錯、已棄用、由工具維護的 key → 一律擋' {
         $t = New-SetTarget 's3'
         try {
-            foreach ($bad in @('review.maxRounds=6', 'review.maxRounds=three', 'update.source=https://gitlab.com/o/r',
+            # 自架的網址沒標明是哪一家：網域看不出是 Gitea 還是 GitLab，收了就是一個永遠查不到的來源。
+            foreach ($bad in @('review.maxRounds=6', 'review.maxRounds=three', 'update.source=https://git.acme.local/team/flow',
                                'update.check=weekly', 'update.channel=beta', 'workflow-version=9.9.9', 'agents.reviewer.model=gpt 5',
                                'agents.reviewer.effort=minimal')) {
                 $j = Invoke-SdlcJson set @{ Target = $t } -Rest @($bad)
                 Assert-Equal 2 $j.exit "$bad 竟然被收了"
+            }
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '發佈來源：gitlab.com 直接寫、自架的標明 gitea:／gitlab:／github: → 收（公司內部多半是自架的）' {
+        $t = New-SetTarget 's3b'
+        try {
+            foreach ($src in @('https://gitlab.com/acme/tools/flow', 'gitea:https://git.acme.local/team/flow',
+                               'gitlab:https://gitlab.acme.local/group/sub/flow', 'github:https://ghe.acme.local/acme/flow')) {
+                $j = Invoke-SdlcJson set @{ Target = $t } -Rest @("update.source=$src")
+                Assert-Equal 0 $j.exit "$src 被擋了：$(@($j.data.errors | ForEach-Object { $_.message }) -join ' | ')"
+                Assert-Equal $src (Get-Config $t).update.source
             }
         } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
     }

@@ -2,7 +2,7 @@
   "name": "codex-sdlc",
   "displayName": "Codex SDLC",
   "description": "Codex SDLC 工作流的駕駛艙：狀態列、設定面板、Problems、一鍵 doctor／apply／tune。它只是 sdlc.ps1 與各 gate 的殼，真相仍在 sdlc.config.json 與腳本裡。",
-  "version": "4.13.0",
+  "version": "4.15.0",
   "publisher": "codex-sdlc",
   "private": true,
   "engines": {
@@ -304,7 +304,7 @@
           "type": "string",
           "default": "",
           "scope": "machine",
-          "markdownDescription": "發佈物的 GitHub repo 網址（例如 `https://github.com/你的組織/codex-sdlc`）。**安裝／補工具檔時先問它有沒有新版**，拿不到才用這個 extension 內附的那一份。留空 = 讀內附發佈物版本檔裡的 `source`。這是「這台機器去哪裡拿發佈物」，不是工作流設定 —— 專案自己的更新來源仍然是 `sdlc.config.json` 的 `update.source`。"
+          "markdownDescription": "發佈物所在的 repo 網址。github.com、gitlab.com 直接寫（例如 `https://github.com/你的組織/codex-sdlc`）；自架的在前面標明是哪一家：`gitea:https://…`、`gitlab:https://…`、`github:https://…`（GitHub Enterprise）。私有 repo 的 token 放環境變數 `CODEX_SDLC_TOKEN_<主機名稱大寫、非英數換成 _>`，不要寫在設定裡。**安裝／補工具檔時先問它有沒有新版**，拿不到才用這個 extension 內附的那一份。留空 = 讀內附發佈物版本檔裡的 `source`。這是「這台機器去哪裡拿發佈物」，不是工作流設定 —— 專案自己的更新來源仍然是 `sdlc.config.json` 的 `update.source`。"
         },
         "codexSdlc.statusBar.enabled": {
           "type": "boolean",

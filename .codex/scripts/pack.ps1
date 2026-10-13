@@ -68,6 +68,14 @@ if (-not $srcUrl) {
     [Console]::Error.WriteLine("[pack] 版本檔沒有設 `source` —— 這一版裝出去的專案不會收到更新通知（check-update 會直接說查不到）。推上 repo 之後把網址填進 $VersionRel 的 `source`。")
 } elseif ($srcUrl -match '(?i)OWNER|EXAMPLE|<') {
     [Console]::Error.WriteLine("[pack] 版本檔的 `source` 看起來還是預留位置（$srcUrl）—— 換成真的網址，否則裝出去的專案會拿到一個指不到任何地方的來源。")
+} else {
+    # 寫法要是 check-update 認得的（跟 set 驗的是同一條：schema 的 pattern，檢查 14 把它綁在 sdlc.ps1 的常數上）。
+    # 認不得的來源一樣零症狀 —— 每個裝出去的專案都拿到一個永遠查不到的網址；而這裡改一行就好，所以擋。
+    $schemaFile = Join-Path $Root '.codex/bdd-workflow/sdlc.config.schema.json'
+    $srcPat = if (Test-Path $schemaFile) { [string](Get-Content $schemaFile -Raw -Encoding UTF8 | ConvertFrom-Json).properties.update.properties.source.pattern } else { '' }
+    if ($srcPat -and $srcUrl -notmatch $srcPat) {
+        Fail "版本檔的 `source` 寫法認不得（$srcUrl）—— github.com／gitlab.com 直接寫網址，自架的寫成 gitea:https://…、gitlab:https://… 或 github:https://…（GitHub Enterprise）。"
+    }
 }
 
 # ---- 出貨前驗證 ----

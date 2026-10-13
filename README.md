@@ -201,11 +201,11 @@ pwsh .codex/scripts/sdlc.ps1 doctor -CheckHookTrust   # 另外問 Codex hooks �
 
 | 設定                     | 預設        | 說明                                                                                                                                                 |
 | ------------------------ | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `agents.<名稱>.model`  | `inherit` | `inherit` 表示不指定，交給 Codex 決定                                                                                                              |
-| `agents.<名稱>.effort` | `inherit` | 可填`low`、`medium`、`high`、`xhigh`、`max`、`ultra`。`max`、`ultra` 只有較新的模型支援；Codex 不會檢查，填錯要到呼叫 API 時才會出錯 |
+| `agents.<名稱>.model`  | `inherit` | `inherit` 表示不指定，跟主對話用同一個模型。能用哪些看這台的 Codex（`sdlc.ps1 models`）                                                             |
+| `agents.<名稱>.effort` | `inherit` | `low`、`medium`、`high`、`xhigh`、`max`、`ultra`，但每個模型支援的不一樣（例如 `gpt-5.5` 只到 `xhigh`）。子代理的 effort 不在它的模型支援之列，Codex 會直接拒絕那次委派 |
 | `review.maxRounds`     | `3`       | ⑤ 最多修幾輪（1–5）；到了上限，它會交回你決定                                                                                                      |
 | `update.check`         | `daily`   | 改成`never` 就不檢查新版                                                                                                                           |
-| `update.source`        | 安裝時帶入  | 檢查新版用的 GitHub repo 網址                                                                                                                        |
+| `update.source`        | 安裝時帶入  | 檢查新版去哪個 repo 問：GitHub、GitLab、Gitea，含自架的（寫法見〈升級〉）                                                                            |
 
 用 `set` 修改。它會先驗證所有的值才寫入，打錯時會提示最接近的值：
 
@@ -221,6 +221,12 @@ pwsh .codex/scripts/sdlc.ps1 tune -ApplyProposal -Only reviewer
 - 這個檔不支援註解（`set`、`update` 會整份重寫），說明請寫在 `_note`。沒有這個檔也沒關係，等於全部用預設值；第一次 `set` 會自動建立。
 - effort 預設不指定是刻意的：曾經把全部 agent 釘成 `high`，結果大型舊專案的分析逾時。`tune` 通常只建議調高 `reviewer`，repo 越大，`sa-analyst` 反而越調低。
 - `orchestrator` 那一格只是紀錄。orchestrator 就是最上層的對話，要在啟動 Codex 時自己指定（`install`、`doctor` 會印出對應的指令）。
+- **model／effort 能用哪些，問的是這台實際會跑的 Codex**（`codex debug models`，0.154.0 起就有）。每一版 Codex 內建的模型清單都不一樣，例如 0.162.1 拿掉了 `gpt-5.2`、多了 `gpt-6-sol`；而這個設定檔是全隊共用的。所以：
+  - `sdlc.ps1 models` 列出這台 Codex 有哪些模型、各支援哪些 effort，以及每個 agent 現在的值在這台會怎樣。
+  - `set` 會擋下兩種值：這台的 Codex 不認得的模型，以及 agent 實際用的模型不支援的 effort（不擋的話，子代理會起不來）。`model` 是 `inherit` 時，用主對話的模型判斷：專案或 `~/.codex/config.toml` 的 `model`，沒設就用 Codex 的預設。
+  - `set` 會記下這組值是在哪一版 Codex 上選的（`models-checked-with`）。隊友的 `doctor` 據此分辨：是他的 Codex 太舊、該升級，還是新版拿掉了那個模型、該換。
+  - 委派前，`handoff-lint` 會再判一次。這次用的是 hook 收到的、主對話當下的模型，不是從設定檔推出來的。確定會被 Codex 拒絕就先擋下，並附上改法。改完不必重開對話，直接重新委派。
+  - 找不到 codex（例如只用 IDE 的 Codex 擴充），就只照 schema 驗，並會說「沒有對 Codex 驗證」。要驗就加 `-CodexPath <codex 的完整路徑>`。
 
 ---
 
@@ -277,7 +283,14 @@ pwsh <新版解壓目錄>/.codex/scripts/sdlc.ps1 update -Target C:\你的專案
 - 升級有改到 `hooks.json` 的話，要再到 Codex 裡信任一次。
 - `update` 不會重裝 VS Code extension；版本對不上時會提示你。
 - 各版的變更與升級注意事項見 [CHANGELOG.md](CHANGELOG.md)。
-- 檢查新版需要 `update.source` 指向這套工作流的 GitHub repo（`sdlc.ps1 set update.source=https://github.com/<owner>/<repo>`）。查不到時一律不出聲，不影響流程。
+- 檢查新版要有 `update.source`（改法：`sdlc.ps1 set update.source=<網址>`）。查不到時一律不出聲，不影響流程。寫法：
+  - github.com、gitlab.com 直接寫：`https://github.com/<owner>/<repo>`、`https://gitlab.com/<group>/<project>`（群組可以巢狀）。
+  - 自架的在前面標明是哪一家：`gitea:https://git.example.com/<owner>/<repo>`（Forgejo 也寫 `gitea:`）、`gitlab:https://gitlab.example.com/<group>/<project>`、`github:https://github.example.com/<owner>/<repo>`（GitHub Enterprise）。光看網域分不出是哪一家，所以要寫明。Gitea 裝在子路徑底下可以（`gitea:https://example.com/git/<owner>/<repo>`），GitLab 不行。
+  - 發佈頁上要有正式版（草稿、預覽版、GitLab 還沒到發佈日的都不算），tag 是 `v<版本>`，附件叫 `codex-sdlc-<版本>.zip`。
+- 私有 repo 要 token。放在環境變數 `CODEX_SDLC_TOKEN_<主機>`：主機名稱轉大寫，英數以外的字元換成 `_`，例如 `git.example.com` 用 `CODEX_SDLC_TOKEN_GIT_EXAMPLE_COM`。給唯讀權限就夠（讀得到 release 和附件）。
+  - token 只送往那一台主機。附件轉址到別台主機（例如物件儲存）時不帶。
+  - 不讀 `GITLAB_TOKEN` 這類通用名字，也不寫進任何設定檔：`update.source` 在會進版控的設定檔裡，被人改成別的主機，也不會把你的 token 送過去。
+  - VS Code extension 的背景檢查讀的是啟動 VS Code 時的環境變數。設好之後要重開 VS Code。
 
 ---
 
@@ -303,4 +316,7 @@ pwsh <新版解壓目錄>/.codex/scripts/sdlc.ps1 update -Target C:\你的專案
 | ② 還把早就註解掉的舊類別、舊規則當成現況                    | `project-map.md` 是 4.12 以前、照含註解的索引寫的   | 刪掉它第一行的 `<!-- git-sha: … -->`。地圖平常只重查來源檔改過的那幾節；拿掉這行，下一次 ② 會把整份當成待驗證、重查時更正          |
 | `set` 說設定檔裡有註解，沒有寫入                           | `sdlc.config.json` 不支援註解                     | 把說明移到`_note`；或加 `-Yes`（原檔會先備份）                                                                                   |
 | `set` 說「不是合法值」或「不認得的設定」                   | 值或 key 打錯了，整批都沒有寫入                     | 照提示的建議值修正                                                                                                                   |
+| `set` 說「在這台的 Codex 上跑不起來」                      | 這台的 Codex 不認得那個模型，或那個模型不支援這個 effort | 照提示改；要用新模型就先升級 Codex。`sdlc.ps1 models` 列出這台能用的                                                                  |
+| 委派被擋：`effort-unsupported`                             | agent 釘的 effort，它實際用的模型不支援；不擋的話 Codex 也會拒絕 | 照提示用 `set … -Apply` 改，改完直接重新委派（不必重開對話）                                                                          |
+| doctor 說「這台的 Codex 不認得 …」                         | 設定是在別台、別版的 Codex 上選的                   | 它會說是這台太舊（升級 Codex），還是新版拿掉了那個模型（換一個）                                                                     |
 | VS Code 裡看不到任何 Codex SDLC 介面                         | extension 沒裝，或開的資料夾不對、工作區沒被信任    | doctor 會告訴你有沒有裝；裝好之後執行`Developer: Reload Window`                                                                    |

@@ -1,0 +1,9 @@
+{
+  "name": "codex-sdlc-host-test-runner",
+  "displayName": "codex-sdlc host test runner",
+  "description": "只用來在 extension host 裡跑 out/test-host/suite.js；受測的是另外用 vsix 裝進去的 codex-sdlc。",
+  "version": "0.0.0",
+  "publisher": "codex-sdlc-tests",
+  "private": true,
+  "engines": { "vscode": "^1.85.0" }
+}

@@ -1,0 +1,182 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { parseDoctor, parseEnvelope, SUPPORTED_SCHEMA, type DoctorData } from '../src/contract';
+import { statusFromDoctor, statusFromFailure } from '../src/status';
+import { doctorFixture, modelsFixture } from './fixtures';
+
+function doctor(mutate: (d: Record<string, any>) => void = () => {}): DoctorData {
+  const data = doctorFixture() as Record<string, any>;
+  mutate(data);
+  return parseDoctor(parseEnvelope(JSON.stringify({ schema: SUPPORTED_SCHEMA, command: 'doctor', exit: 0, data, warnings: [], output: [] }), 'doctor'));
+}
+const now = new Date('2026-09-13T08:00:00Z');
+
+test('一切正常 → 綠的版本號', () => {
+  const v = statusFromDoctor(doctor(), now);
+  assert.equal(v.level, 'ok');
+  assert.equal(v.text, '$(check) SDLC 4.8.0');
+});
+
+test('改了設定沒 apply → 立刻看到漂移', () => {
+  const v = statusFromDoctor(doctor((d) => { d.tuning = { status: 'stale', stale: ['reviewer.toml'] }; }), now);
+  assert.equal(v.level, 'warn');
+  assert.match(v.text, /調校未套用/);
+  assert.ok(v.tooltip.some((l) => l.includes('reviewer.toml')));
+});
+
+test('調校漂移時 agent-lint 的同一條違規不重複報（狀態列要顯示能動手的那一句）', () => {
+  const v = statusFromDoctor(doctor((d) => {
+    d.tuning = { status: 'stale', stale: ['reviewer.toml'] };
+    d.lint = { ran: true, passed: false, violations: [{ rule: 'tuning-block-stale', detail: 'reviewer.toml', fix: 'apply' }] };
+  }), now);
+  assert.match(v.text, /調校未套用$/);
+  assert.doesNotMatch(v.text, /agent-lint/);
+});
+
+test('其他 agent-lint 違規照樣報', () => {
+  const v = statusFromDoctor(doctor((d) => {
+    d.lint = { ran: true, passed: false, violations: [{ rule: 'hook-exit-code-swallowed', detail: 'x', fix: 'y' }] };
+  }), now);
+  assert.equal(v.level, 'error');
+  assert.match(v.text, /agent-lint/);
+});
+
+// 信任狀態整條拿掉了：doctor 4.10.0 起預設就不問，回 skipped。
+// 這三條守的是「拿掉之後不會又冒出來」—— 舊工作流回的 untrusted／unknown 都不得再變成使用者要處理的事。
+test('沒查信任狀態 → 不是問題，也不佔 tooltip 一行', () => {
+  const v = statusFromDoctor(doctor((d) => { d.hooks = { status: 'skipped', codex: null }; }), now);
+  assert.equal(v.level, 'ok');
+  assert.ok(!v.tooltip.some((l) => /信任|機械強制層/.test(l)));
+});
+
+test('就算 doctor 回了未信任（舊工作流，或有人加了 -CheckHookTrust），狀態列也不報', () => {
+  const v = statusFromDoctor(doctor((d) => { d.hooks = { status: 'untrusted', codex: 'codex', counts: { total: 4, trusted: 2, untrusted: 1, modified: 1, disabled: 0 } }; }), now);
+  assert.equal(v.level, 'ok');
+  assert.ok(!v.issues.some((i) => /信任/.test(i.detail)));
+});
+
+test('查不到 codex 不算問題', () => {
+  const v = statusFromDoctor(doctor((d) => { d.hooks = { status: 'unknown', reason: 'codex-not-found', codex: null }; }), now);
+  assert.equal(v.level, 'ok');
+});
+
+test('有新版而且沒看過 → 顯示；看過 → 安靜', () => {
+  const unseen = statusFromDoctor(doctor((d) => { d.update = { ...d.update, cached: true, newer: true, latest: '4.9.0', seen: false }; }), now);
+  assert.match(unseen.text, /\$\(arrow-up\) 4\.9\.0/);
+  const seen = statusFromDoctor(doctor((d) => { d.update = { ...d.update, cached: true, newer: true, latest: '4.9.0', seen: true }; }), now);
+  assert.doesNotMatch(seen.text, /arrow-up/);
+});
+
+test('多個問題 → 最嚴重的放前面，其餘用 +N', () => {
+  const v = statusFromDoctor(doctor((d) => {
+    d.tuning = { status: 'stale', stale: ['a.toml'] };
+    d.hooks = { status: 'no-hooks', codex: null };
+  }), now);
+  assert.match(v.text, /沒有 hooks\.json \+1/);
+});
+
+test('失敗狀態有人看得懂的一句話', () => {
+  const v = statusFromFailure('pwsh-missing', '找不到 PowerShell 7（pwsh）');
+  assert.equal(v.level, 'error');
+  assert.match(v.text, /pwsh/);
+});
+
+test('修正輪上限寫壞了 → 提示實際照幾輪算，而且不跟 agent-lint 的同一條重複報', () => {
+  const v = statusFromDoctor(doctor((d) => {
+    d.review = { maxRounds: 3, source: 'default', valid: false };
+    d.lint = { ran: true, passed: false, violations: [{ rule: 'review-max-rounds-invalid', detail: 'x', fix: 'y' }] };
+  }), now);
+  assert.match(v.text, /修正輪上限寫壞了$/);
+  assert.doesNotMatch(v.text, /agent-lint/);
+  assert.ok(v.tooltip.some((l) => l.includes('照預設 3 輪算')));
+});
+
+test('tooltip 顯示實際生效的修正輪上限與來源', () => {
+  const v = statusFromDoctor(doctor((d) => { d.review = { maxRounds: 5, source: 'config', valid: true }; }), now);
+  assert.ok(v.tooltip.some((l) => l === '審核修正輪上限：5 輪（sdlc.config.json 的 review.maxRounds）'));
+});
+
+test('設定檔有註解 → 警告（下一次寫入會不見），不算錯', () => {
+  const v = statusFromDoctor(doctor((d) => { d.config = { exists: true, parsable: true, comments: true, schemaRef: true }; }), now);
+  assert.equal(v.level, 'warn');
+  assert.match(v.text, /設定檔有註解/);
+});
+
+test('update.check 打錯 → 自己一條看得懂的警告，不是泛泛的 agent-lint', () => {
+  const v = statusFromDoctor(doctor((d) => {
+    d.lint = { ran: true, passed: false, violations: [{ rule: 'update-check-invalid', detail: 'update.check 是 "nevr"', fix: 'x' }] };
+  }), now);
+  assert.match(v.text, /更新檢查頻率寫壞了$/);
+  assert.doesNotMatch(v.text, /agent-lint/);
+});
+
+const env = (status: string, extra: Record<string, unknown> = {}) => ({
+  id: 'git', name: 'git', status, found: null, required: null, source: null,
+  breaks: '⑤ 檢查既有 scenario 有沒有被刪（git diff）', hint: '沒裝的話：https://git-scm.com/downloads', ...extra,
+});
+
+test('環境缺工具 → 錯誤等級；badge 說缺什麼，detail 帶會壞在哪與怎麼補（只改 doctor 的話，狀態列會是綠的）', () => {
+  const v = statusFromDoctor(doctor((d) => { d.environment = [env('missing')]; d.problems = 1; }), now);
+  assert.equal(v.level, 'error');
+  assert.match(v.text, /缺 git/);
+  const issue = v.issues.find((i) => /缺 git/.test(i.badge));
+  assert.ok(issue, '環境的問題沒有上狀態列');
+  assert.match(issue.detail, /git diff/);
+  assert.match(issue.detail, /git-scm\.com/);
+});
+
+test('global.json 要的 SDK 不在 → 版本不符，說得出要哪一版、要求從哪來', () => {
+  const v = statusFromDoctor(doctor((d) => {
+    d.environment = [env('mismatch', { id: 'dotnet-sdk', name: '.NET SDK', required: '8.0.999', source: 'global.json', breaks: '④ 的每一個 dotnet 指令' })];
+  }), now);
+  assert.equal(v.level, 'error');
+  assert.match(v.text, /\.NET SDK 版本不符/);
+  assert.ok(v.tooltip.some((l) => l.includes('8.0.999') && l.includes('global.json')));
+});
+
+test('Codex 比實測版本舊 → 錯誤等級', () => {
+  const v = statusFromDoctor(doctor((d) => {
+    d.environment = [env('below-verified', { id: 'codex', name: 'Codex', found: '0.150.0', required: '0.154.0', source: '實測版本', breaks: '強制層' })];
+  }), now);
+  assert.equal(v.level, 'error');
+  assert.match(v.text, /Codex 太舊/);
+});
+
+test('查不到（unknown）與用不到（not-applicable）不算問題，只進 tooltip', () => {
+  const v = statusFromDoctor(doctor((d) => {
+    d.environment = [
+      env('unknown', { id: 'codex', name: 'Codex', hint: '找不到 codex 執行檔' }),
+      env('not-applicable', { id: 'build-tool', name: 'build／test 工具', breaks: 'build-check 對這個專案是空轉', hint: null }),
+      env('ok', { found: 'C:\\Git\\cmd\\git.exe' }),
+    ];
+  }), now);
+  assert.equal(v.level, 'ok');
+  assert.equal(v.issues.length, 0);
+  assert.ok(v.tooltip.some((l) => l === 'Codex：查不到 —— 找不到 codex 執行檔'));
+  assert.ok(v.tooltip.some((l) => l === 'build／test 工具：build-check 對這個專案是空轉'));
+});
+
+test('沒有 hooks.json → 錯誤等級（整層強制不存在），而且有一顆按得下去的按鈕', () => {
+  const v = statusFromDoctor(doctor((d) => { d.hooks = { status: 'no-hooks', codex: null }; d.problems = 1; }), now);
+  assert.equal(v.level, 'error');
+  assert.match(v.text, /沒有 hooks\.json/);
+  assert.equal(v.issues.find((i) => /hooks\.json/.test(i.badge))?.fix?.command?.command, 'codexSdlc.repair', '沒有補回工具檔的按鈕');
+});
+
+test('model／effort 在這台跑不起來 → 紅，說得出改法；只在別台才出事的不上狀態列', () => {
+  const problem = { agent: 'reviewer', model: 'inherit', effort: 'ultra', effectiveModel: 'gpt-5.5', status: 'effort-unsupported', level: 'problem', message: 'gpt-5.5 只支援 low／medium／high／xhigh —— reviewer 會起不來', suggestion: 'agents.reviewer.effort=xhigh', allowed: ['low', 'medium', 'high', 'xhigh'] };
+  const s = statusFromDoctor(doctor((d) => { d.models = modelsFixture([problem]); d.problems = 1; }), now);
+  assert.equal(s.level, 'error', 'doctor 紅、狀態列綠');
+  const issue = s.issues.find((i) => /reviewer 跑不起來/.test(i.badge));
+  assert.ok(issue, `沒報：${s.issues.map((i) => i.badge).join(' | ')}`);
+  assert.match(issue!.detail, /agents\.reviewer\.effort=xhigh/);
+
+  const warnOnly = statusFromDoctor(doctor((d) => { d.models = modelsFixture([{ ...problem, status: 'depends-on-model', level: 'warn' }]); }), now);
+  assert.equal(warnOnly.level, 'ok', '這台沒事的風險也上狀態列 —— 每次開視窗都在喊，狀態列就沒人看了');
+});
+
+test('4.14 以前的 doctor 沒有 models 段 → 照舊顯示，不算合約壞掉', () => {
+  const s = statusFromDoctor(doctor(), now);
+  assert.equal(s.level, 'ok');
+  assert.ok(!s.tooltip.some((l) => l.startsWith('model／effort')));
+});

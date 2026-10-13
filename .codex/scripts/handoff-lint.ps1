@@ -14,6 +14,7 @@
 #   3b. 修正輪（mode: fix）必須帶 round；round 超過上限即阻斷
 #       上限：-MaxReviewRounds ＞ sdlc.config.json 的 review.maxRounds（1–5）＞ 預設 3
 #   4. 禁用 payload：完整 log、長測試輸出、connection string、secret、DLP mapping table
+#   5. 這次 spawn 會不會被 Codex 拒絕：effort 不在 agent 實際用的模型支援之列（v4.15.0；只判得準的才擋）
 #
 # 自 v4.0.0 起移除：tier 相關檢查、t0 零 spawn、discover 交付型 mode、
 # 單點紀錄 mode、subagent 預算上限、successor 額度繼承。
@@ -235,6 +236,60 @@ foreach ($f in $forbidden) {
     }
 }
 
+# --- 5. 這次 spawn 會不會被 Codex 拒絕：effort 不在模型支援之列 ---
+# Codex（0.154.0／0.162.1 實測）對這種 spawn 直接回錯，子代理根本起不來 —— 擋下它沒有攔掉任何本來會成功的事，
+# 只是把理由換成改得動的那一句（版本檔 v415-models）。判不準就不判：沒有模型清單的快取、清單裡沒有那個模型 → 放行。
+#   模型：agent 定義釘的 ＞ spawn 參數 ＞ payload 的 model（主對話當下用的模型，不是從設定檔推出來的）
+#   effort：agent 定義釘的 ＞ spawn 參數；兩邊都沒有 = 跟主對話一樣，不判
+#   清單：sdlc.ps1 問過這台 Codex 之後留下的快取（doctor／set／apply／models 都會寫；位置同 sdlc.ps1 的 Get-SdlcStateDir）
+$modelNote = $null
+if (-not $isSendInput -and $doc -is [pscustomobject] -and $doc.PSObject.Properties['tool_input'] -and $doc.tool_input -is [pscustomobject]) {
+    try {
+        $ti = $doc.tool_input
+        $agentType = if ($ti.PSObject.Properties['agent_type']) { [string]$ti.agent_type } else { '' }
+        $pinModel = $null; $pinEffort = $null
+        $toml = if ($agentType -match '^[\w.-]+$') { ".codex/agents/$agentType.toml" } else { $null }
+        if ($toml -and (Test-Path -LiteralPath $toml -PathType Leaf)) {
+            $head = ([IO.File]::ReadAllText($toml) -split '(?m)^developer_instructions\s*=')[0]
+            $mm = [regex]::Match($head, '(?m)^\s*model\s*=\s*"([^"]+)"');                  if ($mm.Success) { $pinModel = $mm.Groups[1].Value }
+            $me = [regex]::Match($head, '(?m)^\s*model_reasoning_effort\s*=\s*"([^"]+)"'); if ($me.Success) { $pinEffort = $me.Groups[1].Value }
+        }
+        $spawnModel  = if ($pinModel) { $pinModel } elseif ($ti.PSObject.Properties['model'] -and $ti.model) { [string]$ti.model } elseif ($doc.PSObject.Properties['model'] -and $doc.model) { [string]$doc.model } else { $null }
+        $spawnEffort = if ($pinEffort) { $pinEffort } elseif ($ti.PSObject.Properties['reasoning_effort'] -and $ti.reasoning_effort) { [string]$ti.reasoning_effort } else { $null }
+        $stateDir = if ($env:CODEX_SDLC_STATE_DIR) { $env:CODEX_SDLC_STATE_DIR } else { Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'codex-sdlc' }
+        $catalogPath = Join-Path $stateDir 'codex-models.json'
+        if ($spawnModel -and (Test-Path -LiteralPath $catalogPath -PathType Leaf)) {
+            $catalog = Get-Content -LiteralPath $catalogPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            $entry = @($catalog.models | Where-Object { $_ -and [string]$_.slug -ceq $spawnModel })[0]
+            if ($entry -and $spawnEffort) {
+                $levels = @($entry.efforts | ForEach-Object { [string]$_ })
+                if ($levels.Count -gt 0 -and $spawnEffort -cnotin $levels) {
+                    # 建議值：往下找最接近的（要的比上限高，就給上限）。順序 = 清單裡 effort 出現的順序（low → … → ultra）。
+                    $order = [Collections.Generic.List[string]]::new()
+                    foreach ($m in @($catalog.models)) { foreach ($e in @($m.efforts)) { if (-not $order.Contains([string]$e)) { $order.Add([string]$e) } } }
+                    $down = @($levels | Where-Object { $order.IndexOf($_) -le $order.IndexOf($spawnEffort) } | Sort-Object { $order.IndexOf($_) })
+                    $suggest = if ($down.Count) { $down[-1] } else { $levels[0] }
+                    if ($pinEffort) {
+                        $violations += [pscustomobject]@{
+                            rule   = 'effort-unsupported'
+                            detail = "$agentType 釘的 effort=$spawnEffort（sdlc.config.json），但 $spawnModel 只支援 $($levels -join '／') —— Codex 會拒絕這次 spawn"
+                            fix    = "這不是 handoff 的問題，重送也一樣。停下來請使用者改設定，例如 pwsh .codex/scripts/sdlc.ps1 set agents.$agentType.effort=$suggest -Apply；改完直接重新委派，不必重開對話（Codex 每次 spawn 都重讀 agent 定義）"
+                        }
+                    } else {
+                        $violations += [pscustomobject]@{
+                            rule   = 'effort-unsupported'
+                            detail = "spawn 參數 reasoning_effort=$spawnEffort，但 $spawnModel 只支援 $($levels -join '／') —— Codex 會拒絕這次 spawn"
+                            fix    = "拿掉 reasoning_effort（跟主對話一樣），或改成 $suggest"
+                        }
+                    }
+                }
+            } elseif (-not $entry -and $pinModel) {
+                $modelNote = "[sdlc] $agentType 釘的模型 $spawnModel 不在這台 Codex 的模型清單裡 —— 會用 fallback 的模型資料跑（表現變差，或被 API 拒絕）。可用的模型：pwsh .codex/scripts/sdlc.ps1 models"
+            }
+        }
+    } catch { }
+}
+
 # --- 輸出 ---
 if ($Json) {
     [pscustomobject]@{
@@ -265,8 +320,12 @@ if ($violations.Count -gt 0) {
 }
 
 # --- 放行時要讓 orchestrator 知道的事（一個 additionalContext，不擋）---
-# 同一次輸出只能有一個 JSON 物件，所以修正輪與更新通知收在一起、最後一次寫出。
+# 同一次輸出只能有一個 JSON 物件，所以修正輪、模型提示與更新通知收在一起、最後一次寫出。
 $contextLines = @()
+if ($modelNote) {
+    [Console]::Error.WriteLine($modelNote)
+    $contextLines += $modelNote
+}
 
 # orchestrator 不讀 sdlc.config.json，它知道上限的唯一途徑就是這一行 —— 每一次 mode: fix 放行時說一次。
 # 沒有這一行，設成 5 時它照 AGENTS.md 的預設在第 3 輪停下（設定靜默無效），設成 2 時它會去試第 3 輪才被擋。

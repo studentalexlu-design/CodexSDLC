@@ -31,7 +31,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('install', 'update', 'check-update', 'apply', 'set', 'tune', 'doctor', 'whatsnew', 'fetch')]
+    [ValidateSet('install', 'update', 'check-update', 'apply', 'set', 'tune', 'doctor', 'whatsnew', 'fetch', 'models')]
     [string]$Command = 'doctor',
 
     [string]$Source,                       # 發佈物根目錄；預設 = 本腳本所在的工作流根
@@ -47,7 +47,7 @@ param(
     [switch]$ApplyProposal,                # tune 用：把**存下來的那份**提議寫回設定檔（不重算）
     [string[]]$Only,                       # tune -ApplyProposal 用：只套這幾個 agent（逗號分隔也可以）
     [switch]$IfDue,                        # check-update 用：照 update.check 的頻率決定要不要真的連網
-    [string]$SourceUrl,                    # fetch 用：發佈物的 GitHub repo 網址（不給就找 sdlc.config.json 的 update.source，再找 -Source 版本檔的 source）
+    [string]$SourceUrl,                    # fetch 用：發佈物來源（寫法見 $ReleaseSourcePattern；不給就找 sdlc.config.json 的 update.source，再找 -Source 版本檔的 source）
     [string]$CacheDir,                     # fetch 用：下載回來的發佈物放哪（預設 LocalApplicationData/codex-sdlc/payloads）
     [string]$Bundled,                      # fetch 用：本機已經有的那一份發佈物（資料夾或 .zip；預設 = -Source）；遠端拿不到時就用它
     [switch]$NoRemote,                     # fetch 用：只認本機那一份，一條連線都不開
@@ -108,7 +108,11 @@ $KnownEfforts = @('low', 'medium', 'high', 'xhigh', 'max', 'ultra')
 # v4.13.0 的 commandWindows（單一 pwsh）在 0.154.0 與 0.162.1 各端到端跑過一次（版本檔 v413-speedup），所以仍是 0.154.0。
 $VerifiedCodexVersion = '0.154.0'
 $UpdateChecks = @('daily', 'never')
-$GitHubSourcePattern = 'github\.com/([^/]+)/([^/\s]+?)(\.git)?/?$'
+# 發佈物來源（update.source／版本檔的 source）認得的寫法：github.com、gitlab.com 直接寫網址；自架的在前面標明是哪一家
+# —— gitea:https://…、gitlab:https://…、github:https://…（GitHub Enterprise）。網域本身看不出是 Gitea 還是 GitLab，
+# 用猜的要多打幾次 API、猜錯還是要人改，寫明比較便宜。schema 的 pattern ＝ '^$|' ＋ 這一條（agent-lint 檢查 14 綁住）。
+$ReleaseSourcePattern = '^(?:https?://(?:www\.)?github\.com/[^/\s]+/[^/\s]+?|https?://gitlab\.com/[^/\s]+(?:/[^/\s]+)+?|(?:github|gitlab|gitea):https?://[^/\s]+(?:/[^/\s]+){2,}?)(?:\.git)?/?$'
+$ReleaseSourceHint = 'github.com／gitlab.com 直接寫網址，自架的寫成 gitea:https://…、gitlab:https://… 或 github:https://…（GitHub Enterprise）'
 # 修正輪上限的預設值。範圍（1–5）由 handoff-lint 與 agent-lint 檢查 13 判，doctor 讀 lint 的結論。
 $DefaultReviewRounds = 3
 
@@ -348,8 +352,17 @@ function Invoke-TuningApply([string]$root, $cfg) {
     $changed = @(); $warnings = @()
     $agentDir = Join-Path $root '.codex/agents'
     if (-not (Test-Path $agentDir)) { return [pscustomobject]@{ changed = @(); warnings = @('.codex/agents 不存在') } }
+    $tomls = @(Get-ChildItem $agentDir -Filter *.toml -File | Sort-Object Name)
 
-    foreach ($f in @(Get-ChildItem $agentDir -Filter *.toml -File | Sort-Object Name)) {
+    # 寫得出去，但絕不安靜：在這台的 Codex 上會出事的值每一個都講。擋在 set —— apply 也跑在 update 裡，不在這裡擋。
+    # 全部 inherit 就不問 codex（最常見的情況，不付那半秒）。
+    $catalog = $null; $session = $null
+    $checkedWith = if ($cfg -and $cfg.PSObject.Properties['models-checked-with']) { [string]$cfg.'models-checked-with' } else { $null }
+    $pinned = @($tomls | ForEach-Object { Get-AgentConfig $cfg $_.BaseName } |
+                Where-Object { $_ -and (($_.model -and [string]$_.model -ne 'inherit') -or ($_.effort -and [string]$_.effort -ne 'inherit')) })
+    if ($pinned.Count -gt 0) { $catalog = Get-ModelCatalog $root; $session = Get-SessionModel $root $catalog }
+
+    foreach ($f in $tomls) {
         $name = $f.BaseName
         $acfg = Get-AgentConfig $cfg $name
         $text = [IO.File]::ReadAllText($f.FullName)
@@ -357,14 +370,14 @@ function Invoke-TuningApply([string]$root, $cfg) {
         $sha  = Get-TuningSha $acfg
         $block = New-TuningBlock $acfg $sha $nl
 
-        $effort = if ($acfg -and $acfg.effort) { [string]$acfg.effort } else { 'inherit' }
-        if ($effort -ne 'inherit' -and $effort -notin $KnownEfforts) {
-            $warnings += "$name：effort=`"$effort`" 不在已知值（$($KnownEfforts -join '／')）之列，仍會寫出去"
-        }
-        # `model` 這個 key 本 repo 從來沒有驗證過。Codex 若忽略它，症狀是**靜默地用預設模型跑** ——
-        # 所以寫得出去，但絕不安靜。
-        if ($acfg -and $acfg.model -and [string]$acfg.model -ne 'inherit') {
-            $warnings += "$name：model=`"$($acfg.model)`" —— 這個 key 尚未在本工作流驗證過。若 Codex 忽略它，症狀是靜默地用預設模型跑，畫面上不會有任何差別。"
+        if ($catalog) {
+            $effort = if ($acfg -and $acfg.effort) { [string]$acfg.effort } else { 'inherit' }
+            $mc = Test-ModelChoice $catalog $session $name $(if ($acfg) { [string]$acfg.model } else { $null }) $effort $checkedWith
+            if ($mc.level -in @('problem', 'warn')) { $warnings += Format-ModelFinding $mc }
+            # 問不到 Codex 的清單：至少擋得住沒有任何模型認得的字（例如 4.8 以前合法的 minimal）。
+            elseif ($mc.status -eq 'unverified' -and $effort -ne 'inherit' -and $effort -notin $KnownEfforts) {
+                $warnings += "$name：effort=`"$effort`" 不在已知值（$($KnownEfforts -join '／')）之列，仍會寫出去"
+            }
         }
 
         $pattern = "(?s)" + [regex]::Escape($TuneBegin) + ".*?" + [regex]::Escape($TuneEnd) + "\r?\n?"
@@ -687,6 +700,254 @@ function Show-HookTrust($trust) {
     }
 }
 
+# ---- 模型清單：model／effort 能用哪些，問這台實際會跑的那個 Codex ----
+#
+# sdlc.config.json 是全隊共用的，Codex 卻是各台各裝各的，而每一版內建的模型清單都不一樣（0.154.0 → 0.162.1：
+# 拿掉 gpt-5.2、gpt-5.4，多了 gpt-6-sol、gpt-6.1-sol、gpt-6-luna），每個模型能用的 effort 也不同（gpt-5.5 只到 xhigh）。
+# 在這裡手抄一份清單，答案一定會跟某一台對不上 —— 所以問它：`codex debug models`（0.154.0 起就有，離線 0.3–0.5 秒）。
+# 結果按 codex 的路徑＋版本快取在這台機器上，24 小時內不重問（VS Code 的背景 doctor 一直在跑）。
+# 子行程的 proxy 指向連不上的位址（同 Invoke-CodexHooksList）：有登入的人用它自己快取的那份清單，沒有就用內建的。
+#
+# 對不上時 Codex 怎麼做（0.154.0 與 0.162.1 用假模型實測，版本檔 v415-models）：
+#   子代理的 effort 不在它的模型支援之列 → **spawn 直接失敗**（頂層對話則是靜默降到模型的上限）
+#   這版 Codex 不認得的模型               → 照樣 spawn，用 fallback 的模型資料，沒有任何提示
+#   agent 的 model 是 inherit              → 跟主對話同一個模型；主對話沒設模型 = 清單裡 visibility=list、priority 最小的那個
+# 找不到 codex（只用 IDE 的 Codex 擴充）或它太舊、沒有 debug models → 退回 schema 的靜態清單，並且明講「沒有對 Codex 驗證」。
+$ModelCatalogTtlHours = 24
+
+# 這台機器上、不屬於任何專案的狀態（模型清單的快取）。handoff-lint 讀同一個位置 —— 那邊有一份相同的兩行。
+function Get-SdlcStateDir {
+    if ($env:CODEX_SDLC_STATE_DIR) { return $env:CODEX_SDLC_STATE_DIR }
+    return Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'codex-sdlc'
+}
+
+# 叫 codex 的子行程一律從構造上碰不到網路。值是 $null 的從環境拿掉（見 Invoke-Probe）。
+function Get-NoNetEnv {
+    $e = [hashtable]::new([StringComparer]::Ordinal)
+    foreach ($k in @('HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy')) { $e[$k] = 'http://127.0.0.1:9' }
+    foreach ($k in @('NO_PROXY', 'no_proxy')) { $e[$k] = $null }
+    return $e
+}
+
+# codex --version。同一次執行只問一次（doctor 的環境段與模型清單都要它）。
+$script:CodexVersionMemo = @{}
+function Get-CodexVersion([string]$codex, [string]$cwd) {
+    if (-not $script:CodexVersionMemo.ContainsKey($codex)) {
+        $r = Invoke-Probe $codex @('--version') $cwd (Get-NoNetEnv) 10000
+        $m = [regex]::Match([string]$r.stdout, '\d+\.\d+\.\d+')
+        $script:CodexVersionMemo[$codex] = [pscustomobject]@{ version = $(if ($m.Success) { $m.Value } else { $null }); timedOut = $r.timedOut; exit = $r.exit }
+    }
+    return $script:CodexVersionMemo[$codex]
+}
+
+# 回 @{ available; reason; codex = @{ path; version }; source（live／cache）; default; models = @(@{ slug; visible; priority; defaultEffort; efforts }) }
+function Get-ModelCatalog([string]$cwd) {
+    $codex = Resolve-Codex
+    $out = [pscustomobject]@{ available = $false; reason = $null; codex = [pscustomobject]@{ path = $codex; version = $null }; source = $null; default = $null; models = @() }
+    if (-not $codex) { $out.reason = 'codex-not-found'; return $out }
+    $ver = (Get-CodexVersion $codex $cwd).version
+    $out.codex.version = $ver
+    if (-not $ver) { $out.reason = 'no-version'; return $out }
+
+    $cacheFile = Join-Path (Get-SdlcStateDir) 'codex-models.json'
+    $doc = Read-JsonFile $cacheFile
+    $fresh = $false
+    if ($doc -and $doc.codex -and [string]$doc.codex.path -eq $codex -and [string]$doc.codex.version -eq $ver) {
+        try { $fresh = ([DateTime]::UtcNow - ([DateTime]$doc.'read-at').ToUniversalTime()).TotalHours -lt $ModelCatalogTtlHours } catch { }
+    }
+    $out.source = 'cache'
+    if (-not $fresh) {
+        $r = Invoke-Probe $codex @('debug', 'models') $cwd (Get-NoNetEnv) 20000
+        $raw = $null
+        if ($r.exit -eq 0) { try { $raw = $r.stdout | ConvertFrom-Json -ErrorAction Stop } catch { } }
+        if (-not $raw -or -not $raw.PSObject.Properties['models']) { $out.reason = $(if ($r.timedOut) { 'timeout' } else { 'no-catalog' }); return $out }
+        $models = @(foreach ($m in @($raw.models)) {
+            if (-not $m.slug) { continue }
+            [ordered]@{
+                slug          = [string]$m.slug
+                visible       = ([string]$m.visibility -eq 'list')
+                priority      = $(if ($null -ne $m.priority) { [int]$m.priority } else { [int]::MaxValue })
+                defaultEffort = $(if ($m.default_reasoning_level) { [string]$m.default_reasoning_level } else { $null })
+                efforts       = @(@($m.supported_reasoning_levels) | ForEach-Object { if ($_ -is [string]) { $_ } elseif ($_.effort) { [string]$_.effort } } | Where-Object { $_ })
+            }
+        })
+        $byPriority = @($models | Where-Object { $_.visible } | Sort-Object { $_.priority })
+        $doc = [ordered]@{
+            codex     = [ordered]@{ path = $codex; version = $ver }
+            'read-at' = [DateTime]::UtcNow.ToString('o')
+            default   = $(if ($byPriority.Count) { $byPriority[0].slug } else { $null })
+            models    = $models
+        }
+        try { Write-JsonFile $cacheFile $doc } catch { }
+        $doc = $doc | ConvertTo-Json -Depth 6 | ConvertFrom-Json    # 跟從快取讀回來的是同一個形狀
+        $out.source = 'live'
+    }
+    $out.available = $true
+    $out.default = $(if ($doc.default) { [string]$doc.default } else { $null })
+    $out.models = @($doc.models | Where-Object { $_ } | ForEach-Object {
+        [pscustomobject]@{ slug = [string]$_.slug; visible = [bool]$_.visible; priority = [long]$_.priority; defaultEffort = $_.defaultEffort; efforts = @($_.efforts | ForEach-Object { [string]$_ }) }
+    })
+    return $out
+}
+
+function Find-CatalogModel($catalog, [string]$slug) {
+    if (-not $catalog.available -or -not $slug) { return $null }
+    return @($catalog.models | Where-Object { $_.slug -ceq $slug })[0]
+}
+
+# 所有模型的 effort 聯集，照清單裡出現的順序（low → … → ultra）—— 「往下找最接近的」靠這個順序。
+function Get-CatalogEffortOrder($catalog) {
+    $seen = [Collections.Generic.List[string]]::new()
+    foreach ($m in @($catalog.models)) { foreach ($e in @($m.efforts)) { if (-not $seen.Contains($e)) { $seen.Add($e) } } }
+    return , $seen.ToArray()
+}
+
+# config.toml 頂層（第一個 [section] 之前）的 model；有 profile 就先看那個 profile 的。
+function Get-TomlModel([string]$file) {
+    if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { return $null }
+    $text = [IO.File]::ReadAllText($file)
+    $top = [regex]::Split($text, '(?m)^\s*\[')[0]
+    $str = '\s*=\s*(?:"([^"]+)"|''([^'']+)'')'
+    $p = [regex]::Match($top, "(?m)^\s*profile$str")
+    if ($p.Success) {
+        $name = "$($p.Groups[1].Value)$($p.Groups[2].Value)"
+        $sec = [regex]::Match($text, "(?ms)^\s*\[profiles\.$([regex]::Escape($name))\][^\r\n]*\r?\n(.*?)(?=^\s*\[|\z)")
+        if ($sec.Success) {
+            $pm = [regex]::Match($sec.Groups[1].Value, "(?m)^\s*model$str")
+            if ($pm.Success) { return "$($pm.Groups[1].Value)$($pm.Groups[2].Value)" }
+        }
+    }
+    $m = [regex]::Match($top, "(?m)^\s*model$str")
+    return $(if ($m.Success) { "$($m.Groups[1].Value)$($m.Groups[2].Value)" } else { $null })
+}
+
+# model = inherit 的 agent 跟主對話用同一個模型（實測）。主對話的模型：專案 .codex/config.toml ＞ 使用者的 config.toml
+# （CODEX_HOME，預設 ~/.codex）＞ Codex 預設。啟動時加 -m、或在 IDE 裡換了模型的，這裡看不到 ——
+# 所以 spawn 當下 handoff-lint 會拿 payload 裡的模型（主對話當下用的那個）再判一次。
+function Get-SessionModel([string]$root, $catalog) {
+    $proj = Get-TomlModel (Join-Path $root '.codex/config.toml')
+    if ($proj) { return [pscustomobject]@{ model = $proj; source = '.codex/config.toml' } }
+    $codexHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path ([Environment]::GetFolderPath('UserProfile')) '.codex' }
+    $user = Get-TomlModel (Join-Path $codexHome 'config.toml')
+    if ($user) { return [pscustomobject]@{ model = $user; source = '~/.codex/config.toml' } }
+    if ($catalog.available -and $catalog.default) { return [pscustomobject]@{ model = $catalog.default; source = 'Codex 預設' } }
+    return [pscustomobject]@{ model = $null; source = $null }
+}
+
+# 一個 agent 的 model／effort 在這台的 Codex 上會怎樣。level：
+#   problem：這台跑起來就出事 —— effort 不在模型支援之列（子代理 spawn 失敗）、這版 Codex 不認得的模型、沒有任何模型認得的 effort
+#   warn   ：這台沒事，換一台或換個主對話模型就出事 —— model 是 inherit、而 effort 只有部分模型支援
+#   orchestrator 的值只是記錄（主對話用什麼由啟動 codex 的人決定），而頂層對話會把 effort 靜默降到上限 —— 它的一律只算 warn。
+function Test-ModelChoice($catalog, $session, [string]$agent, [string]$model, [string]$effort, [string]$checkedWith) {
+    $model  = if ($model)  { $model }  else { 'inherit' }
+    $effort = if ($effort) { $effort } else { 'inherit' }
+    $r = [pscustomobject]@{ agent = $agent; model = $model; effort = $effort; effectiveModel = $null; status = 'ok'; level = 'ok'; message = $null; suggestion = $null; allowed = @() }
+    if ($model -eq 'inherit' -and $effort -eq 'inherit') { return $r }
+    if (-not $catalog.available) { $r.status = 'unverified'; $r.level = 'unverified'; return $r }
+    $ver = $catalog.codex.version
+    $order = Get-CatalogEffortOrder $catalog
+
+    if ($model -ne 'inherit') {
+        $m = Find-CatalogModel $catalog $model
+        if (-not $m) {
+            $r.status = 'unknown-model'; $r.level = $(if ($agent -eq 'orchestrator') { 'warn' } else { 'problem' })
+            $ci = @($catalog.models | Where-Object { $_.slug -eq $model })[0]     # 只差大小寫
+            $near = if ($ci) { $ci.slug } else { Get-ClosestText $model @($catalog.models | ForEach-Object { $_.slug }) }
+            $why = if ($ci) { '模型名稱分大小寫。' }
+                   elseif ($checkedWith -and (Compare-Semver $checkedWith $ver) -gt 0) { "這組值是在 Codex $checkedWith 上選的，這台是 $ver —— 升級這台的 Codex（照當初裝它的方式）。" }
+                   else { "打錯了，或是新版 Codex 已經拿掉它。這台有：$(@($catalog.models | Where-Object { $_.visible } | Sort-Object { $_.priority } | ForEach-Object { $_.slug }) -join '、')。" }
+            $r.message = "這台的 Codex $ver 不認得 $model —— 會用 fallback 的模型資料照跑（表現變差，或被 API 拒絕）。$why"
+            if ($near) { $r.suggestion = "agents.$agent.model=$near" }
+            return $r
+        }
+        $r.effectiveModel = $m.slug
+    } else {
+        $r.effectiveModel = $session.model
+    }
+    if ($effort -eq 'inherit') { return $r }
+
+    if ($effort -cnotin $order) {
+        $r.status = 'unknown-effort'; $r.level = $(if ($agent -eq 'orchestrator') { 'warn' } else { 'problem' })
+        $r.message = "effort=$effort 不是這台 Codex $ver 任何一個模型認得的值（$($order -join '／')）"
+        $near = Get-ClosestText $effort $order
+        if ($near) { $r.suggestion = "agents.$agent.effort=$near" }
+        return $r
+    }
+    $em = Find-CatalogModel $catalog $r.effectiveModel
+    if ($em) {
+        $r.allowed = @($em.efforts)
+        if ($effort -cnotin $em.efforts) {
+            # 往下找最接近的：要的比它的上限高，就給上限。
+            $idx = [array]::IndexOf($order, $effort)
+            $down = @($em.efforts | Where-Object { [array]::IndexOf($order, $_) -le $idx } | Sort-Object { [array]::IndexOf($order, $_) })
+            $best = if ($down.Count) { $down[-1] } else { @($em.efforts)[0] }
+            $why = if ($model -eq 'inherit') { "。$agent 的 model 是 inherit，跟主對話用同一個模型（來自 $($session.source)）" } else { '' }
+            $r.status = 'effort-unsupported'
+            $r.suggestion = "agents.$agent.effort=$best"
+            if ($agent -eq 'orchestrator') {
+                $r.level = 'warn'
+                $r.message = "$($em.slug) 只支援 $($em.efforts -join '／') —— Codex 會把 effort=$effort 靜默降成 $best$why"
+            } else {
+                $r.level = 'problem'
+                $r.message = "$($em.slug) 只支援 $($em.efforts -join '／') —— $agent 會起不來，Codex 會拒絕這次 spawn$why"
+            }
+            return $r
+        }
+    }
+    # model 是 inherit：這台沒事，不代表別台、或主對話換了模型也沒事。
+    if ($model -eq 'inherit' -and $agent -ne 'orchestrator') {
+        $bad = @($catalog.models | Where-Object { $_.visible -and $effort -cnotin $_.efforts } | ForEach-Object { $_.slug })
+        if ($bad.Count) {
+            $r.status = 'depends-on-model'; $r.level = 'warn'
+            $pin = if ($r.effectiveModel -and (Find-CatalogModel $catalog $r.effectiveModel)) { "（agents.$agent.model=$($r.effectiveModel)）" } else { '' }
+            $r.message = "effort=$effort 不是每個模型都支援 —— 主對話用 $($bad -join '、') 的人，$agent 會起不來。要穩就把 model 一起釘住$pin"
+        }
+    }
+    return $r
+}
+
+function Get-ModelFindings($catalog, $session, $cfg, [string]$root) {
+    $checkedWith = if ($cfg -and $cfg.PSObject.Properties['models-checked-with']) { [string]$cfg.'models-checked-with' } else { $null }
+    return @(foreach ($n in (Get-KnownAgentNames $root $cfg)) {
+        $a = Get-AgentConfig $cfg $n
+        Test-ModelChoice $catalog $session $n $(if ($a) { [string]$a.model } else { $null }) $(if ($a) { [string]$a.effort } else { $null }) $checkedWith
+    })
+}
+
+function Get-ModelsData($catalog, $session, $findings, $cfg) {
+    return [ordered]@{
+        catalog = [ordered]@{
+            available    = [bool]$catalog.available
+            reason       = $catalog.reason
+            codexPath    = $catalog.codex.path
+            codexVersion = $catalog.codex.version
+            source       = $catalog.source
+            default      = $catalog.default
+            models       = @($catalog.models | ForEach-Object { [ordered]@{ slug = $_.slug; visible = $_.visible; defaultEffort = $_.defaultEffort; efforts = @($_.efforts) } })
+        }
+        session     = [ordered]@{ model = $session.model; source = $session.source }
+        checkedWith = $(if ($cfg -and $cfg.PSObject.Properties['models-checked-with']) { [string]$cfg.'models-checked-with' } else { $null })
+        agents      = @($findings | ForEach-Object {
+            [ordered]@{ agent = $_.agent; model = $_.model; effort = $_.effort; effectiveModel = $_.effectiveModel; status = $_.status; level = $_.level; message = $_.message; suggestion = $_.suggestion; allowed = @($_.allowed) }
+        })
+    }
+}
+
+function Get-CatalogReasonText($catalog) {
+    switch ($catalog.reason) {
+        'codex-not-found' { return '找不到 codex 執行檔（只用 IDE 的 Codex 擴充時是正常的；要驗就加 -CodexPath <codex 的完整路徑>）' }
+        'no-version'      { return "codex --version 沒有給出版本（$($catalog.codex.path)）" }
+        'timeout'         { return 'codex debug models 逾時' }
+        default           { return "這版 codex 問不到模型清單（debug models 要 0.154.0 以上）：$($catalog.codex.path)" }
+    }
+}
+
+# 一個 agent 的結論 → 一行給人看的句子（有建議就附上改法）。
+function Format-ModelFinding($f) {
+    $fix = if ($f.suggestion) { "。改：pwsh .codex/scripts/sdlc.ps1 set $($f.suggestion) -Apply" } else { '' }
+    return "$($f.agent)：$(([string]$f.message).TrimEnd('。'))$fix"
+}
+
 # ---- 環境：跑這套流程要的工具在不在（只偵測、不安裝）----
 #
 # 每一項都說得出「缺了它，哪一步會壞」，說不出來的不進來 —— 什麼都查的健檢會變成永遠紅、沒人看的健檢
@@ -804,18 +1065,14 @@ function Get-EnvironmentReport([string]$target) {
     if (-not $cx) {
         $items += New-EnvItem 'codex' 'Codex' 'unknown' $codexBreaks -required $VerifiedCodexVersion -source '實測版本' -hint '找不到 codex 執行檔（只用 VS Code 的 Codex 擴充時是正常的）—— 要查就加 -CodexPath <codex 的完整路徑>'
     } else {
-        $noNet = [hashtable]::new([StringComparer]::Ordinal)
-        foreach ($k in @('HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy')) { $noNet[$k] = 'http://127.0.0.1:9' }
-        foreach ($k in @('NO_PROXY', 'no_proxy')) { $noNet[$k] = $null }
-        $r = Invoke-Probe $cx @('--version') $root $noNet 10000
-        $m = [regex]::Match([string]$r.stdout, '\d+\.\d+\.\d+')
-        if (-not $m.Success) {
-            $why = if ($r.timedOut) { '逾時' } else { "exit $($r.exit)" }
+        $cv = Get-CodexVersion $cx $root
+        if (-not $cv.version) {
+            $why = if ($cv.timedOut) { '逾時' } else { "exit $($cv.exit)" }
             $items += New-EnvItem 'codex' 'Codex' 'unknown' $codexBreaks -found $cx -required $VerifiedCodexVersion -source '實測版本' -hint "codex --version 沒有給出版本（$why）"
-        } elseif ((Compare-Semver $m.Value $VerifiedCodexVersion) -lt 0) {
-            $items += New-EnvItem 'codex' 'Codex' 'below-verified' $codexBreaks -found $m.Value -required $VerifiedCodexVersion -source '實測版本' -hint '更舊的 Codex 上，hook 可能每次都跑、一條都沒擋。照你當初裝 Codex 的方式升級（npm、VS Code 的 Codex 擴充…）'
+        } elseif ((Compare-Semver $cv.version $VerifiedCodexVersion) -lt 0) {
+            $items += New-EnvItem 'codex' 'Codex' 'below-verified' $codexBreaks -found $cv.version -required $VerifiedCodexVersion -source '實測版本' -hint '更舊的 Codex 上，hook 可能每次都跑、一條都沒擋。照你當初裝 Codex 的方式升級（npm、VS Code 的 Codex 擴充…）'
         } else {
-            $items += New-EnvItem 'codex' 'Codex' 'ok' $codexBreaks -found $m.Value -required $VerifiedCodexVersion -source '實測版本'
+            $items += New-EnvItem 'codex' 'Codex' 'ok' $codexBreaks -found $cv.version -required $VerifiedCodexVersion -source '實測版本'
         }
     }
 
@@ -1053,6 +1310,141 @@ function Expand-PayloadZip([string]$zip, [string]$cache) {
     }
 }
 
+# 發佈物來源 → 哪一家、API 在哪、發佈頁在哪。認不得就回 $null（寫法見 $ReleaseSourcePattern）。
+# Gitea 可以裝在子路徑底下（https://corp/gitea/team/flow）：最後兩段是 owner／repo，前面是站台。
+# GitLab 的群組可以巢狀（group/sub/flow），所以整段路徑都是專案；裝在子路徑底下的 GitLab 分不出來，不支援。
+function Get-ReleaseRepo([string]$src) {
+    $src = ([string]$src).Trim()
+    if (-not $src -or $src -notmatch $ReleaseSourcePattern) { return $null }
+    $provider = $null
+    if ($src -match '^(github|gitlab|gitea):(.+)$') { $provider = $Matches[1].ToLowerInvariant(); $src = $Matches[2] }
+    try { $u = [Uri]$src } catch { return $null }
+    $segs = @(($u.AbsolutePath.Trim('/') -replace '\.git$', '') -split '/' | Where-Object { $_ })
+    $isGitHubCom = $u.Host -match '(^|\.)github\.com$'
+    if (-not $provider) { $provider = if ($isGitHubCom) { 'github' } else { 'gitlab' } }
+    $origin = $u.GetLeftPart([UriPartial]::Authority)
+    switch ($provider) {
+        'github' {
+            $owner = $segs[-2]; $repo = $segs[-1]
+            $api = if ($isGitHubCom) { 'https://api.github.com' } else { "$origin/api/v3" }
+            return [pscustomobject]@{ provider = 'github'; host = $u.Host; api = "$api/repos/$owner/$repo"; web = "$origin/$owner/$repo" }
+        }
+        'gitea' {
+            $owner = $segs[-2]; $repo = $segs[-1]
+            $base = if ($segs.Count -gt 2) { "$origin/" + ($segs[0..($segs.Count - 3)] -join '/') } else { $origin }
+            return [pscustomobject]@{ provider = 'gitea'; host = $u.Host; api = "$base/api/v1/repos/$owner/$repo"; web = "$base/$owner/$repo" }
+        }
+        default {
+            $proj = $segs -join '/'
+            return [pscustomobject]@{ provider = 'gitlab'; host = $u.Host; api = "$origin/api/v4/projects/$([Uri]::EscapeDataString($proj))"; web = "$origin/$proj" }
+        }
+    }
+}
+
+# 私有的發佈頁（公司自架的 Gitea／GitLab 多半是）要 token。只從環境變數拿，而且**綁主機**：
+# CODEX_SDLC_TOKEN_<主機名稱大寫、非英數換成 _>，例如 git.acme.local → CODEX_SDLC_TOKEN_GIT_ACME_LOCAL。
+# 不讀 GITLAB_TOKEN 這類通用名字：update.source 寫在專案的 sdlc.config.json 裡（會進版控），一份被改過的來源就能把
+# 你的 token 送到別人的主機 —— 而 VS Code extension 每天在背景替你查一次，沒有人在看。token 也不寫進任何設定檔。
+function Get-ReleaseToken([string]$hostName) {
+    $name = 'CODEX_SDLC_TOKEN_' + ($hostName.ToUpperInvariant() -replace '[^A-Z0-9]', '_')
+    return [Environment]::GetEnvironmentVariable($name)
+}
+
+function Get-ReleaseHeaders($repo) {
+    $h = @{ 'User-Agent' = 'codex-sdlc' }
+    $t = Get-ReleaseToken $repo.host
+    if ($t) {
+        switch ($repo.provider) {
+            'github' { $h['Authorization'] = "Bearer $t" }
+            'gitea'  { $h['Authorization'] = "token $t" }
+            'gitlab' { $h['PRIVATE-TOKEN'] = $t }
+        }
+    }
+    return $h
+}
+
+# 對發佈來源發一個 GET；給了 $outFile 就存成檔，否則回 UTF-8 文字。轉址自己跟（最多 5 次），每一跳重新判斷要不要帶 token：
+# 只有跟來源同一個站台（scheme、主機、port 都一樣；GitHub 另加它的 API 站台）才帶。交給 .NET 自動轉址的話它只拿掉
+# Authorization，GitLab 的 PRIVATE-TOKEN 會原封不動送到轉過去的主機 —— 而附件常常轉到物件儲存（S3／MinIO）。
+# 不用 Invoke-WebRequest -MaximumRedirection 0：pwsh 7.4 起它在 3xx 時丟錯，各版行為不一樣。
+function Invoke-ReleaseGet($repo, [string]$uri, [string]$outFile = '', [string]$accept = '') {
+    $origins = @(@($repo.api, $repo.web) | ForEach-Object { ([Uri]$_).GetLeftPart([UriPartial]::Authority) })
+    $handler = [Net.Http.HttpClientHandler]::new()
+    $handler.AllowAutoRedirect = $false
+    $client = [Net.Http.HttpClient]::new($handler)
+    $client.Timeout = New-TimeSpan -Seconds $(if ($outFile) { 120 } else { 8 })
+    try {
+        for ($hop = 0; $hop -le 5; $hop++) {
+            $u = [Uri]$uri
+            $h = if ($origins -contains $u.GetLeftPart([UriPartial]::Authority)) { Get-ReleaseHeaders $repo } else { @{ 'User-Agent' = 'codex-sdlc' } }
+            if ($accept) { $h['Accept'] = $accept }
+            $req = [Net.Http.HttpRequestMessage]::new([Net.Http.HttpMethod]::Get, $u)
+            foreach ($k in $h.Keys) { $null = $req.Headers.TryAddWithoutValidation($k, [string]$h[$k]) }
+            try { $resp = $client.SendAsync($req).GetAwaiter().GetResult() }
+            catch {
+                $e = $_.Exception
+                if ($e -is [Management.Automation.MethodInvocationException] -and $e.InnerException) { $e = $e.InnerException }
+                throw $e.Message
+            }
+            $code = [int]$resp.StatusCode
+            if ($code -ge 300 -and $code -lt 400 -and $resp.Headers.Location) {
+                $uri = [Uri]::new($u, $resp.Headers.Location).AbsoluteUri
+                continue
+            }
+            if (-not $resp.IsSuccessStatusCode) { throw "HTTP $code" }
+            $bytes = $resp.Content.ReadAsByteArrayAsync().GetAwaiter().GetResult()
+            if ($outFile) { [IO.File]::WriteAllBytes($outFile, $bytes); return }
+            return [Text.Encoding]::UTF8.GetString($bytes).TrimStart([char]0xFEFF)
+        }
+        throw '轉址超過 5 次'
+    } finally { $client.Dispose() }
+}
+
+# 各家的「最新正式版」→ 同一個形狀：tag、說明、發佈頁網址、附件（名稱＋下載網址）。連不到就丟例外，由呼叫端決定怎麼說。
+function Get-LatestRelease($repo) {
+    if ($repo.provider -eq 'gitlab') {
+        # 不用 /releases/permalink/latest（GitLab 15.4 起才有）：列最近幾筆（預設照發佈時間新到舊），跳過還沒到發佈日的。
+        # 附件用 url（連結真正指的地方，例如套件庫的 API 網址，token 認得）而不是 direct_asset_url：
+        # 後者是網頁路由的永久連結，私有專案拿 token 打它只會被轉到登入頁。
+        $rel = @(Invoke-ReleaseGet $repo "$($repo.api)/releases?per_page=5" | ConvertFrom-Json) |
+               Where-Object { $_ -and -not $_.upcoming_release } | Select-Object -First 1
+        if (-not $rel) { return $null }
+        return [pscustomobject]@{
+            tag    = [string]$rel.tag_name
+            body   = [string]$rel.description
+            url    = $(if ($rel._links -and $rel._links.self) { [string]$rel._links.self } else { "$($repo.web)/-/releases/$($rel.tag_name)" })
+            assets = @($rel.assets.links | Where-Object { $_ } | ForEach-Object {
+                         [pscustomobject]@{ name = [string]$_.name; url = $(if ($_.url) { [string]$_.url } else { [string]$_.direct_asset_url }); api = $null } })
+        }
+    }
+    # GitHub 與 Gitea 的 release 是同一個形狀。舊版 Gitea 沒有 /releases/latest：退回列表，取第一筆非草稿、非預覽版。
+    $rel = $null
+    try { $rel = Invoke-ReleaseGet $repo "$($repo.api)/releases/latest" | ConvertFrom-Json }
+    catch {
+        if ($repo.provider -ne 'gitea') { throw }
+        $rel = @(Invoke-ReleaseGet $repo "$($repo.api)/releases?limit=10" | ConvertFrom-Json) |
+               Where-Object { $_ -and -not $_.draft -and -not $_.prerelease } | Select-Object -First 1
+    }
+    if (-not $rel) { return $null }
+    return [pscustomobject]@{
+        tag    = [string]$rel.tag_name
+        body   = [string]$rel.body
+        url    = [string]$rel.html_url
+        assets = @($rel.assets | Where-Object { $_ } | ForEach-Object {
+                     [pscustomobject]@{ name = [string]$_.name; url = [string]$_.browser_download_url; api = [string]$_.url } })
+    }
+}
+
+# 下載附件（token 帶不帶由 Invoke-ReleaseGet 逐跳判斷）。GitHub 私有 repo 的附件要走 API 的那個網址，
+# 它再轉到一個不用 token 的下載網址。
+function Save-ReleaseAsset($repo, $asset, [string]$dest) {
+    if ($repo.provider -eq 'github' -and $asset.api -and (Get-ReleaseToken $repo.host)) {
+        Invoke-ReleaseGet $repo $asset.api $dest 'application/octet-stream'
+    } else {
+        Invoke-ReleaseGet $repo $asset.url $dest
+    }
+}
+
 function Resolve-ReleaseSource {
     if ($SourceUrl) { return $SourceUrl }
     $cfg = Read-JsonFile (Join-Path $Target $ConfigFile)
@@ -1068,7 +1460,7 @@ function Invoke-Fetch {
     # 完全不給 = 用 -Source（在終端機直接跑 fetch 時，本機那一份就是腳本自己所在的發佈物）。
     $bundledDir = if ($BundledGiven) { $Bundled } else { $Source }
 
-    $remote = [ordered]@{ checked = $false; reachable = $false; latest = $null; url = $null; reason = $null }
+    $remote = [ordered]@{ checked = $false; reachable = $false; latest = $null; url = $null; reason = $null; provider = $null }
     $bundledInfo = [ordered]@{ version = $null; path = $null }
     $script:Data.chosen   = 'none'
     $script:Data.version  = $null
@@ -1095,33 +1487,34 @@ function Invoke-Fetch {
     }
 
     $src = if ($NoRemote) { '' } else { Resolve-ReleaseSource }
+    $repo = if ($src) { Get-ReleaseRepo $src } else { $null }
     if ($NoRemote) {
         $remote.reason = 'skipped'
         Say '只用指定的那一份發佈物（-NoRemote）。'
     } elseif (-not $src) {
         $remote.reason = 'no-source'
         Say '沒有設發佈物來源（update.source 或版本檔的 source）—— 只用本機現有的那一份。'
-    } elseif ($src -notmatch $GitHubSourcePattern) {
+    } elseif (-not $repo) {
         $remote.reason = 'unsupported-source'
-        Warn "發佈物來源不是可辨識的 GitHub repo（$src）—— 只用本機現有的那一份。"
+        Warn "發佈物來源認不得（$src）—— $ReleaseSourceHint。這次只用本機現有的那一份。"
     } else {
-        $remote.checked = $true
-        $api = "https://api.github.com/repos/$($Matches[1])/$($Matches[2])/releases/latest"
+        $remote.checked  = $true
+        $remote.provider = $repo.provider
         $rel = $null
-        try { $rel = Invoke-RestMethod -Uri $api -TimeoutSec 8 -Headers @{ 'User-Agent' = 'codex-sdlc' } -ErrorAction Stop }
-        catch { $remote.reason = 'unreachable'; Say '連不到發佈頁（離線或來源不可達）—— 用本機現有的那一份。' }
+        try { $rel = Get-LatestRelease $repo }
+        catch { $remote.reason = 'unreachable'; Say '連不到發佈頁（離線、來源不可達，或私有 repo 沒有設 token）—— 用本機現有的那一份。' }
 
         if ($rel) {
-            $latest = ([string]$rel.tag_name) -replace '^v', ''
+            $latest = ([string]$rel.tag) -replace '^v', ''
             $remote.latest = $latest
-            $asset = @($rel.assets | Where-Object { [string]$_.name -eq "codex-sdlc-$latest.zip" })[0]
-            if (-not $asset) { $asset = @($rel.assets | Where-Object { [string]$_.name -like 'codex-sdlc-*.zip' })[0] }
+            $asset = @($rel.assets | Where-Object { $_.name -eq "codex-sdlc-$latest.zip" })[0]
+            if (-not $asset) { $asset = @($rel.assets | Where-Object { $_.name -like 'codex-sdlc-*.zip' })[0] }
             if (-not $asset) {
                 $remote.reason = 'no-asset'
                 Warn "發佈頁的 $latest 沒有附 codex-sdlc-*.zip —— 用本機現有的那一份。"
             } else {
                 $remote.reachable = $true
-                $remote.url = [string]$asset.browser_download_url
+                $remote.url = [string]$asset.url
                 $dest = Join-Path $cache $latest
                 # 同一版已經在快取裡而且驗得過 → 一個位元組都不用再下載（第二台專案、離線的第二次都走這條）。
                 $hit = if (Test-Path $dest) { Test-Payload $dest } else { $null }
@@ -1134,7 +1527,7 @@ function Invoke-Fetch {
                     $tmpZip = Join-Path ([IO.Path]::GetTempPath()) ("sdlc-payload-" + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.zip')
                     try {
                         Say "下載發佈物 $latest…"
-                        Invoke-WebRequest -Uri $remote.url -OutFile $tmpZip -TimeoutSec 120 -Headers @{ 'User-Agent' = 'codex-sdlc' } -ErrorAction Stop
+                        Save-ReleaseAsset $repo $asset $tmpZip
                         $x = Expand-PayloadZip $tmpZip $cache
                         if (-not $x.ok) {
                             $remote.reason = $x.reason
@@ -1429,6 +1822,14 @@ function Invoke-Update {
         $cfg = ConvertTo-ConfigWithSchemaRef $cfg
         $script:Data.schemaAdded = $true
     }
+    # 4.14 起來源要分辨得出是哪一家（$ReleaseSourcePattern）。4.13 以前的 GitHub 寫法比較寬（開頭沒錨定：github.com/o/r、
+    # ssh://git@github.com/o/r.git 都收過）—— 換成 https 的寫法；換不了的要講，否則更新通知從這一版起靜默消失。
+    $script:Data.sourceMigrated = $null
+    $oldSrc = if ($cfg.PSObject.Properties['update'] -and $cfg.update.PSObject.Properties['source']) { ([string]$cfg.update.source).Trim() } else { '' }
+    if ($oldSrc -and -not (Get-ReleaseRepo $oldSrc) -and $oldSrc -match 'github\.com[/:]([^/\s]+)/([^/\s]+?)(\.git)?/?$') {
+        $cfg.update.source = "https://github.com/$($Matches[1])/$($Matches[2])"
+        $script:Data.sourceMigrated = [ordered]@{ from = $oldSrc; to = $cfg.update.source }
+    }
     # 下面整份改寫會把註解吃掉 —— 先備份原檔，再說一聲。
     $script:Data.configCommentsBackup = $null
     if (Test-JsonHasComments ([IO.File]::ReadAllText($cfgPath))) {
@@ -1443,6 +1844,8 @@ function Invoke-Update {
     if ($newAgents.Count -gt 0) { Say "$ConfigFile：新增 agent $($newAgents -join '、')（值填 inherit），既有設定一個字沒動。" }
     if ($script:Data.reviewAdded) { Say "$ConfigFile：新增 review.maxRounds = $DefaultReviewRounds（⑤ 的修正輪上限，跟以前寫死的一樣；可改成 1–5）。" }
     if ($script:Data.schemaAdded) { Say "$ConfigFile：加上 `$schema —— 在編輯器裡改這個檔會有補全與錯字提示。" }
+    if ($script:Data.sourceMigrated) { Say "$ConfigFile：update.source 換成 $($cfg.update.source)（原本的 $oldSrc 這一版起認不得）。" }
+    elseif ($oldSrc -and -not (Get-ReleaseRepo $oldSrc)) { Warn "update.source 認不得（$oldSrc）—— 更新通知查不到。$ReleaseSourceHint：pwsh .codex/scripts/sdlc.ps1 set update.source=<網址>" }
 
     $bl = [ordered]@{}
     foreach ($rel in (Get-ToolFileList $Target)) {
@@ -1559,12 +1962,13 @@ function Get-KnownAgentNames([string]$root, $cfg) {
 }
 
 # 驗一組 key=value。回 @{ ok; key; value（已轉型）; message; suggestion; needsApply }。
-function Test-SettingAssignment($schema, [string]$key, [string]$raw, [string[]]$agentNames) {
+function Test-SettingAssignment($schema, [string]$key, [string]$raw, [string[]]$agentNames, [string[]]$codexEfforts = @()) {
     $settable = @('review.maxRounds', 'update.check', 'update.source') +
                 @($agentNames | ForEach-Object { "agents.$_.effort"; "agents.$_.model" })
     $fail = { param($msg, $sug) [pscustomobject]@{ ok = $false; key = $key; value = $raw; message = $msg; suggestion = $sug; needsApply = $false } }
 
     if ($key -in @('$schema', '_note', 'workflow-version')) { return & $fail "$key 由 install／update 維護，不能用 set 改" $null }
+    if ($key -eq 'models-checked-with') { return & $fail "$key 由 set 自己記（最後一次改 model／effort 時，那台的 Codex 版本），不能直接改" $null }
     if ($key -eq 'update.channel') { return & $fail 'update.channel 已棄用 —— 沒有任何一方讀它，設了也沒有作用' $null }
     $segments = @($key -split '\.')
     if ($segments[0] -ceq 'agents' -and $segments.Count -eq 3 -and $segments[1] -cnotin $agentNames) {
@@ -1587,7 +1991,9 @@ function Test-SettingAssignment($schema, [string]$key, [string]$raw, [string[]]$
     }
     if ($node.enum) {
         $allowed = @($node.enum | ForEach-Object { [string]$_ })
-        if ($raw -cnotin $allowed) {
+        # effort：這台的 Codex 認得、schema 還沒列的（Codex 升版新增的值）也收 —— 合不合那個模型，Invoke-SettingWrite 跟 model 一起驗。
+        $codexKnows = $segments[0] -ceq 'agents' -and $segments.Count -eq 3 -and $segments[2] -ceq 'effort' -and $raw -cin $codexEfforts
+        if ($raw -cnotin $allowed -and -not $codexKnows) {
             $near = Get-ClosestText $raw $allowed
             return & $fail "不是合法值 —— 可用：$($allowed -join '、')" $(if ($near) { "$key=$near" } else { $null })
         }
@@ -1661,9 +2067,13 @@ function Invoke-SettingWrite([object[]]$pairs, [bool]$preview, [bool]$applyAfter
     if ($pairs.Count -eq 0) { Warn '沒有要改的值。用法：sdlc.ps1 set agents.reviewer.effort=high review.maxRounds=4 [-Apply]'; $script:Data.error = 'no-assignments'; return 2 }
 
     $agentNames = Get-KnownAgentNames $Target $cfg
+    # model／effort 要對這台的 Codex 驗：有這兩種 key 才去問 codex（只改 review.* 之類的不付那半秒）。
+    $catalog = $null
+    if (@($pairs | Where-Object { $_.key -match '^agents\.[^.]+\.(model|effort)$' }).Count -gt 0) { $catalog = Get-ModelCatalog $Target }
+    $codexEfforts = if ($catalog -and $catalog.available) { @(Get-CatalogEffortOrder $catalog) } else { @() }
     $checked = @()
     foreach ($p in $pairs) {
-        $r = Test-SettingAssignment $schema $p.key $p.raw $agentNames
+        $r = Test-SettingAssignment $schema $p.key $p.raw $agentNames $codexEfforts
         if (-not $r.ok) {
             $script:Data.errors += [ordered]@{ key = $r.key; value = $r.value; message = $r.message; suggestion = $r.suggestion }
         } else {
@@ -1700,6 +2110,39 @@ function Invoke-SettingWrite([object[]]$pairs, [bool]$preview, [bool]$applyAfter
             needsApply = $r.needsApply
         }
         if (-not $same) { $changed++; Set-ConfigValue $cfg $segments $r.value }
+    }
+
+    # model／effort：照這台 Codex 的模型清單驗「改完之後」每個被動到的 agent —— 同一個 agent 的 model 與 effort 要一起看
+    # （effort 合不合法由模型決定）。會讓子代理起不來的跟「值不合法」一樣擋；只在別台才會出事的照寫，但講。
+    $touched = @($final.Keys | Where-Object { $_ -match '^agents\.[^.]+\.(model|effort)$' } | ForEach-Object { ($_ -split '\.')[1] } | Sort-Object -Unique)
+    if ($touched.Count -gt 0) {
+        if (-not $catalog) { $catalog = Get-ModelCatalog $Target }
+        $session = Get-SessionModel $Target $catalog
+        $checkedWith = if ($cfg.PSObject.Properties['models-checked-with']) { [string]$cfg.'models-checked-with' } else { $null }
+        $mf = @(foreach ($a in $touched) {
+            $ac = Get-AgentConfig $cfg $a
+            Test-ModelChoice $catalog $session $a $(if ($ac) { [string]$ac.model } else { $null }) $(if ($ac) { [string]$ac.effort } else { $null }) $checkedWith
+        })
+        foreach ($f in @($mf | Where-Object level -eq 'problem')) {
+            $isModel = $f.status -eq 'unknown-model'
+            $script:Data.errors += [ordered]@{ key = "agents.$($f.agent).$(if ($isModel) { 'model' } else { 'effort' })"; value = $(if ($isModel) { $f.model } else { $f.effort }); message = $f.message; suggestion = $f.suggestion }
+        }
+        if ($script:Data.errors.Count -gt 0) {
+            foreach ($e in $script:Data.errors) {
+                Warn "$($e.key)=$($e.value)：$($e.message)$(if ($e.suggestion) { " —— 是不是要 $($e.suggestion)？" })"
+            }
+            Warn '有值在這台的 Codex 上跑不起來，這次一個值都沒寫。'
+            $script:Data.error = 'invalid'
+            return 2
+        }
+        foreach ($f in @($mf | Where-Object level -eq 'warn')) { Warn (Format-ModelFinding $f) }
+        $modelChanged = @($script:Data.changes | Where-Object { $_.changed -and $_.key -match '^agents\.[^.]+\.(model|effort)$' }).Count
+        if (-not $catalog.available) {
+            Say "model／effort 只照 schema 驗了 —— $(Get-CatalogReasonText $catalog)。這台的模型支不支援沒有驗。"
+        } elseif ($modelChanged -gt 0) {
+            # 記下這組值是在哪一版 Codex 上選的：別台的 doctor 才分得出「這台太舊，該升級」還是「新版拿掉了，該換」。
+            Set-ConfigValue $cfg @('models-checked-with') ([string]$catalog.codex.version)
+        }
     }
 
     $width = (@($final.Keys | ForEach-Object { $_.Length }) | Measure-Object -Maximum).Maximum
@@ -1826,17 +2269,20 @@ function Invoke-CheckUpdate {
     }
 
     $src = if ($cfg.update) { [string]$cfg.update.source } else { '' }
-    if ($src -notmatch $GitHubSourcePattern) {
+    $repo = Get-ReleaseRepo $src
+    if (-not $repo) {
         $script:Data.status = 'unsupported-source'
-        Warn "update.source 不是可辨識的 GitHub repo（$src）—— 無法自動檢查，請手動看發佈頁。"
+        Warn "update.source 認不得（$src）—— $ReleaseSourceHint。這次無法自動檢查，請手動看發佈頁。"
         return 0
     }
-    $api = "https://api.github.com/repos/$($Matches[1])/$($Matches[2])/releases/latest"
+    $script:Data.provider = $repo.provider
 
+    $rel = $null
     try {
-        $rel = Invoke-RestMethod -Uri $api -TimeoutSec 8 -Headers @{ 'User-Agent' = 'codex-sdlc' } -ErrorAction Stop
+        $rel = Get-LatestRelease $repo
+        if (-not $rel) { throw 'no release' }
     } catch {
-        # 離線、逾時、私有 repo 一律靜默 —— 檢查更新失敗不是使用者要處理的事。
+        # 離線、逾時、私有 repo（沒設 token）、還沒有任何發佈一律靜默 —— 檢查更新失敗不是使用者要處理的事。
         # 只記下「試過了」，好讓 -IfDue 一小時內不重試；其餘欄位原樣保留（newer 沒有就是 false，通知不會亂喊）。
         $keep = [ordered]@{}
         if ($cache) { foreach ($p in $cache.PSObject.Properties) { $keep[$p.Name] = $(if ($p.Value -is [DateTime]) { $p.Value.ToString('o') } else { $p.Value }) } }
@@ -1848,7 +2294,7 @@ function Invoke-CheckUpdate {
         return 0
     }
 
-    $latest = ([string]$rel.tag_name) -replace '^v', ''
+    $latest = ([string]$rel.tag) -replace '^v', ''
     $newer  = [bool]($latest -and ((Compare-Semver $latest $tgtVer.contract) -gt 0))
     $checkedAt = (Get-Date).ToString('o')
     Write-JsonFile $cachePath ([ordered]@{
@@ -1857,13 +2303,13 @@ function Invoke-CheckUpdate {
         'latest'     = $latest
         'newer'      = $newer
         'notes'      = if ($rel.body) { [string]$rel.body } else { '' }
-        'url'        = [string]$rel.html_url
+        'url'        = [string]$rel.url
         'seen'       = ''
     })
     $script:Data.status    = if ($newer) { 'newer' } else { 'up-to-date' }
     $script:Data.latest    = $latest
     $script:Data.newer     = $newer
-    $script:Data.url       = [string]$rel.html_url
+    $script:Data.url       = [string]$rel.url
     $script:Data.checkedAt = $checkedAt
     if ($newer) { Say "有新版 $latest（你在 $($tgtVer.contract)）。看變更：pwsh .codex/scripts/sdlc.ps1 whatsnew" }
     else        { Say "已是最新（$($tgtVer.contract)）。" }
@@ -2070,11 +2516,10 @@ function Invoke-Doctor {
         } else {
             Say '調校區塊與設定檔一致。'
         }
-        foreach ($p in @($cfg.agents.PSObject.Properties)) {
-            if ($p.Value.model -and $p.Value.model -ne 'inherit') {
-                $script:Data.unverifiedModel += $p.Name
-                Warn "$($p.Name)：設了 model=`"$($p.Value.model)`" —— 這個 key 尚未在本工作流驗證過，Codex 若忽略它會靜默地用預設模型跑。"
-            }
+        # 不算問題（不影響流程），但要講：check-update 對認不得的來源只會靜默地查不到。
+        $src = if ($cfg.PSObject.Properties['update'] -and $cfg.update.PSObject.Properties['source']) { ([string]$cfg.update.source).Trim() } else { '' }
+        if ($src -and -not (Get-ReleaseRepo $src)) {
+            Warn "update.source 認不得（$src）—— 更新通知查不到。$ReleaseSourceHint：pwsh .codex/scripts/sdlc.ps1 set update.source=<網址>"
         }
     }
 
@@ -2117,6 +2562,26 @@ function Invoke-Doctor {
     $script:Data.environment = @($envItems)
     $problems += (Show-Environment $envItems)
 
+    # model／effort 對這台的 Codex：會讓子代理起不來的算問題；只在別台／別的主對話模型才會出事的，講但不算。
+    $catalog = Get-ModelCatalog $Target
+    $session = Get-SessionModel $Target $catalog
+    $mf = @(Get-ModelFindings $catalog $session $cfg $Target)
+    $script:Data.models = Get-ModelsData $catalog $session $mf $cfg
+    # 4.8 起的欄位：「釘了 model，但沒能對這台的 Codex 驗」（4.15 以前是「model 這個 key 沒驗證過」—— 已經實測會生效）。
+    $script:Data.unverifiedModel = @($mf | Where-Object { $_.status -eq 'unverified' -and $_.model -ne 'inherit' } | ForEach-Object { $_.agent })
+    $pinned = @($mf | Where-Object { $_.status -ne 'ok' })
+    if (-not $catalog.available) {
+        if ($pinned.Count) { Say "model／effort：沒有對 Codex 驗證 —— $(Get-CatalogReasonText $catalog)。" }
+    } else {
+        foreach ($f in @($mf | Where-Object { $_.level -in @('problem', 'warn') })) {
+            Warn (Format-ModelFinding $f)
+            if ($f.level -eq 'problem') { $problems++ }
+        }
+        if (-not @($mf | Where-Object { $_.level -in @('problem', 'warn') }).Count) {
+            Say "model／effort：對照這台 Codex $($catalog.codex.version) 的模型清單，沒有問題$(if ($pinned.Count -eq 0) { '（全部 inherit）' })。"
+        }
+    }
+
     # 更新快取：installed 跟現在的版本對不上 = 升級前留下來的，不當真（見 handoff-lint 尾端同一條）。
     $cache = Read-JsonFile (Join-Path $Target $CacheRel)
     $cacheStale = [bool]($cache -and [string]$cache.installed -ne [string]$v.contract)
@@ -2146,6 +2611,46 @@ function Invoke-Doctor {
     return $(if ($problems -gt 0) { 2 } else { 0 })
 }
 
+# 這台的 Codex 有哪些模型、各支援哪些 effort，以及每個 agent 現在的值在這台會怎樣。
+# 沒裝工作流的資料夾也能用（只列清單）。問不到清單 → exit 2：這個指令要回答的就是這件事。
+function Invoke-Models {
+    $catalog = Get-ModelCatalog $Target
+    $cfg = Read-JsonFile (Join-Path $Target $ConfigFile)
+    $session = Get-SessionModel $Target $catalog
+    $installed = [bool](Get-ContractVersion $Target)
+    $mf = if ($installed) { @(Get-ModelFindings $catalog $session $cfg $Target) } else { @() }
+    $script:Data.models = Get-ModelsData $catalog $session $mf $cfg
+    if (-not $catalog.available) {
+        Warn "問不到模型清單 —— $(Get-CatalogReasonText $catalog)。set 只能照 schema 驗值，這台支不支援沒有驗。"
+        return 2
+    }
+
+    $src = if ($catalog.source -eq 'cache') { '快取' } else { '剛問過' }
+    Say "Codex $($catalog.codex.version) 的模型清單（$($catalog.codex.path)；$src）："
+    $shown = @($catalog.models | Where-Object { $_.visible } | Sort-Object { $_.priority })
+    $w = (@($shown | ForEach-Object { $_.slug.Length }) + 8 | Measure-Object -Maximum).Maximum
+    foreach ($m in $shown) {
+        $levels = @($m.efforts | ForEach-Object { if ($_ -eq $m.defaultEffort) { "$_*" } else { $_ } }) -join ' '
+        $tag = if ($m.slug -eq $catalog.default) { '   ← 沒設模型時用它' } else { '' }
+        Say ("  {0}  {1}{2}" -f $m.slug.PadRight($w), $levels, $tag)
+    }
+    $hidden = @($catalog.models | Where-Object { -not $_.visible } | ForEach-Object { $_.slug })
+    Say "  （* = 那個模型的預設 effort$(if ($hidden.Count) { "；沒列出的隱藏模型：$($hidden -join '、')" })）"
+    Say "主對話：$(if ($session.model) { "$($session.model)（$($session.source)）" } else { '看不出來' }) —— model 是 inherit 的 agent 用它。"
+    if (-not $installed) { return 0 }
+
+    $problems = 0
+    Say '各 agent：'
+    foreach ($f in $mf) {
+        $mark = switch ($f.level) { 'problem' { '✖' } 'warn' { '⚠' } default { '✓' } }
+        $line = "  $mark $($f.agent)：model=$($f.model)$(if ($f.model -eq 'inherit' -and $f.effectiveModel) { "（$($f.effectiveModel)）" })　effort=$($f.effort)"
+        Say $line
+        if ($f.level -in @('problem', 'warn')) { Warn (Format-ModelFinding $f) }
+        if ($f.level -eq 'problem') { $problems++ }
+    }
+    return $(if ($problems -gt 0) { 2 } else { 0 })
+}
+
 # ---- 派送 ----
 $code = switch ($Command) {
     'install'      { Invoke-Install }
@@ -2157,6 +2662,7 @@ $code = switch ($Command) {
     'whatsnew'     { Invoke-WhatsNew }
     'tune'         { Invoke-Tune }
     'doctor'       { Invoke-Doctor }
+    'models'       { Invoke-Models }
 }
 
 if ($Json) {
