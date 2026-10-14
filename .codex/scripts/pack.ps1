@@ -20,6 +20,11 @@
 # 同一份 manifest，所以「兩份 payload 分岔」在構造上不可能發生；複製完還會從產出的 vsix 裡讀回版本再驗一次。
 # payload 只在打包期間存在於工作區，finally 一定刪掉，而且不進版控。
 #
+# 給了 -NpmRegistry 時，另外把同一個 vsix 包成一個 npm 套件（dist/codex-sdlc-{version}.tgz），給私有 npm registry
+# （例如 Nexus npm hosted）配 Private Extension Manager 用。pack 只產生、不 publish —— 發佈是對外的動作，留給維護者：
+#   npm publish dist/codex-sdlc-{version}.tgz
+# 套件的 package.json 是另外產生的，不改 vscode-extension/package.json（它的 private:true 正是防誤發的那道鎖）。
+#
 # Exit: 0 = 打包完成；2 = 驗證未過或參數錯誤。
 
 [CmdletBinding()]
@@ -28,6 +33,7 @@ param(
     [string]$OutDir = 'dist',
     [switch]$SkipTests,
     [switch]$SkipExtension,              # 不打包 VS Code extension（沒有 Node.js 的機器、或這一版不帶編輯器那一層）
+    [string]$NpmRegistry,                # 另外產生 vsix 的 npm 發佈包，publishConfig.registry 指向這裡（例如 Nexus npm hosted）
     [switch]$Json
 )
 
@@ -59,6 +65,16 @@ if (-not (Test-Path $verFile)) { Fail "找不到 $VersionRel" }
 $ver = Get-Content $verFile -Raw -Encoding UTF8 | ConvertFrom-Json
 $version = [string]$ver.'contract-version'
 if ($version -notmatch '^\d+\.\d+\.\d+$') { Fail "contract-version 不是 semver：$version" }
+
+# npm 發佈包的參數先驗：錯了不該讓維護者等完 lint、測試、vsix 才知道。
+# registry 是必填而不是發佈時再給 —— 套件名是沒有 scope 的 codex-sdlc，publishConfig 沒寫死的話，
+# 一句 npm publish 就會把內附整份 payload 的 vsix 發到公開的 npmjs.org，而且收不回來。
+if ($NpmRegistry) {
+    if ($SkipExtension) { Fail '-NpmRegistry 要包的是 vsix，跟 -SkipExtension 不能一起用。' }
+    if (-not (Test-Path (Join-Path $Root "$ExtensionDir/package.json"))) { Fail "-NpmRegistry 要包的是 vsix，但這個 repo 沒有 $ExtensionDir/。" }
+    if ($NpmRegistry -notmatch '^https?://[^\s/]+') { Fail "-NpmRegistry 要是 registry 的網址（例如 https://nexus.example/repository/npm-hosted/），收到：$NpmRegistry" }
+    if (-not $NpmRegistry.EndsWith('/')) { $NpmRegistry += '/' }
+}
 
 # 來源網址跟著發佈物走 —— install 會把它寫進每個消費端的 sdlc.config.json。
 # 沒設不阻斷（第一版還沒推上去很正常），但一定要喊：沒有它，那些專案永遠不會
@@ -252,8 +268,43 @@ try {
     if (Test-Path $zip) { Remove-Item $zip -Force }
     Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip -CompressionLevel Optimal
 
+    # ---- npm 發佈包（-NpmRegistry）----
+    # Private Extension Manager 的格式：一般的 npm 套件，帶 publisher／engines.vscode，files 裡第一個 .vsix 就是它要裝的。
+    # 欄位一律從**產出的 vsix 本身**的 package.json 帶 —— 版本、publisher 跟真的會被裝起來的那份一致，不會手填出岔。
+    # README 一起放：manager 的詳細頁讀的是 npm 套件裡的 README，不是 vsix 裡的。
+    $npmTgz = $null
+    if ($NpmRegistry) {
+        $npmStage = Join-Path $extBuild 'npm'
+        New-Item -ItemType Directory -Path $npmStage -Force | Out-Null
+        $vsixName = "codex-sdlc-$version.vsix"
+        Copy-Item $vsix (Join-Path $npmStage $vsixName) -Force
+        $npmFiles = @($vsixName)
+        $readme = Join-Path $extRoot 'README.md'
+        if (Test-Path $readme) { Copy-Item $readme (Join-Path $npmStage 'README.md') -Force; $npmFiles += 'README.md' }
+        $npmPkg = [ordered]@{
+            name          = [string]$vpkg.name
+            displayName   = [string]$vpkg.displayName
+            description   = [string]$vpkg.description
+            version       = $version
+            publisher     = [string]$vpkg.publisher
+            engines       = [ordered]@{ vscode = [string]$vpkg.engines.vscode }
+            files         = $npmFiles
+            publishConfig = [ordered]@{ registry = $NpmRegistry }
+        }
+        if ($vpkg.extensionKind) { $npmPkg.extensionKind = @($vpkg.extensionKind) }   # remote 工作區裝在哪一邊，manager 靠它判斷
+        [IO.File]::WriteAllText((Join-Path $npmStage 'package.json'), (($npmPkg | ConvertTo-Json -Depth 4) + "`n"), $Utf8NoBom)
+
+        $npmTgz = Join-Path $outAbs "$($npmPkg.name)-$version.tgz"
+        if (Test-Path $npmTgz) { Remove-Item $npmTgz -Force }
+        Push-Location $npmStage
+        try {
+            Invoke-Utf8 { & npm pack --pack-destination $outAbs 2>&1 | ForEach-Object { Say "  $_" } }
+            if ($LASTEXITCODE -ne 0 -or -not (Test-Path $npmTgz)) { Fail "npm pack 失敗，沒產出 $(Split-Path $npmTgz -Leaf)。" }
+        } finally { Pop-Location }
+    }
+
     if ($Json) {
-        [pscustomobject]@{ version = $version; zip = $zip; file_count = $files.Count; vsix = $(if ($vsix) { "editor/codex-sdlc-$version.vsix" } else { $null }) } | ConvertTo-Json -Compress
+        [pscustomobject]@{ version = $version; zip = $zip; file_count = $files.Count; vsix = $(if ($vsix) { "editor/codex-sdlc-$version.vsix" } else { $null }); npm = $npmTgz } | ConvertTo-Json -Compress
     } else {
         Say ''
         Say "打包完成：$zip"
@@ -262,6 +313,11 @@ try {
         Say '使用者的安裝方式（解壓到別處，不要直接蓋在專案上）：'
         Say '  pwsh <解壓目錄>/.codex/scripts/sdlc.ps1 install -Target <他的專案>'
         if ($vsix) { Say '  （要順便裝 VS Code extension 就加 -WithEditor）' }
+        if ($npmTgz) {
+            Say ''
+            Say "npm 發佈包：$npmTgz（publishConfig.registry = $NpmRegistry）"
+            Say "發到私有 registry（pack 不代發）：npm login --registry=$NpmRegistry，然後 npm publish `"$npmTgz`""
+        }
     }
 } finally {
     Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
