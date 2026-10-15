@@ -1132,6 +1132,16 @@ if ($log) { Add-Content -LiteralPath $log ("args=" + ($args -join ' ')) }
 if ($args[0] -eq '--version') { [Console]::Out.WriteLine("codex-cli $(if ($env:FAKE_CODEX_VERSION) { $env:FAKE_CODEX_VERSION } else { '0.162.1' })"); exit 0 }
 if ($args[0] -eq 'debug' -and $args[1] -eq 'models') {
     if ($env:FAKE_CODEX_NO_MODELS) { [Console]::Error.WriteLine("error: unrecognized subcommand 'models'"); exit 2 }
+    switch ($env:FAKE_CODEX_MODELS_MODE) {
+        'exit'      { [Console]::Error.WriteLine('error: failed to load config'); exit 3 }
+        'not-json'  { [Console]::Out.WriteLine('Logged in using ChatGPT'); exit 0 }
+        'no-models' { [Console]::Out.Write('{"providers":[]}'); exit 0 }
+        # 真的 codex 不管 console 的 code page，一律寫 UTF-8 位元組；說明文字裡有 — … ’ “ ”（0.162.1 實測）。
+        'utf8-bytes' {
+            $o = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'models.json')) -replace '"(\w+) reasoning"', ('"$1 reasoning ' + [char]0x2014 + ' ' + [char]0x201C + 'deep' + [char]0x201D + ' ' + [char]0x2026 + '"')
+            $b = [Text.UTF8Encoding]::new($false).GetBytes($o); $s = [Console]::OpenStandardOutput(); $s.Write($b, 0, $b.Length); $s.Flush(); exit 0
+        }
+    }
     [Console]::Out.Write([IO.File]::ReadAllText((Join-Path $PSScriptRoot 'models.json'))); exit 0
 }
 exit 0
@@ -1267,6 +1277,54 @@ exit 0
                 Assert-True (-not (Get-Content (Join-Path $t 'sdlc.config.json') -Raw | ConvertFrom-Json).PSObject.Properties['models-checked-with']) '沒驗過卻記了版本'
                 Set-AgentValues $t 'reviewer' 'inherit' 'inherit'
             }
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'models：問不到清單的原因分開講 —— 只有版本真的比 0.154.0 舊才提版本門檻' {
+        $t = New-ModelsTarget 'm5b'; $codex = New-ModelsCodex
+        try {
+            foreach ($case in @(
+                @{ want = 'too-old';      text = '0\.154\.0';          env = (Get-MachineEnv '' '0.150.0' @{ FAKE_CODEX_NO_MODELS = '1' }) }
+                @{ want = 'exit-nonzero'; text = '結束碼 2';           env = (Get-MachineEnv '' '0.162.1' @{ FAKE_CODEX_NO_MODELS = '1' }) }
+                @{ want = 'exit-nonzero'; text = '結束碼 3';           env = (Get-MachineEnv '' '0.162.1' @{ FAKE_CODEX_MODELS_MODE = 'exit' }) }
+                @{ want = 'invalid-json'; text = '不是 JSON';          env = (Get-MachineEnv '' '0.162.1' @{ FAKE_CODEX_MODELS_MODE = 'not-json' }) }
+                @{ want = 'no-models';    text = '沒有 models';        env = (Get-MachineEnv '' '0.162.1' @{ FAKE_CODEX_MODELS_MODE = 'no-models' }) }
+            )) {
+                $j = Invoke-SdlcJson models @{ Target = $t; CodexPath = $codex } -Env $case.env
+                Assert-Equal 2 $j.exit "$($case.want)：問不到清單，models 該回 2"
+                Assert-Equal $false $j.data.models.catalog.available
+                Assert-Equal $case.want $j.data.models.catalog.reason
+                $w = @($j.warnings) -join "`n"
+                Assert-Match $case.text $w "$($case.want)：原因沒講清楚"
+                if ($case.want -ne 'too-old') { Assert-True ($w -notmatch '0\.154\.0') "$($case.want)：版本夠新卻叫人升級：$w" }
+            }
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '沒有 console 視窗、code page 不是 UTF-8 時（VS Code 的背景 doctor）照樣讀得到 codex 的 UTF-8 清單' {
+        # extension 用 windowsHide 叫 pwsh：沒有視窗的 console 用系統的 OEM code page（zh-TW 是 950），
+        # 而 codex 輸出 UTF-8。用 950 去解，多位元組字元會吃掉後面的引號 —— JSON 壞掉、清單是空的（終端機裡卻正常）。
+        # 這裡在自己的隱藏 console 裡把 code page 釘成 950，任何機器都重現得出來，也不動到跑測試的這個 console。
+        $t = New-ModelsTarget 'm-cp'; $src = Split-Path (New-ModelsCodex)
+        $dir = Join-Path $SdlcRoot 'Author Software\fake codex'
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+        Copy-Item (Join-Path $src '*') $dir
+        $codex = Join-Path $dir 'codex.cmd'
+        try {
+            $psi = [Diagnostics.ProcessStartInfo]::new('pwsh')
+            $code = "[Console]::OutputEncoding = [Text.Encoding]::GetEncoding(950); & '$($Sdlc -replace "'", "''")' models -Target '$($t -replace "'", "''")' -CodexPath '$($codex -replace "'", "''")' -Json; exit `$LASTEXITCODE"
+            foreach ($a in @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', $code)) { $psi.ArgumentList.Add($a) }
+            $psi.WorkingDirectory = (Get-Location).Path; $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true
+            $psi.RedirectStandardInput = $true; $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
+            $psi.StandardOutputEncoding = $Utf8; $psi.StandardErrorEncoding = $Utf8
+            foreach ($kv in (Get-MachineEnv '' '0.162.1' @{ FAKE_CODEX_MODELS_MODE = 'utf8-bytes' }).GetEnumerator()) { $psi.Environment[$kv.Key] = [string]$kv.Value }
+            $p = [Diagnostics.Process]::Start($psi); $p.StandardInput.Close()
+            $o = $p.StandardOutput.ReadToEndAsync(); $e = $p.StandardError.ReadToEndAsync()
+            Assert-True ($p.WaitForExit(120000)) '逾時'
+            $j = $o.GetAwaiter().GetResult() | ConvertFrom-Json
+            Assert-Equal $null $j.data.models.catalog.reason "stderr: $($e.GetAwaiter().GetResult()) / warnings: $($j.warnings -join ' | ')"
+            Assert-Equal $true $j.data.models.catalog.available
+            Assert-Equal 'gpt-big,gpt-mid,gpt-secret' (@($j.data.models.catalog.models | ForEach-Object slug) -join ',')
         } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
     }
 

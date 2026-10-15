@@ -714,6 +714,7 @@ function Show-HookTrust($trust) {
 #   agent 的 model 是 inherit              → 跟主對話同一個模型；主對話沒設模型 = 清單裡 visibility=list、priority 最小的那個
 # 找不到 codex（只用 IDE 的 Codex 擴充）或它太舊、沒有 debug models → 退回 schema 的靜態清單，並且明講「沒有對 Codex 驗證」。
 $ModelCatalogTtlHours = 24
+$ModelCatalogMinCodex = '0.154.0'     # debug models 從這一版起才有
 
 # 這台機器上、不屬於任何專案的狀態（模型清單的快取）。handoff-lint 讀同一個位置 —— 那邊有一份相同的兩行。
 function Get-SdlcStateDir {
@@ -758,9 +759,13 @@ function Get-ModelCatalog([string]$cwd) {
     $out.source = 'cache'
     if (-not $fresh) {
         $r = Invoke-Probe $codex @('debug', 'models') $cwd (Get-NoNetEnv) 20000
+        # 失敗分開講（只記結束碼，不留 codex 的輸出）：只有版本真的比門檻舊，才是「太舊」。
+        $out | Add-Member -NotePropertyName exit -NotePropertyValue $r.exit
+        if ($r.timedOut) { $out.reason = 'timeout'; return $out }
+        if ($r.exit -ne 0) { $out.reason = $(if ((Compare-Semver $ver $ModelCatalogMinCodex) -lt 0) { 'too-old' } else { 'exit-nonzero' }); return $out }
         $raw = $null
-        if ($r.exit -eq 0) { try { $raw = $r.stdout | ConvertFrom-Json -ErrorAction Stop } catch { } }
-        if (-not $raw -or -not $raw.PSObject.Properties['models']) { $out.reason = $(if ($r.timedOut) { 'timeout' } else { 'no-catalog' }); return $out }
+        try { $raw = $r.stdout | ConvertFrom-Json -ErrorAction Stop } catch { $out.reason = 'invalid-json'; return $out }
+        if (-not $raw -or -not $raw.PSObject.Properties['models']) { $out.reason = 'no-models'; return $out }
         $models = @(foreach ($m in @($raw.models)) {
             if (-not $m.slug) { continue }
             [ordered]@{
@@ -937,8 +942,12 @@ function Get-CatalogReasonText($catalog) {
     switch ($catalog.reason) {
         'codex-not-found' { return '找不到 codex 執行檔（只用 IDE 的 Codex 擴充時是正常的；要驗就加 -CodexPath <codex 的完整路徑>）' }
         'no-version'      { return "codex --version 沒有給出版本（$($catalog.codex.path)）" }
-        'timeout'         { return 'codex debug models 逾時' }
-        default           { return "這版 codex 問不到模型清單（debug models 要 0.154.0 以上）：$($catalog.codex.path)" }
+        'timeout'         { return "codex debug models 逾時（$($catalog.codex.path)）" }
+        'too-old'         { return "這版 codex（$($catalog.codex.version)）沒有 debug models，要 $ModelCatalogMinCodex 以上：$($catalog.codex.path)" }
+        'exit-nonzero'    { return "codex debug models 失敗，結束碼 $($catalog.exit)（$($catalog.codex.path)，版本 $($catalog.codex.version)）" }
+        'invalid-json'    { return "codex debug models 的輸出不是 JSON（$($catalog.codex.path)，版本 $($catalog.codex.version)）" }
+        'no-models'       { return "codex debug models 的 JSON 裡沒有 models（$($catalog.codex.path)，版本 $($catalog.codex.version)）" }
+        default           { return "問不到模型清單（$($catalog.reason)）：$($catalog.codex.path)" }
     }
 }
 
@@ -979,6 +988,10 @@ function Invoke-Probe([string]$exe, [string[]]$arguments, [string]$cwd, [hashtab
     $psi.RedirectStandardInput  = $true
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError  = $true
+    # codex 一律寫 UTF-8。不指定就用 [Console] 的 code page 解 —— 從 VS Code 叫起來時沒有 console 視窗，那是系統的
+    # OEM code page（zh-TW 是 950）：codex debug models 說明文字裡的 — “ ” 會吃掉後面的引號，JSON 壞掉、清單是空的。
+    $psi.StandardOutputEncoding = $Utf8NoBom
+    $psi.StandardErrorEncoding  = $Utf8NoBom
     foreach ($k in $envOverrides.Keys) {
         if ($null -eq $envOverrides[$k]) { [void]$psi.Environment.Remove($k) } else { $psi.Environment[$k] = [string]$envOverrides[$k] }
     }
