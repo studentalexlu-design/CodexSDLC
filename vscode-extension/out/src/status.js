@@ -138,7 +138,7 @@ function statusFromDoctor(d, now) {
     if (d.lint.ran && d.lint.passed)
         tooltip.push('agent-lint：通過');
     if (showUpdate)
-        tooltip.push(`有新版 ${d.update.latest} —— 看變更：Codex SDLC：whatsnew`);
+        tooltip.push(`有新版 ${d.update.latest} —— 點狀態列選「升級」；只看變更：Codex SDLC：whatsnew`);
     else if (d.update.check === 'never')
         tooltip.push('更新檢查：關閉（update.check = never）');
     for (const e of d.editor.installed.filter((x) => !x.compatible)) {

@@ -156,7 +156,7 @@ export function statusFromDoctor(d: DoctorData, now: Date): StatusView {
       : 'model／effort：沒對 Codex 驗證（這台問不到模型清單）');
   }
   if (d.lint.ran && d.lint.passed) tooltip.push('agent-lint：通過');
-  if (showUpdate) tooltip.push(`有新版 ${d.update.latest} —— 看變更：Codex SDLC：whatsnew`);
+  if (showUpdate) tooltip.push(`有新版 ${d.update.latest} —— 點狀態列選「升級」；只看變更：Codex SDLC：whatsnew`);
   else if (d.update.check === 'never') tooltip.push('更新檢查：關閉（update.check = never）');
   for (const e of d.editor.installed.filter((x) => !x.compatible)) {
     tooltip.push(`${e.product} 裝的 extension ${e.version} 跟這個專案的 -Json 形狀對不上 —— 換成這一版發佈物附的 vsix`);

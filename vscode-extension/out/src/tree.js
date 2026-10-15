@@ -98,7 +98,11 @@ function updateStatusNode(i) {
     if (!u)
         return { ...base, label: '更新：檢查中…', tone: 'muted' };
     if (u.newer && u.latest) {
-        return { ...base, label: `有新版 ${u.latest}`, tone: 'warn', command: { command: 'codexSdlc.whatsnew', title: 'whatsnew' }, tooltip: '點一下看變更說明。' };
+        return {
+            ...base, label: `有新版 ${u.latest}`, description: '點一下升級', tone: 'warn',
+            command: { command: 'codexSdlc.upgrade', title: '升級' },
+            tooltip: '點一下升級：先下載、列出會動哪些檔，你確認了才寫。只想看變更說明：Codex SDLC：whatsnew。',
+        };
     }
     if (u.check === 'never')
         return { ...base, label: '更新檢查：關閉', tone: 'muted', tooltip: 'update.check = never —— 一條連線都沒有。' };

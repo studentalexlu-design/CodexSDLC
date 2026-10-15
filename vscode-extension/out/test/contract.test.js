@@ -237,6 +237,26 @@ const installData = (over = {}) => ({
     const early = (0, contract_1.parseUpdate)((0, contract_1.parseEnvelope)(envelope('update', { error: 'not-managed' }, { exit: 2 }), 'update'));
     strict_1.default.equal(early.error, 'not-managed');
 });
+(0, node_test_1.test)('update -Preview：計畫的每一項都讀得到；升級完的 vsix 在 editor 底下；舊發佈物沒有的欄位 → 安全的預設', () => {
+    const plan = (0, contract_1.parseUpdate)((0, contract_1.parseEnvelope)(envelope('update', {
+        from: '4.15.1', to: '4.16.0', breaking: true, downgrade: false, degraded: false,
+        unchanged: [], modified: ['AGENTS.md'], added: ['.codex/scripts/new.ps1'], removed: ['.codex/scripts/old.ps1'], notes: [],
+        result: 'preview', vsix: 'C:/cache/4.16.0/editor/codex-sdlc-4.16.0.vsix', hooksChanged: true,
+    }), 'update'));
+    strict_1.default.equal(plan.result, 'preview');
+    strict_1.default.equal(plan.breaking, true);
+    strict_1.default.deepEqual(plan.added, ['.codex/scripts/new.ps1']);
+    strict_1.default.deepEqual(plan.removed, ['.codex/scripts/old.ps1']);
+    strict_1.default.equal(plan.hooksChanged, true);
+    strict_1.default.match(plan.vsix ?? '', /codex-sdlc-4\.16\.0\.vsix$/);
+    const applied = (0, contract_1.parseUpdate)((0, contract_1.parseEnvelope)(envelope('update', {
+        from: '4.15.1', to: '4.16.0', breaking: false, degraded: false, unchanged: [], modified: [], added: [], removed: [], result: 'applied',
+        editor: { installed: [], vsix: 'C:/x/codex-sdlc-4.16.0.vsix', mismatch: false },
+    }), 'update'));
+    strict_1.default.equal(applied.vsix, 'C:/x/codex-sdlc-4.16.0.vsix');
+    strict_1.default.equal(applied.downgrade, false, '4.16.0 以前的發佈物不給 downgrade —— 不能讀成 undefined');
+    strict_1.default.throws(() => (0, contract_1.parseUpdate)((0, contract_1.parseEnvelope)(envelope('update', { from: '1', to: '2', modified: [], downgrade: 'yes' }), 'update')), /downgrade/);
+});
 (0, node_test_1.test)('doctor：models 段有就讀（4.15.0 起），沒有就是 undefined；欄位改名 → 紅，說得出是哪一個', async () => {
     const { doctorFixture, modelsFixture } = await Promise.resolve().then(() => __importStar(require('./fixtures')));
     const withModels = { ...doctorFixture(), models: modelsFixture() };

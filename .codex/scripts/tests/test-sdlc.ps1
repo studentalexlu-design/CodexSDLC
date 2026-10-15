@@ -294,6 +294,49 @@ Describe-Suite 'sdlc / 升級' {
             Assert-Match '破壞性升級' $res.stdout '低於最低相容版本卻沒有標示'
         } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
     }
+
+    It-Should '-Preview 只列計畫：改過的檔、新增、刪除、hooks 換不換都講，一個檔都不動' {
+        # extension 的「升級」拿這份計畫填確認對話框。這裡寫了任何一個檔，「確認」就成了事後告知。
+        $r1 = New-SdlcRelease 'r1-pv' -Extra @('.codex/scripts/a.ps1', '.codex/scripts/old.ps1'); $t = New-SdlcTarget 't-pv'
+        try {
+            Invoke-Sdlc install @{ Source = $r1; Target = $t } | Out-Null
+            New-SdlcFile (Join-Path $t '.codex/scripts/a.ps1') '# 使用者改過'
+            $before = @{}
+            Get-ChildItem $t -Recurse -File | ForEach-Object { $before[$_.FullName] = (Get-FileHash $_.FullName).Hash }
+            $r2 = New-SdlcRelease 'r2-pv' -Version '4.7.0' -WithHooks -WithVsix -Extra @('.codex/scripts/a.ps1', '.codex/scripts/new.ps1')
+            $j = Invoke-SdlcJson update @{ Source = $r2; Target = $t; Preview = $true }
+            Assert-Equal 0 $j.exit '-Preview 不該要求 -Yes'
+            Assert-Equal 'preview' $j.data.result
+            Assert-Shape $j.data @{
+                from = 'string?'; to = 'string'; breaking = 'bool'; downgrade = 'bool'; degraded = 'bool'
+                unchanged = 'array'; modified = 'array'; added = 'array'; removed = 'array'; notes = 'array'; result = 'string'
+                vsix = 'string?'; hooksChanged = 'bool'
+            }
+            Assert-True ('.codex/scripts/a.ps1' -in @($j.data.modified)) '改過的檔沒有列在計畫裡'
+            Assert-True ('.codex/scripts/new.ps1' -in @($j.data.added)) '新增的檔沒有列在計畫裡'
+            Assert-True ('.codex/scripts/old.ps1' -in @($j.data.removed)) '要刪的檔沒有列在計畫裡'
+            Assert-True $j.data.hooksChanged 'hooks.json 會換卻沒說 —— 換了就要重新信任'
+            Assert-Match 'codex-sdlc-4\.7\.0\.vsix$' ([string]$j.data.vsix) '沒有指出這一版附的 extension'
+            $after = @{}
+            Get-ChildItem $t -Recurse -File | ForEach-Object { $after[$_.FullName] = (Get-FileHash $_.FullName).Hash }
+            Assert-Equal ($before.Keys.Count) ($after.Keys.Count) '-Preview 新增或刪除了檔'
+            foreach ($k in $before.Keys) { Assert-Equal $before[$k] $after[$k] "-Preview 改了 $k" }
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '拿比專案舊的發佈物 update → 標成降級並警告（照做，但要講）' {
+        $r1 = New-SdlcRelease 'r1-dg' -Version '4.7.0' -Extra @('.codex/scripts/a.ps1'); $t = New-SdlcTarget 't-dg'
+        try {
+            Invoke-Sdlc install @{ Source = $r1; Target = $t } | Out-Null
+            $r0 = New-SdlcRelease 'r0-dg' -Version '4.6.0'
+            $j = Invoke-SdlcJson update @{ Source = $r0; Target = $t; Preview = $true }
+            Assert-True $j.data.downgrade '舊的發佈物沒有被標成降級'
+            Assert-True ((@($j.warnings) -match '降級').Count -gt 0) '降級沒有警告'
+            $r2 = New-SdlcRelease 'r2-dg' -Version '4.8.0' -Extra @('.codex/scripts/a.ps1')
+            $j2 = Invoke-SdlcJson update @{ Source = $r2; Target = $t; Preview = $true }
+            Assert-True (-not $j2.data.downgrade) '正常的升級被標成降級'
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
 }
 
 Describe-Suite 'sdlc / 更新通知（折進 handoff-lint）' {
@@ -1126,25 +1169,25 @@ Describe-Suite 'sdlc / model／effort 對這台的 Codex（清單問 codex 本�
     #   這版 Codex 不認得的模型               → 照樣 spawn、用 fallback 的模型資料，沒有任何提示
     # 所以 set 擋前者與後者，doctor／apply 講，而且「能用哪些」只問 codex（這裡是一支回固定清單的假 codex）。
 
-    $FakeModelsCodexBody = @'
-$log = $env:FAKE_CODEX_LOG
-if ($log) { Add-Content -LiteralPath $log ("args=" + ($args -join ' ')) }
-if ($args[0] -eq '--version') { [Console]::Out.WriteLine("codex-cli $(if ($env:FAKE_CODEX_VERSION) { $env:FAKE_CODEX_VERSION } else { '0.162.1' })"); exit 0 }
-if ($args[0] -eq 'debug' -and $args[1] -eq 'models') {
-    if ($env:FAKE_CODEX_NO_MODELS) { [Console]::Error.WriteLine("error: unrecognized subcommand 'models'"); exit 2 }
-    switch ($env:FAKE_CODEX_MODELS_MODE) {
-        'exit'      { [Console]::Error.WriteLine('error: failed to load config'); exit 3 }
-        'not-json'  { [Console]::Out.WriteLine('Logged in using ChatGPT'); exit 0 }
-        'no-models' { [Console]::Out.Write('{"providers":[]}'); exit 0 }
-        # 真的 codex 不管 console 的 code page，一律寫 UTF-8 位元組；說明文字裡有 — … ’ “ ”（0.162.1 實測）。
-        'utf8-bytes' {
-            $o = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'models.json')) -replace '"(\w+) reasoning"', ('"$1 reasoning ' + [char]0x2014 + ' ' + [char]0x201C + 'deep' + [char]0x201D + ' ' + [char]0x2026 + '"')
-            $b = [Text.UTF8Encoding]::new($false).GetBytes($o); $s = [Console]::OpenStandardOutput(); $s.Write($b, 0, $b.Length); $s.Flush(); exit 0
-        }
-    }
-    [Console]::Out.Write([IO.File]::ReadAllText((Join-Path $PSScriptRoot 'models.json'))); exit 0
-}
-exit 0
+    # 假 codex 是批次檔、不是 pwsh 腳本：sdlc.ps1 每次 set／doctor 都會問它兩次（--version、debug models），
+    # 一支 pwsh 起來要 1 秒多，這一組因此是整套最慢的；平行跑、CPU 吃滿時還會撞上 sdlc.ps1 問 codex 的 10 秒逾時，
+    # 清單變成「問不到」—— 測試紅，而紅的原因是測試自己慢。要輸出的內容都在 New-ModelsCodex 先寫成檔，這裡只 type。
+    $FakeModelsCodexCmd = @'
+@echo off
+if defined FAKE_CODEX_LOG (>>"%FAKE_CODEX_LOG%" echo args=%*)
+if "%~1"=="--version" (
+    if defined FAKE_CODEX_VERSION (echo codex-cli %FAKE_CODEX_VERSION%) else (echo codex-cli 0.162.1)
+    exit /b 0
+)
+if not "%~1"=="debug" exit /b 0
+if not "%~2"=="models" exit /b 0
+if defined FAKE_CODEX_NO_MODELS (>&2 echo error: unrecognized subcommand 'models'& exit /b 2)
+if "%FAKE_CODEX_MODELS_MODE%"=="exit" (>&2 echo error: failed to load config& exit /b 3)
+if "%FAKE_CODEX_MODELS_MODE%"=="not-json" (echo Logged in using ChatGPT& exit /b 0)
+if "%FAKE_CODEX_MODELS_MODE%"=="no-models" (type "%~dp0no-models.json"& exit /b 0)
+if "%FAKE_CODEX_MODELS_MODE%"=="utf8-bytes" (type "%~dp0models-utf8.json"& exit /b 0)
+type "%~dp0models.json"
+exit /b 0
 '@
     # 形狀照 codex 0.162.1 的 debug models（只留用得到的欄位）：大的支援到 ultra（再加一個 schema 還不認得的 hyper，
     # 代表 Codex 升版新增的值）、中的只到 xhigh、隱藏的不列。
@@ -1154,15 +1197,21 @@ exit 0
     }
     function New-ModelsCodex {
         $dir = Join-Path $SdlcRoot 'fake-codex'
-        New-SdlcFile (Join-Path $dir 'fake-codex.ps1') $FakeModelsCodexBody
         $catalog = @(
             (New-ModelEntry 'gpt-big' 'list' 1 'low' @('low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'hyper'))
             (New-ModelEntry 'gpt-mid' 'list' 2 'medium' @('low', 'medium', 'high', 'xhigh'))
             (New-ModelEntry 'gpt-secret' 'hide' 9 'medium' @('low', 'medium'))
         )
-        New-SdlcFile (Join-Path $dir 'models.json') ([ordered]@{ models = $catalog } | ConvertTo-Json -Depth 8)
+        $json = [ordered]@{ models = $catalog } | ConvertTo-Json -Depth 8
+        $utf8 = [Text.UTF8Encoding]::new($false)
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+        [IO.File]::WriteAllText((Join-Path $dir 'models.json'), $json, $utf8)
+        [IO.File]::WriteAllText((Join-Path $dir 'no-models.json'), '{"providers":[]}', $utf8)
+        # 真的 codex 不管 console 的 code page，一律寫 UTF-8 位元組；說明文字裡有 — “ ” …（0.162.1 實測）。type 原樣吐位元組。
+        $fancy = $json -replace '"(\w+) reasoning"', ('"$1 reasoning ' + [char]0x2014 + ' ' + [char]0x201C + 'deep' + [char]0x201D + ' ' + [char]0x2026 + '"')
+        [IO.File]::WriteAllText((Join-Path $dir 'models-utf8.json'), $fancy, $utf8)
         $cmd = Join-Path $dir 'codex.cmd'
-        [IO.File]::WriteAllText($cmd, "@pwsh -NoProfile -ExecutionPolicy Bypass -File `"%~dp0fake-codex.ps1`" %*`r`n", [Text.Encoding]::ASCII)
+        [IO.File]::WriteAllText($cmd, ($FakeModelsCodexCmd -replace "`r?`n", "`r`n") + "`r`n", [Text.Encoding]::ASCII)
         return $cmd
     }
     # 這台機器：模型清單快取的位置、CODEX_HOME（給了 $sessionModel 就放一份 config.toml 指定主對話的模型）、假 codex 的版本與呼叫紀錄。

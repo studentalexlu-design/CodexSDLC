@@ -221,7 +221,8 @@ try {
             Invoke-Utf8 { & npm run build 2>&1 | ForEach-Object { Say "  $_" } }
             if ($LASTEXITCODE -ne 0) { Fail 'extension 編譯失敗 —— 不出貨。' }
             if (-not $SkipTests) {
-                Invoke-Utf8 { & npm test 2>&1 | Where-Object { $_ -match '^(not ok|# (tests|pass|fail))' } | ForEach-Object { Say "  $_" } }
+                # test:all = 單元＋整合。整合那一半才是真的拿這一版的 sdlc.ps1 對 -Json 合約 —— 出貨前不能省。
+                Invoke-Utf8 { & npm run test:all 2>&1 | Where-Object { $_ -match '^(not ok|# (tests|pass|fail))' } | ForEach-Object { Say "  $_" } }
                 if ($LASTEXITCODE -ne 0) { Fail 'extension 測試紅燈 —— 不出貨。它讀的是 sdlc.ps1 的 -Json，紅在這裡通常代表兩邊的合約分岔了。' }
             }
             $vsix = Join-Path $extBuild "codex-sdlc-$version.vsix"

@@ -43,7 +43,7 @@ param(
     [switch]$Adopt,                        # install 用：接管既有的手動安裝，把現況記成基準線
     [switch]$WithEditor,                   # install 用：順便把發佈物附的 VS Code extension 裝進這台機器的編輯器
     [switch]$Apply,                        # set 用：寫完順便 apply 一次（不管改了幾個值）
-    [switch]$Preview,                      # set 用：只驗、只列出會改什麼，一個字都不寫
+    [switch]$Preview,                      # set／update 用：只驗、只列出會改什麼，一個字都不寫
     [switch]$ApplyProposal,                # tune 用：把**存下來的那份**提議寫回設定檔（不重算）
     [string[]]$Only,                       # tune -ApplyProposal 用：只套這幾個 agent（逗號分隔也可以）
     [switch]$IfDue,                        # check-update 用：照 update.check 的頻率決定要不要真的連網
@@ -1747,9 +1747,13 @@ function Invoke-Update {
     }
 
     $breaking = [bool]($tgtVer -and $srcVer.minCompat -and ((Compare-Semver $tgtVer.contract $srcVer.minCompat) -lt 0))
+    # 拿比專案現有還舊的發佈物跑 update = 降級。CLI 上有人是故意的（退回上一版），所以照做，但要講；
+    # extension 的「升級」看到這個旗標就停 —— 遠端拿不到時 fetch 會退回 vsix 內附的那一份，它可能比專案舊。
+    $downgrade = [bool]($tgtVer -and ((Compare-Semver $srcVer.contract $tgtVer.contract) -lt 0))
     $script:Data.from      = if ($tgtVer) { $tgtVer.contract } else { $null }
     $script:Data.to        = $srcVer.contract
     $script:Data.breaking  = $breaking
+    $script:Data.downgrade = $downgrade
     $script:Data.degraded  = [bool]$degraded
     $script:Data.unchanged = @($unchanged)
     $script:Data.modified  = @($modified)
@@ -1758,6 +1762,9 @@ function Invoke-Update {
 
     Say "升級：$(if ($tgtVer) { $tgtVer.contract } else { '未知' }) → $($srcVer.contract)"
     Say ''
+    if ($downgrade) {
+        Warn "這份發佈物（$($srcVer.contract)）比專案現在的 $($tgtVer.contract) 舊 —— 照做的話是降級。"
+    }
     if ($breaking) {
         Say "** 破壞性升級 ** 你的 $($tgtVer.contract) 低於新版要求的最低相容版本 $($srcVer.minCompat)。"
         Say '   升級前先看 CHANGELOG.md 的「從 v… 升上來」那幾節（或跑 whatsnew），手上跑到一半的需求先跑完。'
@@ -1794,6 +1801,15 @@ function Invoke-Update {
     if ($unchanged.Count -eq 0 -and $modified.Count -eq 0 -and $added.Count -eq 0 -and $removed.Count -eq 0) {
         $script:Data.result = 'up-to-date'
         Say '已經是最新，沒有檔要動。'
+        return 0
+    }
+    # -Preview：上面算好的計畫就是給人確認用的，到這裡為止一個檔都還沒寫。extension 的「升級」先拿它
+    # 填確認對話框，同意了才帶 -Yes 再跑一次 —— 讓「會蓋掉你改過的哪幾個檔」出現在按下去**之前**。
+    if ($Preview) {
+        $script:Data.result = 'preview'
+        $script:Data.vsix   = Find-ReleaseVsix $Source $srcVer.contract
+        $script:Data.hooksChanged = [bool]($HooksRel -in @($unchanged + $modified + $added))
+        Say '（-Preview：只列出計畫，一個檔都沒動。）'
         return 0
     }
     if (-not (Confirm-Step '要升級嗎？')) { $script:Data.result = 'cancelled'; Say '已取消，一個檔都沒動。'; return 2 }

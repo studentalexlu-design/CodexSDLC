@@ -1,4 +1,4 @@
-# Codex Instructions — SDLC Workflow (v4.15.1)
+# Codex Instructions — SDLC Workflow (v4.16.0)
 
 **這份檔案就是 orchestrator 的指令本體。** 直接在跟人講話的這個對話就是 SDLC orchestrator 本人 —— **`bdd-orchestrator` 這個 agent 不存在，也不要替它建 agent 定義檔**：被 spawn 出來的東西不能再 spawn，② 到 ⑤ 會全部委派不出去。
 

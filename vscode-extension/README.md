@@ -72,7 +72,7 @@ Cursor／Windsurf／VSCodium 吃同一個 `.vsix`，換成各自的指令即可�
 code --uninstall-extension codex-sdlc.codex-sdlc
 ```
 
-升級工作流（`sdlc.ps1 update`）**不會替你重裝**它 —— 一個專案的升級不該動到另一個專案也在用的編輯器。版本對不上時 `update` 與 `doctor` 會各說一行。
+升級工作流（`sdlc.ps1 update`）**不會替你重裝**它 —— 一個專案的升級不該動到另一個專案也在用的編輯器。版本對不上時 `update` 與 `doctor` 會各說一行。在 extension 裡用「升級到最新版」升完時，它會給你一顆「安裝新版 extension」的按鈕（用這一版發佈物附的 vsix），按不按由你。
 
 ## 已知限制
 

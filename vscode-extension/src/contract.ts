@@ -399,24 +399,44 @@ export function parseInstall(env: Envelope): InstallData {
 
 export interface UpdateData {
   error: string | null;           // not-a-release｜same-path｜not-managed
-  result: string;                 // applied｜up-to-date｜cancelled
+  // applied｜up-to-date｜cancelled｜preview（-Preview，4.16.0 起；更舊的發佈物沒有 -Preview，非互動下會回 cancelled）
+  result: string;
   from: string | null;
   to: string | null;
+  breaking: boolean;
+  downgrade: boolean;             // 4.16.0 起；更舊的不給 → false（呼叫端自己再比一次版本）
   modified: string[];
+  added: string[];
+  removed: string[];
   backup: string | null;
+  hooksChanged: boolean;          // -Preview 才有：hooks.json 會換 = 升級後要到 Codex 重新信任
+  // 這一版附的 vsix：-Preview 在 data.vsix，真的升級完在 data.editor.vsix
+  vsix: string | null;
 }
+
+const EMPTY_UPDATE: UpdateData = {
+  error: null, result: '', from: null, to: null, breaking: false, downgrade: false,
+  modified: [], added: [], removed: [], backup: null, hooksChanged: false, vsix: null,
+};
 
 export function parseUpdate(env: Envelope): UpdateData {
   const d = env.data;
   const at = '$.data';
-  if ('error' in d) return { error: optStr(d, 'error', at), result: '', from: null, to: null, modified: [], backup: null };
+  if ('error' in d) return { ...EMPTY_UPDATE, error: optStr(d, 'error', at) };
+  const editor = isObj(d.editor) ? d.editor : undefined;
   return {
-    error: null,
+    ...EMPTY_UPDATE,
     result: 'result' in d ? str(d, 'result', at) : '',
     from: optStr(d, 'from', at),
     to: optStr(d, 'to', at),
+    breaking: 'breaking' in d ? bool(d, 'breaking', at) : false,
+    downgrade: 'downgrade' in d ? bool(d, 'downgrade', at) : false,
     modified: strArr(d, 'modified', at),
+    added: 'added' in d ? strArr(d, 'added', at) : [],
+    removed: 'removed' in d ? strArr(d, 'removed', at) : [],
     backup: 'backup' in d ? optStr(d, 'backup', at) : null,
+    hooksChanged: 'hooksChanged' in d ? bool(d, 'hooksChanged', at) : false,
+    vsix: 'vsix' in d ? optStr(d, 'vsix', at) : editor && 'vsix' in editor ? optStr(editor, 'vsix', `${at}.editor`) : null,
   };
 }
 

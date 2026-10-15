@@ -149,6 +149,7 @@ class Cockpit {
         reg('codexSdlc.install', () => this.installCommand());
         reg('codexSdlc.installFrom', () => this.installCommand({ pickSource: true }));
         reg('codexSdlc.repair', () => this.withRoot((r) => this.repairCommand(r)));
+        reg('codexSdlc.upgrade', () => this.withRoot((r) => this.upgradeCommand(r)));
         reg('codexSdlc.mergeAgents', (root) => this.mergeAgentsCommand(root));
         reg('codexSdlc.openFile', (file) => vscode.window.showTextDocument(vscode.Uri.file(file)));
         reg('codexSdlc.openWalkthrough', () => vscode.commands.executeCommand('workbench.action.openWalkthrough', `${this.context.extension.id}#${WALKTHROUGH}`, false));
@@ -985,7 +986,9 @@ class Cockpit {
                 await vscode.commands.executeCommand(pick.id);
             return;
         }
+        const u = s.doctor?.update;
         const items = [
+            ...(u?.newer && u.latest ? [{ label: `$(arrow-up) 升級到 ${u.latest}`, description: '先列出會動哪些檔，確認才升級', id: 'codexSdlc.upgrade' }] : []),
             { label: '$(settings-gear) 開啟設定面板', description: '一眼看到全部設定；改值、套用、換預設組合', id: 'codexSdlc.openSettings' },
             { label: '$(refresh) 重新整理狀態', id: 'codexSdlc.refresh' },
             { label: '$(checklist) doctor', description: '完整健檢，結果寫進輸出面板', id: 'codexSdlc.doctor' },
@@ -1015,12 +1018,12 @@ class Cockpit {
                 void vscode.window.showInformationMessage('先開一個資料夾（檔案 → 開啟資料夾），才有地方可以裝。');
                 return undefined;
             }
-            void vscode.window.showInformationMessage('這個工作區的每個資料夾都已經裝好 Codex SDLC 了。', '補回工具檔', '升級（whatsnew）')
+            void vscode.window.showInformationMessage('這個工作區的每個資料夾都已經裝好 Codex SDLC 了。', '補回工具檔', '升級到最新版')
                 .then((c) => {
                 if (c === '補回工具檔')
                     void vscode.commands.executeCommand('codexSdlc.repair');
-                if (c === '升級（whatsnew）')
-                    void vscode.commands.executeCommand('codexSdlc.whatsnew');
+                if (c === '升級到最新版')
+                    void vscode.commands.executeCommand('codexSdlc.upgrade');
             });
             return undefined;
         }
@@ -1236,6 +1239,151 @@ class Cockpit {
         this.syncRoots();
         await this.refresh(root);
     }
+    // 升級 = 找一份**比專案新**的發佈物 → update -Preview 把計畫攤開 → 同意才 update -Yes → 收尾。
+    // 跟「補回工具檔」分開：repair 拿到什麼版本就用什麼（包括同一版），升級只接受更新的那一份 ——
+    // 遠端拿不到時 fetch 會靜默退回 vsix 內附的那一份，它可能比專案舊，照套就是降級。
+    async upgradeCommand(root, pickSource = false) {
+        const installed = this.workflowVersion(root);
+        if (!installed) {
+            void vscode.window.showWarningMessage('讀不到這個專案的工作流版本 —— 改用「補回工具檔」。');
+            return;
+        }
+        const f = pickSource
+            ? await this.pickReleaseOnDisk(root)
+            : await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: '下載新版 Codex SDLC 發佈物…' }, () => this.resolvePayload(root));
+        if (!f?.path || !f.version) {
+            if (!pickSource)
+                this.noPayload(f, () => void this.upgradeCommand(root, true));
+            return;
+        }
+        if ((0, contract_1.compareVersions)(f.version, installed) <= 0) {
+            this.explainNoUpgrade(root, f, installed);
+            return;
+        }
+        const plan = await this.runUpdate(f.path, root, ['-Preview'], '升級 —— 計畫');
+        if (!plan)
+            return;
+        if (plan.result === 'up-to-date') {
+            void vscode.window.showInformationMessage(`${f.version} 跟專案現有的工具檔一模一樣，一個檔都不用動。`);
+            return;
+        }
+        // 4.16.0 以前的發佈物沒有 update -Preview：它在 -Json 下走到確認那一步就自己取消（一個檔都沒動）。
+        const hasPlan = plan.result === 'preview';
+        if (plan.downgrade) {
+            this.explainNoUpgrade(root, f, installed);
+            return;
+        }
+        const site = { github: 'GitHub', gitlab: 'GitLab', gitea: 'Gitea' }[f.remote.provider ?? ''] ?? '遠端';
+        const how = { remote: `${site} 發佈頁`, cached: '下載過的那一份（快取）', bundled: '這個 extension 內附的那一份' }[f.chosen] ?? String(f.chosen);
+        const list = (xs) => xs.slice(0, 8).join('、') + (xs.length > 8 ? ` …等 ${xs.length} 個` : '');
+        const detail = [
+            `來源：${how}`,
+            ...(f.remote.latest && (0, contract_1.compareVersions)(f.remote.latest, f.version) > 0 ? [`發佈頁上最新的是 ${f.remote.latest}，但這次拿不到（${f.remote.reason ?? '原因不明'}）—— 先升到 ${f.version}。`] : []),
+            ...(plan.breaking ? ['', '** 破壞性升級 ** —— 升級前先看變更說明（whatsnew），手上跑到一半的需求先跑完。'] : []),
+            ...(hasPlan ? [
+                '',
+                ...(plan.modified.length ? [`你改過的檔（先備份再覆蓋）：${list(plan.modified)}`] : []),
+                ...(plan.removed.length ? [`這一版刪掉的檔（備份後刪除）：${list(plan.removed)}`] : []),
+                ...(plan.added.length ? [`新增 ${plan.added.length} 個檔`] : []),
+                ...(plan.hooksChanged ? ['hooks.json 會換 —— 升級後要在 Codex 裡重新信任，強制層才會跑。'] : []),
+            ] : ['', `這份發佈物（${f.version}）的 sdlc.ps1 列不出升級計畫 —— 改過的檔一樣會先備份再覆蓋，清單在升級後的輸出面板。`]),
+            '',
+            'guidelines/、bdd-docs/ 與 sdlc.config.json 裡你的設定不會被動。',
+        ].join('\n');
+        const show = plan.breaking ? vscode.window.showWarningMessage : vscode.window.showInformationMessage;
+        const ok = await show(`把 ${path.basename(root)} 從 ${installed} 升級到 ${f.version}？`, { modal: true, detail }, '升級', '先看變更說明');
+        if (ok === '先看變更說明') {
+            this.output.show(true);
+            return;
+        } // 計畫的輸出（含這一版的說明）已經寫進輸出面板
+        if (ok !== '升級')
+            return;
+        const d = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `升級到 ${f.version}…` }, () => this.runUpdate(f.path, root, ['-Yes'], '升級'));
+        if (!d)
+            return;
+        this.syncRoots();
+        await this.refresh(root);
+        if (d.result !== 'applied') {
+            void vscode.window.showInformationMessage(`沒有升級（${d.result || '未知'}）—— 見輸出面板。`);
+            return;
+        }
+        await this.afterUpgrade(d, plan.hooksChanged);
+    }
+    // 跑發佈物自己的 update，錯誤在這裡就講完；回 undefined = 已經告訴使用者了。
+    async runUpdate(payload, root, params, title) {
+        const env = this.report(await this.runSdlcFrom(payload, root, 'update', params), `update —— ${title}`);
+        if (!env)
+            return undefined;
+        let d;
+        try {
+            d = (0, contract_1.parseUpdate)(env);
+        }
+        catch (e) {
+            void vscode.window.showErrorMessage(`update 的輸出讀不懂：${e.message}`);
+            return undefined;
+        }
+        if (d.error === 'not-managed') {
+            void vscode.window.showWarningMessage('這個資料夾還沒被 sdlc.ps1 接管過（沒有 sdlc.config.json）—— update 分不出哪些檔是你改過的。', '改用安裝').then((c) => { if (c)
+                void this.installCommand({ target: root }); });
+            return undefined;
+        }
+        if (d.error) {
+            void vscode.window.showErrorMessage(`update 沒有完成：${env.warnings[0] ?? d.error}`, '顯示輸出').then((c) => { if (c)
+                this.output.show(); });
+            return undefined;
+        }
+        return d;
+    }
+    // 拿到的不比專案新：講清楚**為什麼**，給做得到的下一步。最常見的是發佈頁有新版卻拿不到（沒附 zip、私有 repo 沒 token）。
+    explainNoUpgrade(root, f, installed) {
+        const remoteNewer = f.remote.latest && (0, contract_1.compareVersions)(f.remote.latest, installed) > 0;
+        const why = {
+            'no-asset': `發佈頁的 ${f.remote.latest} 沒有附 codex-sdlc-${f.remote.latest}.zip —— 發佈時要把 pack.ps1 產出的 zip 掛上去。`,
+            unreachable: '連不到發佈頁（離線、逾時，或私有 repo 沒有設 CODEX_SDLC_TOKEN_<主機> 這個環境變數 —— 設了要整個重開 VS Code）。',
+            'download-failed': '下載發佈物失敗。',
+            'unsupported-source': '更新來源的寫法認不得（自架的寫成 gitea:https://… 或 gitlab:https://…）。',
+            'no-source': '沒有設更新來源。',
+        };
+        const msg = remoteNewer
+            ? `發佈頁有 ${f.remote.latest}，但拿不到：${why[f.remote.reason ?? ''] ?? `下載回來的發佈物驗不過（${f.remote.reason ?? '原因不明'}）。`}`
+            : f.remote.checked && f.remote.reachable
+                ? `已是最新（${installed}）。`
+                : `沒有找到比 ${installed} 新的發佈物。${why[f.remote.reason ?? ''] ?? ''}這次只拿到 ${f.version}，不拿它覆蓋。`;
+        const actions = remoteNewer || !f.remote.reachable ? ['選擇發佈物…', '顯示輸出'] : [];
+        void (remoteNewer || !f.remote.reachable ? vscode.window.showWarningMessage : vscode.window.showInformationMessage)(msg, ...actions).then((c) => {
+            if (c === '選擇發佈物…')
+                void this.upgradeCommand(root, true);
+            if (c === '顯示輸出')
+                this.output.show();
+        });
+    }
+    // 升級之後還要做的事：一次講完，能按的就給按鈕。extension 是整台機器共用的，所以只「提供」換，不自己換。
+    async afterUpgrade(d, hooksChanged) {
+        const ownVersion = String(this.context.extension.packageJSON.version ?? '');
+        const extStale = !!d.to && ownVersion !== d.to && !!d.vsix;
+        const lines = [
+            `升級完成：${d.from ?? '？'} → ${d.to ?? '？'}。`,
+            ...(d.backup ? [`改過的檔備份在 ${d.backup}。`] : []),
+            ...(hooksChanged ? ['hooks.json 換了 —— 在專案裡開 codex，出現「Hooks need review」時選 Trust all。'] : []),
+            ...(extStale ? [`這個 extension 還是 ${ownVersion}，這一版附的是 ${d.to}。`] : []),
+        ];
+        const actions = [...(extStale ? ['安裝新版 extension'] : []), '看變更說明'];
+        const c = await (extStale || hooksChanged ? vscode.window.showWarningMessage : vscode.window.showInformationMessage)(lines.join(' '), ...actions);
+        if (c === '看變更說明')
+            this.output.show(true);
+        if (c === '安裝新版 extension' && d.vsix) {
+            try {
+                await vscode.commands.executeCommand('workbench.extensions.installExtension', vscode.Uri.file(d.vsix));
+            }
+            catch (e) {
+                void vscode.window.showErrorMessage(`extension 沒裝上：${e.message} —— 手動裝：Extensions 面板 → … → Install from VSIX，選 ${d.vsix}`);
+                return;
+            }
+            const r = await vscode.window.showInformationMessage(`extension ${d.to} 裝好了，重新載入視窗後生效。`, '重新載入');
+            if (r)
+                await vscode.commands.executeCommand('workbench.action.reloadWindow');
+        }
+    }
     async mergeAgentsCommand(root) {
         const r = root ?? this.pick()?.root;
         if (!r)
@@ -1332,9 +1480,12 @@ class Cockpit {
             return;
         const w = (0, contract_1.parseWhatsNew)(env);
         this.output.show(true);
-        if (w.source === 'cache' && w.latest)
-            void vscode.window.showInformationMessage(`新版 ${w.latest} 的說明在輸出面板。升級：把新版發佈物解壓到別處，跑 sdlc.ps1 update -Target <專案>。`);
         await this.refresh(root);
+        if (w.source === 'cache' && w.latest) {
+            const c = await vscode.window.showInformationMessage(`新版 ${w.latest} 的說明在輸出面板。`, `升級到 ${w.latest}`);
+            if (c)
+                await this.upgradeCommand(root);
+        }
     }
     async checkUpdateCommand(root) {
         const env = this.report(await this.runSdlc(root, 'check-update'), 'check-update');

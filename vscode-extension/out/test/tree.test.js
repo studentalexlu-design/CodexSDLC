@@ -191,6 +191,14 @@ const nodes = (i) => new Map((0, tree_1.flatten)((0, tree_1.buildSettingsTree)(i
     strict_1.default.deepEqual(m.command?.arguments, ['C:/work/shop']);
     strict_1.default.ok(!nodes(input()).has('status/merge'), '沒有 .new 時不該有這一行');
 });
+(0, node_test_1.test)('有新版 → 那一行點下去是升級（不是只看說明）；沒有新版就沒有升級按鈕', () => {
+    const n = nodes(input({ doctor: doctor((x) => { x.update = { ...x.update, cached: true, newer: true, latest: '4.16.0' }; }) }));
+    const u = n.get('status/update');
+    strict_1.default.match(u.label, /4\.16\.0/);
+    strict_1.default.equal(u.command?.command, 'codexSdlc.upgrade');
+    const none = nodes(input({ doctor: doctor((x) => { x.update = { ...x.update, cached: true, newer: false, latest: '4.9.0' }; }) }));
+    strict_1.default.notEqual(none.get('status/update').command?.command, 'codexSdlc.upgrade');
+});
 (0, node_test_1.test)('doctor 的其他問題列在「需要處理」底下', () => {
     const n = nodes(input({ doctor: doctor((x) => { x.config.comments = true; x.problems = 0; }) }));
     const issues = n.get('status/issues');

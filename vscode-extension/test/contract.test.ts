@@ -236,6 +236,29 @@ test('update：補工具檔的結果，以及「這個專案沒被接管過」�
   assert.equal(early.error, 'not-managed');
 });
 
+test('update -Preview：計畫的每一項都讀得到；升級完的 vsix 在 editor 底下；舊發佈物沒有的欄位 → 安全的預設', () => {
+  const plan = parseUpdate(parseEnvelope(envelope('update', {
+    from: '4.15.1', to: '4.16.0', breaking: true, downgrade: false, degraded: false,
+    unchanged: [], modified: ['AGENTS.md'], added: ['.codex/scripts/new.ps1'], removed: ['.codex/scripts/old.ps1'], notes: [],
+    result: 'preview', vsix: 'C:/cache/4.16.0/editor/codex-sdlc-4.16.0.vsix', hooksChanged: true,
+  }), 'update'));
+  assert.equal(plan.result, 'preview');
+  assert.equal(plan.breaking, true);
+  assert.deepEqual(plan.added, ['.codex/scripts/new.ps1']);
+  assert.deepEqual(plan.removed, ['.codex/scripts/old.ps1']);
+  assert.equal(plan.hooksChanged, true);
+  assert.match(plan.vsix ?? '', /codex-sdlc-4\.16\.0\.vsix$/);
+
+  const applied = parseUpdate(parseEnvelope(envelope('update', {
+    from: '4.15.1', to: '4.16.0', breaking: false, degraded: false, unchanged: [], modified: [], added: [], removed: [], result: 'applied',
+    editor: { installed: [], vsix: 'C:/x/codex-sdlc-4.16.0.vsix', mismatch: false },
+  }), 'update'));
+  assert.equal(applied.vsix, 'C:/x/codex-sdlc-4.16.0.vsix');
+  assert.equal(applied.downgrade, false, '4.16.0 以前的發佈物不給 downgrade —— 不能讀成 undefined');
+
+  assert.throws(() => parseUpdate(parseEnvelope(envelope('update', { from: '1', to: '2', modified: [], downgrade: 'yes' }), 'update')), /downgrade/);
+});
+
 test('doctor：models 段有就讀（4.15.0 起），沒有就是 undefined；欄位改名 → 紅，說得出是哪一個', async () => {
   const { doctorFixture, modelsFixture } = await import('./fixtures');
   const withModels = { ...doctorFixture(), models: modelsFixture() };

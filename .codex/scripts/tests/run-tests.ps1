@@ -8,19 +8,158 @@
 # 用法：
 #   pwsh -NoProfile -File .codex\scripts\tests\run-tests.ps1
 #   pwsh -NoProfile -File .codex\scripts\tests\run-tests.ps1 -Filter handoff
+#   pwsh -NoProfile -File .codex\scripts\tests\run-tests.ps1 -Jobs 1      # 單一行程依序跑
+#
+# **預設平行跑**。幾乎每一條測試都另外叫起一支 pwsh（一次 1 秒多），依序跑完整套要十幾分鐘，
+# 而這台有 8 核只用 1 核。工作單位是 suite（Describe-Suite），交給 -Jobs 個 worker；每個 worker 是
+# 這支腳本自己（-OnlyFile／-OnlySuite），跑在**自己的 repo 複本、自己的 TEMP** 底下 ——
+# 測試會寫 repo 根的 bdd-docs/（dlp-gate 的殘留掃描會看整個 bdd-docs/）、會用固定名稱的暫存目錄
+# （codex-sdlc-tests…）並在 finally 整個刪掉。共用的話，A 的 email 會讓 B 的「乾淨的回 0」紅，
+# B 的清理會刪掉 A 正在用的目錄 —— 紅得隨機，比慢更糟。
 #
 # Exit: 0 = 全數通過；1 = 有失敗。
 
 [CmdletBinding()]
 param(
     [string]$Filter,
-    [switch]$Json
+    [switch]$Json,
+    # 預設 = 邏輯核數的一半、最多 4。這裡的工作幾乎全是「起一支 pwsh」，吃 CPU：8 核的機器上實測
+    # 依序 1306 秒、4 個 worker 793 秒、8 個 885 秒 —— worker 多過頭只是讓每支 pwsh 互相搶，還更容易撞上逾時。
+    [int]$Jobs = [Math]::Max(1, [Math]::Min([int][Math]::Floor([Environment]::ProcessorCount / 2), 4)),
+    [string]$OnlyFile,                     # worker 用：只跑這個檔裡的
+    [string]$OnlySuite                     # worker 用：這一個 suite（名稱完全相等）
 )
 
 $ErrorActionPreference = 'Stop'
 
 # 一律以 repo root 為工作目錄執行（腳本內含相對路徑預設值）。
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
+
+# ---- 平行：協調者 ----
+# 只負責切工作、開 worker、收結果；自己不跑任何測試，也不碰這台機器的環境變數（worker 各自隔離）。
+if ($Jobs -gt 1 -and -not $OnlySuite) {
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    $Utf8 = [Text.UTF8Encoding]::new($false)
+
+    # 靜態切出每個 suite。漏掉的 suite 不會靜默消失：下面拿 worker 實際看到的 suite 清單對帳。
+    $units = [Collections.Generic.List[object]]::new()
+    foreach ($f in (Get-ChildItem $PSScriptRoot -Filter 'test-*.ps1' | Sort-Object Name)) {
+        $cur = $null
+        foreach ($line in [IO.File]::ReadAllLines($f.FullName, $Utf8)) {
+            if ($line -match "^\s*Describe-Suite\s+'([^']*)'") {
+                $cur = [pscustomobject]@{ order = $units.Count; file = $f.Name; suite = $Matches[1]; weight = 0; seconds = 0.0 }
+                $units.Add($cur)
+            } elseif ($cur -and $line -match '^\s*It-Should\s') { $cur.weight++ }
+        }
+    }
+    $wanted = @($units | Where-Object { -not $Filter -or $_.suite -match $Filter })
+    # 重的先發（最長處理時間優先）：最後才發 test-sdlc 那幾組大的，整體就會等它一個。
+    $queue = [Collections.Generic.Queue[object]]::new([object[]]@($wanted | Sort-Object weight -Descending))
+    $slotCount = [Math]::Max(1, [Math]::Min($Jobs, $wanted.Count))
+
+    # 每個 worker 一份 repo 複本。只排除跟測試無關、又大的：版控、依賴、建置產物、執行期產物。
+    $skip = @('.git', 'bdd-docs', 'dist', 'vscode-extension/node_modules', 'vscode-extension/out',
+              'vscode-extension/.vscode-test', 'vscode-extension/payload')
+    $base = Join-Path ([IO.Path]::GetTempPath()) ('codex-sdlc-test-par-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+    $srcFiles = @(Get-ChildItem $RepoRoot -Recurse -File -Force | ForEach-Object {
+        $rel = [IO.Path]::GetRelativePath($RepoRoot, $_.FullName) -replace '\\', '/'
+        foreach ($s in $skip) { if ($rel -eq $s -or $rel.StartsWith("$s/")) { return } }
+        $rel
+    })
+    $free = [Collections.Generic.Queue[object]]::new()
+    for ($i = 0; $i -lt $slotCount; $i++) {
+        $slot = [pscustomobject]@{ repo = Join-Path $base "w$i/repo"; temp = Join-Path $base "w$i/tmp" }
+        foreach ($rel in $srcFiles) {
+            $dst = Join-Path $slot.repo $rel
+            [void][IO.Directory]::CreateDirectory((Split-Path $dst -Parent))
+            [IO.File]::Copy((Join-Path $RepoRoot $rel), $dst, $true)
+        }
+        [void][IO.Directory]::CreateDirectory($slot.temp)
+        $free.Enqueue($slot)
+    }
+
+    $results = [Collections.Generic.List[object]]::new()
+    $seen = [Collections.Generic.HashSet[string]]::new()
+    $running = [Collections.Generic.List[object]]::new()
+    try {
+        while ($queue.Count -gt 0 -or $running.Count -gt 0) {
+            while ($running.Count -lt $slotCount -and $queue.Count -gt 0) {
+                $u = $queue.Dequeue(); $slot = $free.Dequeue()
+                $psi = [Diagnostics.ProcessStartInfo]::new('pwsh')
+                $psi.WorkingDirectory = $slot.repo
+                $psi.UseShellExecute = $false
+                $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
+                $psi.StandardOutputEncoding = $Utf8; $psi.StandardErrorEncoding = $Utf8
+                foreach ($a in @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $slot.repo '.codex/scripts/tests/run-tests.ps1'),
+                                 '-Jobs', '1', '-OnlyFile', $u.file, '-OnlySuite', $u.suite, '-Json')) { $psi.ArgumentList.Add($a) }
+                $psi.Environment['TEMP'] = $slot.temp; $psi.Environment['TMP'] = $slot.temp
+                $p = [Diagnostics.Process]::Start($psi)
+                $running.Add([pscustomobject]@{
+                    unit = $u; slot = $slot; proc = $p; clock = [Diagnostics.Stopwatch]::StartNew()
+                    out = $p.StandardOutput.ReadToEndAsync(); err = $p.StandardError.ReadToEndAsync()
+                })
+            }
+            foreach ($r in @($running)) {
+                if (-not $r.proc.HasExited) { continue }
+                $r.proc.WaitForExit()
+                $r.unit.seconds = $r.clock.Elapsed.TotalSeconds
+                $stdout = $r.out.GetAwaiter().GetResult(); $stderr = $r.err.GetAwaiter().GetResult()
+                $line = @($stdout -split "`r?`n" | Where-Object { $_.StartsWith('{') }) | Select-Object -Last 1
+                $j = $null
+                if ($line) { try { $j = $line | ConvertFrom-Json } catch { } }
+                $got = if ($j) { @($j.results | Where-Object { $_ }) } else { @() }
+                if (-not $j -or ($got.Count -eq 0 -and $r.unit.weight -gt 0)) {
+                    $why = if (-not $j) { "worker 沒有回報結果（exit $($r.proc.ExitCode)）" } else { '一條測試都沒跑到（-OnlySuite 對不上？）' }
+                    $tail = (($stderr.Trim(), $stdout.Trim()) | Where-Object { $_ }) -join ' | '
+                    $results.Add([pscustomobject]@{ order = $r.unit.order; suite = $r.unit.suite; name = '(worker)'; passed = $false
+                                                   message = "$why$(if ($tail) { "：$($tail.Substring(0, [Math]::Min(800, $tail.Length)))" })" })
+                }
+                $k = 0
+                foreach ($t in $got) {
+                    $results.Add([pscustomobject]@{ order = $r.unit.order + ($k++ / 10000); suite = $t.suite; name = $t.name; passed = [bool]$t.passed; message = $t.message })
+                }
+                if ($j) { foreach ($s in @($j.seen)) { if ($s) { [void]$seen.Add("$($s.file)|$($s.suite)") } } }
+                $r.proc.Dispose()
+                [void]$running.Remove($r)
+                $free.Enqueue($r.slot)
+            }
+            if ($running.Count -gt 0) { Start-Sleep -Milliseconds 50 }
+        }
+    } finally {
+        foreach ($r in $running) { try { $r.proc.Kill($true) } catch { } }
+        Remove-Item $base -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    # 對帳：worker 實際載入時看到的 suite，每一個都要在靜態清單裡。不在 = 上面的解析漏了它，它沒有被跑。
+    $known = [Collections.Generic.HashSet[string]]::new([string[]]@($units | ForEach-Object { "$($_.file)|$($_.suite)" }))
+    foreach ($s in $seen) {
+        if ($known.Contains($s)) { continue }
+        $file, $suite = $s -split '\|', 2
+        if ($Filter -and $suite -notmatch $Filter) { continue }
+        $results.Add([pscustomobject]@{ order = [double]::MaxValue; suite = $suite; name = '(runner)'; passed = $false
+                                       message = "$file 的這個 suite 沒被平行 runner 切出來，所以沒有跑 —— Describe-Suite 要寫成一行開頭的 Describe-Suite '名稱'，或用 -Jobs 1" })
+    }
+
+    $all = @($results | Sort-Object order)
+    $failedP = @($all | Where-Object { -not $_.passed })
+    $secs = [Math]::Round($clock.Elapsed.TotalSeconds)
+    if ($Json) {
+        [pscustomobject]@{ passed = ($failedP.Count -eq 0); total = $all.Count; failed = $failedP.Count; failures = @($failedP | Select-Object suite, name, passed, message) } |
+            ConvertTo-Json -Depth 4 -Compress
+    } else {
+        foreach ($g in ($all | Group-Object suite)) {
+            $gf = @($g.Group | Where-Object { -not $_.passed })
+            "[$(if ($gf.Count -eq 0) { 'PASS' } else { 'FAIL' })] $($g.Name) — $($g.Group.Count - $gf.Count)/$($g.Group.Count)"
+            foreach ($t in $gf) { "       x $($t.name)"; "         $($t.message)" }
+        }
+        ''
+        "最慢的 suite：$((@($wanted | Sort-Object seconds -Descending | Select-Object -First 3) | ForEach-Object { "$($_.suite)（$([Math]::Round($_.seconds))s）" }) -join '、')"
+        "$($all.Count - $failedP.Count)/$($all.Count) passed（$slotCount 個 worker，$secs 秒）"
+    }
+    if ($failedP.Count -gt 0) { exit 1 }
+    exit 0
+}
+
 Push-Location $RepoRoot
 
 # --- 跟這台機器隔開 ---
@@ -43,10 +182,14 @@ $env:PATH = @(foreach ($d in ($env:PATH -split [IO.Path]::PathSeparator)) {
 
 $script:Results = @()
 $script:CurrentSuite = ''
+$script:CurrentFile = ''
+$script:SeenSuites = @()
 
 function Describe-Suite {
     param([string]$Name, [scriptblock]$Body)
-    if ($Filter -and $Name -notmatch $Filter) { return }
+    $script:SeenSuites += [pscustomobject]@{ file = $script:CurrentFile; suite = $Name }
+    if ($OnlySuite) { if ($Name -ne $OnlySuite -or $script:CurrentFile -ne $OnlyFile) { return } }
+    elseif ($Filter -and $Name -notmatch $Filter) { return }
     $script:CurrentSuite = $Name
     & $Body
 }
@@ -182,7 +325,7 @@ function New-CodexPatch {
 $bddDocsPreexisting = Test-Path 'bdd-docs'
 
 $testFiles = Get-ChildItem $PSScriptRoot -Filter 'test-*.ps1' | Sort-Object Name
-foreach ($f in $testFiles) { . $f.FullName }
+foreach ($f in $testFiles) { $script:CurrentFile = $f.Name; . $f.FullName }
 
 if (-not $bddDocsPreexisting -and (Test-Path 'bdd-docs')) {
     Remove-Item 'bdd-docs' -Recurse -Force -ErrorAction SilentlyContinue
@@ -203,6 +346,9 @@ if ($Json) {
         total  = $script:Results.Count
         failed = $failed.Count
         failures = $failed
+        # worker 模式：協調者要每一條的結果（印各 suite 的通過數）與載入時看到的 suite（對帳用）
+        results  = $(if ($OnlySuite) { @($script:Results) } else { $null })
+        seen     = $(if ($OnlySuite) { @($script:SeenSuites) } else { $null })
     } | ConvertTo-Json -Depth 4 -Compress
 } else {
     $bySuite = $script:Results | Group-Object suite

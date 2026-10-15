@@ -290,18 +290,29 @@ function parseInstall(env) {
         orchestratorHint: optStr(d, 'orchestratorHint', at),
     };
 }
+const EMPTY_UPDATE = {
+    error: null, result: '', from: null, to: null, breaking: false, downgrade: false,
+    modified: [], added: [], removed: [], backup: null, hooksChanged: false, vsix: null,
+};
 function parseUpdate(env) {
     const d = env.data;
     const at = '$.data';
     if ('error' in d)
-        return { error: optStr(d, 'error', at), result: '', from: null, to: null, modified: [], backup: null };
+        return { ...EMPTY_UPDATE, error: optStr(d, 'error', at) };
+    const editor = isObj(d.editor) ? d.editor : undefined;
     return {
-        error: null,
+        ...EMPTY_UPDATE,
         result: 'result' in d ? str(d, 'result', at) : '',
         from: optStr(d, 'from', at),
         to: optStr(d, 'to', at),
+        breaking: 'breaking' in d ? bool(d, 'breaking', at) : false,
+        downgrade: 'downgrade' in d ? bool(d, 'downgrade', at) : false,
         modified: strArr(d, 'modified', at),
+        added: 'added' in d ? strArr(d, 'added', at) : [],
+        removed: 'removed' in d ? strArr(d, 'removed', at) : [],
         backup: 'backup' in d ? optStr(d, 'backup', at) : null,
+        hooksChanged: 'hooksChanged' in d ? bool(d, 'hooksChanged', at) : false,
+        vsix: 'vsix' in d ? optStr(d, 'vsix', at) : editor && 'vsix' in editor ? optStr(editor, 'vsix', `${at}.editor`) : null,
     };
 }
 function parseWhatsNew(env) {

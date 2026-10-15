@@ -171,6 +171,15 @@ test('AGENTS.md.new 還在 → 常駐一行，點一下開對照', () => {
   assert.ok(!nodes(input()).has('status/merge'), '沒有 .new 時不該有這一行');
 });
 
+test('有新版 → 那一行點下去是升級（不是只看說明）；沒有新版就沒有升級按鈕', () => {
+  const n = nodes(input({ doctor: doctor((x) => { x.update = { ...x.update, cached: true, newer: true, latest: '4.16.0' }; }) }));
+  const u = n.get('status/update')!;
+  assert.match(u.label, /4\.16\.0/);
+  assert.equal(u.command?.command, 'codexSdlc.upgrade');
+  const none = nodes(input({ doctor: doctor((x) => { x.update = { ...x.update, cached: true, newer: false, latest: '4.9.0' }; }) }));
+  assert.notEqual(none.get('status/update')!.command?.command, 'codexSdlc.upgrade');
+});
+
 test('doctor 的其他問題列在「需要處理」底下', () => {
   const n = nodes(input({ doctor: doctor((x) => { x.config.comments = true; x.problems = 0; }) }));
   const issues = n.get('status/issues')!;
