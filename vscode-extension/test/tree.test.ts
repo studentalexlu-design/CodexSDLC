@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import { readConfig } from '../src/config';
 import { parseDoctor, parseEnvelope, SUPPORTED_SCHEMA, type DoctorData } from '../src/contract';
 import { parseSettingsSchema } from '../src/schema';
-import { buildSettingsTree, flatten, pendingAgentsOf, type SettingNode, type TreeInput } from '../src/tree';
+import { attentionCount, buildPanel, buildSettingsTree, flatten, pendingAgentsOf, statusCard, upgradeOffer, type SettingNode, type TreeInput } from '../src/tree';
 import { doctorFixture, modelsFixture } from './fixtures';
 
 const repo = path.resolve(__dirname, '..', '..', '..');
@@ -48,6 +48,85 @@ test('六個區段，順序固定（人找東西靠位置）', () => {
   assert.deepEqual(buildSettingsTree(input()).map((n) => n.label), ['狀態', 'Agent 調校', '審核', '更新', '規範', '這台機器']);
 });
 
+const statusRows = (i: TreeInput) => buildSettingsTree(i)[0].children!;
+
+test('調校 view 不包標題：agent 直接列，審核接在後面；其他收進進階', () => {
+  const p = buildPanel(input());
+  const ids = p.views.settings.map((n) => n.id);
+  assert.deepEqual(ids.filter((id) => /^agents\/[^/]+$/.test(id) && id !== 'agents/tune').sort(), ['agents/implementer', 'agents/orchestrator', 'agents/reviewer', 'agents/sa-analyst']);
+  assert.equal(ids[ids.length - 1], 'review/maxRounds');
+  assert.ok(!ids.includes('agents') && !ids.includes('review'), '又多包了一層區段標題');
+  assert.deepEqual(p.views.advanced.map((n) => n.id), ['update', 'guidelines', 'machine']);
+});
+
+test('有未套用 → 調校最上面一行就是「套用 N 項」；剛套用完換成「已套用」', () => {
+  const pending = buildPanel(input({ pendingAgents: ['reviewer', 'implementer'] })).views.settings[0];
+  assert.equal(pending.label, '套用 2 項');
+  assert.equal(pending.command?.command, 'codexSdlc.apply');
+  assert.equal(pending.tone, 'accent', '待套用是你自己的改動，不該用警告色');
+  const applied = buildPanel(input({ pendingAgents: ['reviewer'], justApplied: ['reviewer'] })).views.settings[0];
+  assert.equal(applied.label, '已套用 reviewer');
+  assert.ok(!buildPanel(input({ pendingAgents: ['reviewer'], justApplied: ['reviewer'] })).views.settings.some((n) => n.id === 'settings/apply'));
+  assert.notEqual(buildPanel(input()).views.settings[0].id, 'settings/apply');
+});
+
+test('全部正常 → 狀態只剩「一切正常」一行，其他收在它底下', () => {
+  const top = statusRows(input());
+  assert.deepEqual(top.map((n) => n.label), ['一切正常']);
+  assert.ok(top[0].children!.some((n) => n.id === 'status/hooks'));
+  assert.ok(!top[0].expanded);
+});
+
+test('有事 → 要處理的排最上面，沒事的收成「其他 N 項正常」', () => {
+  const top = statusRows(input({ agentsNewExists: true, doctor: doctor((x) => { x.hooks = { status: 'no-hooks', codex: null }; }) }));
+  assert.deepEqual(top.slice(0, 2).map((n) => n.id), ['status/hooks', 'status/merge']);
+  assert.match(top[top.length - 1].label, /^其他 \d+ 項正常$/);
+});
+
+test('狀態卡片：全部正常 → ok，帶專案、版本、幾點檢查過', () => {
+  const c = statusCard(input({ checkedAt: new Date(2026, 9, 18, 9, 5).getTime() }));
+  assert.equal(c.state, 'ok');
+  assert.deepEqual(c.items, []);
+  assert.equal(c.project, 'shop');
+  assert.equal(c.version, '4.9.0');
+  assert.equal(c.checkedAt, '09:05');
+  assert.ok(c.quiet > 0);
+});
+
+test('狀態卡片：要處理的事各帶一顆短按鈕；hooks 不在 → 補回、.new 沒合併 → 合併', () => {
+  const c = statusCard(input({ agentsNewExists: true, doctor: doctor((x) => { x.hooks = { status: 'no-hooks', codex: null }; }) }));
+  assert.equal(c.state, 'attention');
+  assert.deepEqual(c.items.map((x) => [x.level, x.action?.label, x.action?.command]), [
+    ['error', '補回', 'codexSdlc.repair'],
+    ['error', '合併', 'codexSdlc.mergeAgents'],
+  ]);
+  assert.deepEqual(c.items[1].action?.arguments, ['C:/work/shop'], '合併要帶著是哪個專案');
+});
+
+test('狀態卡片：新版與調校未套用都不算要處理的事', () => {
+  const c = statusCard(input({ doctor: doctor((x) => {
+    x.update = { ...x.update, cached: true, newer: true, latest: '4.16.0' };
+    x.tuning = { status: 'stale', stale: ['reviewer.toml'] };
+  }) }));
+  assert.equal(c.state, 'ok', '待套用或新版把卡片變成「有事」');
+  assert.equal(c.upgrade?.version, '4.16.0');
+  assert.equal(c.upgrade?.action.command, 'codexSdlc.upgrade');
+  assert.equal(attentionCount(input({ pendingAgents: ['reviewer'] })), 0);
+});
+
+test('狀態卡片：活動列的數字＝卡片上列的件數', () => {
+  const i = input({ agentsNewExists: true, doctor: doctor((x) => { x.config.comments = true; }) });
+  assert.equal(attentionCount(i), statusCard(i).items.length);
+  assert.equal(attentionCount(i), 2);
+});
+
+test('狀態卡片：doctor 還沒回來 → 檢查中；沒跑起來 → 說原因，不說一切正常', () => {
+  assert.equal(statusCard(input({ doctor: undefined, checking: true })).state, 'checking');
+  const f = statusCard(input({ doctor: undefined, failure: '找不到 PowerShell 7' }));
+  assert.equal(f.state, 'failed');
+  assert.equal(f.failure, '找不到 PowerShell 7');
+});
+
 test('ID 不重複（VS Code 的樹靠它記住展開狀態，重複會直接丟錯）', () => {
   const all = flatten(buildSettingsTree(input({ pendingAgents: ['reviewer'], proposal: [{ agent: 'reviewer', effort: 'high', reason: 'r' }] })));
   assert.equal(new Set(all.map((n) => n.id)).size, all.length);
@@ -55,11 +134,14 @@ test('ID 不重複（VS Code 的樹靠它記住展開狀態，重複會直接丟
 
 test('看到的值就是設定檔裡的值', () => {
   const n = nodes(input());
-  assert.match(n.get('agents/reviewer')!.description!, /effort medium · model gpt-5\.5/);
+  // 側邊欄很窄：那一行只放兩個值，完整的說法在 tooltip。
+  assert.equal(n.get('agents/reviewer')!.description, 'medium · gpt-5.5');
+  assert.match(n.get('agents/reviewer')!.tooltip!, /effort medium · model gpt-5\.5/);
   assert.equal(n.get('agents/reviewer/model')!.description, 'gpt-5.5');
   const unverified = nodes(input({ doctor: doctor((x) => { x.unverifiedModel = ['reviewer']; }) }));
   assert.equal(unverified.get('agents/reviewer/model')!.description, 'gpt-5.5 · 沒對 Codex 驗證');
-  assert.match(n.get('review/maxRounds')!.description!, /^4 輪 · 下一次委派就生效/);
+  assert.equal(n.get('review/maxRounds')!.description, '4 輪');
+  assert.match(n.get('review/maxRounds')!.tooltip!, /下一次委派就生效/);
   assert.equal(n.get('update/check')!.description, '每天');
   assert.match(n.get('update/source')!.description!, /未設定/);
 });
@@ -112,7 +194,8 @@ test('doctor 說這台跑不起來 → 那個 agent 標紅、說會起不來；�
   const problem = { agent: 'sa-analyst', model: 'inherit', effort: 'high', effectiveModel: 'gpt-x', status: 'effort-unsupported', level: 'problem', message: 'gpt-x 只支援 low —— sa-analyst 會起不來（Codex 拒絕這次 spawn）', suggestion: 'agents.sa-analyst.effort=low', allowed: ['low'] };
   const n = nodes(input({ doctor: doctor((x) => { x.models = modelsFixture([problem]); }) }));
   assert.equal(n.get('agents/sa-analyst')!.tone, 'error');
-  assert.match(n.get('agents/sa-analyst')!.description!, /這台跑不起來/);
+  assert.equal(n.get('agents/sa-analyst')!.description, 'high · 跑不起來');
+  assert.equal(n.get('agents/sa-analyst')!.iconFile, 'effort-high-error', '跑不起來時訊號格要換成異常色');
   assert.equal(n.get('agents/sa-analyst/effort')!.tone, 'error');
   assert.match(n.get('agents/sa-analyst/effort')!.description!, /sa-analyst 會起不來/);
   const stale = nodes(input({ doctor: doctor((x) => { x.models = modelsFixture([{ ...problem, effort: 'xhigh' }]); }) }));
@@ -132,8 +215,9 @@ test('未套用：doctor 說的 ∪ 剛寫、doctor 還沒回來的；orchestrat
   const agents = n.get('agents')!;
   assert.equal(agents.contextValue, 'tuningPending', '沒有「套用」按鈕');
   assert.equal(agents.description, '2 項未套用');
-  assert.match(n.get('agents/implementer')!.description!, /未套用/);
-  assert.doesNotMatch(n.get('agents/sa-analyst')!.description!, /未套用/);
+  assert.equal(n.get('agents/implementer')!.tone, 'pending');
+  assert.match(n.get('agents/implementer')!.tooltip!, /未套用/);
+  assert.notEqual(n.get('agents/sa-analyst')!.tone, 'pending');
 });
 
 test('都套用了 → 沒有「套用」按鈕，寫明已套用', () => {
@@ -143,14 +227,16 @@ test('都套用了 → 沒有「套用」按鈕，寫明已套用', () => {
 });
 
 test('orchestrator 說清楚「只是記錄，強制不了」', () => {
-  assert.match(nodes(input()).get('agents/orchestrator')!.description!, /只是記錄，強制不了/);
+  const o = nodes(input()).get('agents/orchestrator')!;
+  assert.match(o.description!, /只是記錄/);
+  assert.match(o.tooltip!, /只是記錄，強制不了/);
 });
 
 test('工作流太舊（沒有 set／schema）→ 只顯示、不給改，並說要升到哪一版', () => {
   const n = nodes(input({ canEdit: false, schema: undefined, workflowVersion: '4.8.0', editBlockedReason: '升到 4.9.0 以上才能在這裡改' }));
   assert.ok([...n.values()].every((x) => !x.edit && x.contextValue !== 'editable'), '不能改的專案出現了修改按鈕');
   assert.match(n.get('agents/blocked')!.label, /4\.9\.0/);
-  assert.match(n.get('agents/reviewer')!.description!, /effort medium/, '不能改也要看得到值');
+  assert.match(n.get('agents/reviewer')!.description!, /^medium · gpt-5\.5/, '不能改也要看得到值');
 });
 
 test('hooks.json 在 → 那一行綠，而且不提信任（要問 codex 的事一律不做）', () => {
@@ -180,6 +266,28 @@ test('有新版 → 那一行點下去是升級（不是只看說明）；沒有
   assert.notEqual(none.get('status/update')!.command?.command, 'codexSdlc.upgrade');
 });
 
+test('連不到發佈頁，但 extension 內附的比專案新 → 一樣提示可以升，點下去是升級', () => {
+  const offline = doctor((x) => { x.update = { ...x.update, cached: false, newer: false, latest: null }; });
+  const m = (payloadVersion?: string) => ({ pwsh: { ok: true, path: 'C:/pwsh/pwsh.exe' }, extensionVersion: payloadVersion ?? '4.16.0', payloadVersion });
+  const u = nodes(input({ workflowVersion: '4.16.0', doctor: offline, machine: m('4.16.1') })).get('status/update')!;
+  assert.match(u.label, /4\.16\.1/);
+  assert.equal(u.command?.command, 'codexSdlc.upgrade');
+  assert.match(u.description ?? '', /內附/);
+  // 內附的跟專案一樣或更舊 → 不提示（升級會被當成沒東西可升或降級擋下）
+  for (const same of ['4.16.0', '4.15.1', undefined]) {
+    const n = nodes(input({ workflowVersion: '4.16.0', doctor: offline, machine: m(same) })).get('status/update')!;
+    assert.notEqual(n.command?.command, 'codexSdlc.upgrade', `內附 ${same} 卻提示升級`);
+  }
+});
+
+test('upgradeOffer：發佈頁與內附都比專案新 → 講較新的那一個', () => {
+  const remote = (latest: string) => doctor((x) => { x.update = { ...x.update, cached: true, newer: true, latest }; });
+  assert.deepEqual(upgradeOffer({ doctor: remote('4.17.0'), workflowVersion: '4.16.0', payloadVersion: '4.16.1' }), { version: '4.17.0', from: 'remote' });
+  assert.deepEqual(upgradeOffer({ doctor: remote('4.16.1'), workflowVersion: '4.16.0', payloadVersion: '4.16.2' }), { version: '4.16.2', from: 'bundled' });
+  assert.deepEqual(upgradeOffer({ doctor: remote('4.16.1'), workflowVersion: '4.16.0', payloadVersion: '4.16.1' }), { version: '4.16.1', from: 'remote' });
+  assert.equal(upgradeOffer({ doctor: undefined, workflowVersion: undefined, payloadVersion: '4.16.1' }), undefined);
+});
+
 test('doctor 的其他問題列在「需要處理」底下', () => {
   const n = nodes(input({ doctor: doctor((x) => { x.config.comments = true; x.problems = 0; }) }));
   const issues = n.get('status/issues')!;
@@ -207,9 +315,10 @@ test('tune 的建議：只算跟現值不一樣的', () => {
     { agent: 'nobody', effort: 'low', reason: '專案沒有這個 agent' },
   ] }));
   const t = n.get('agents/tune')!;
-  assert.equal(t.label, 'tune 有 1 項建議');
-  assert.equal(t.description, 'reviewer → high');
-  assert.equal(nodes(input()).get('agents/tune')!.label, '依 repo 現況給建議…');
+  assert.equal(t.label, '1 項建議：reviewer → high');
+  assert.equal(t.contextValue, 'tuneProposal', '沒有行內「採用」');
+  assert.deepEqual(t.data, ['C:/work/shop', ['reviewer']], '採用的範圍不是只有跟現值不同的那幾個');
+  assert.equal(nodes(input()).get('agents/tune')!.label, '依 repo 現況給建議');
 });
 
 test('規範：README 不算規範文件；機械層關著 → 警告並給「打開」', () => {
@@ -250,7 +359,7 @@ test('沒有 sdlc.config.json：照樣列出 agent 讓你改（第一次改就�
   assert.match(n.get('agents/none')!.description!, /全部 inherit/);
   assert.equal(n.get('agents/none')!.tone, 'muted', '合法狀態不該顯示成錯誤');
   assert.equal(n.get('agents/reviewer/effort')!.edit?.key, 'agents.reviewer.effort', '沒有設定檔就不給改 —— 使用者會被丟回去手動建檔');
-  assert.match(n.get('agents/reviewer')!.description!, /effort inherit/);
+  assert.match(n.get('agents/reviewer')!.description!, /^跟隨 · 跟隨主對話/);
   assert.equal(n.get('review/maxRounds')!.edit?.key, 'review.maxRounds');
 });
 

@@ -327,6 +327,7 @@ export interface FetchData {
   remote: { checked: boolean; reachable: boolean; latest: string | null; url: string | null; reason: string | null; provider: string | null };
   bundled: { version: string | null; path: string | null };
   cacheDir: string;
+  warning: string | null;         // 頭一條警告（例如「下載發佈物失敗（HTTP 401）」）—— 拿不到時要講的就是它
 }
 
 export function parseFetch(env: Envelope): FetchData {
@@ -348,6 +349,7 @@ export function parseFetch(env: Envelope): FetchData {
     },
     bundled: { version: optStr(bundled, 'version', `${at}.bundled`), path: optStr(bundled, 'path', `${at}.bundled`) },
     cacheDir: str(d, 'cacheDir', at),
+    warning: env.warnings.length ? String(env.warnings[0]) : null,
   };
 }
 

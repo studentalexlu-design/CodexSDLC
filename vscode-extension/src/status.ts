@@ -75,8 +75,8 @@ export function issuesFromDoctor(d: DoctorData): Issue[] {
     issues.push({
       level: 'warn',
       badge: '$(cloud) 更新檢查頻率寫壞了',
-      detail: `${badCheck.detail} —— 不認得的值照 daily 算，會連網檢查。在設定面板的「更新」裡重選一次。`,
-      fix: { command: { command: 'codexSdlc.openSettings', title: '開啟設定面板' } },
+      detail: `${badCheck.detail} —— 不認得的值照 daily 算，會連網檢查。在側邊欄「進階」→「更新」裡重選一次。`,
+      fix: { command: { command: 'codexSdlc.openAdvanced', title: '開啟進階設定' } },
     });
   }
   if (!d.review.valid) {

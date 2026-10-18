@@ -33,8 +33,10 @@ import {
 import { CONFIG_SCHEMA_REL, matchesPattern, readSettingsSchema, type Choice, type SettingsSchema } from './schema';
 import { statusFromDoctor, statusFromFailure, type StatusView } from './status';
 import {
-  buildSettingsTree, pendingAgentsOf, type EditTarget, type SettingNode, type StoredProposalItem, type Tone, type TreeInput,
+  buildPanel, buildSettingsTree, pendingAgentsOf, upgradeOffer,
+  type CardAction, type EditTarget, type Panel, type SettingNode, type StatusCard, type StoredProposalItem, type Tone, type TreeInput, type ViewId,
 } from './tree';
+import { renderCard } from './card';
 
 const VERSION_REL = '.codex/bdd-workflow/bdd-workflow-version.json';
 const PROFILES_REL = '.codex/bdd-workflow/tuning-profiles.json';
@@ -45,7 +47,14 @@ const CONFIG_REL = 'sdlc.config.json';
 const AGENTS_REL = 'AGENTS.md';
 const PROPOSAL_REL = 'bdd-docs/.sdlc/tuning-proposal.json';
 const GATE_MARKER_REL = 'guidelines/.gate-disabled';
+// 三個 view：狀態卡片（webview）＋兩棵樹。settings 是永遠在的那一個（沒裝工作流時它顯示安裝按鈕），另外兩個只在裝了之後出現。
+const STATUS_VIEW = 'codexSdlc.status';
 const SETTINGS_VIEW = 'codexSdlc.settings';
+const VIEW_IDS: Record<ViewId, string> = { settings: SETTINGS_VIEW, advanced: 'codexSdlc.advanced' };
+// 按完「套用」之後「已套用」那一行停多久（從 doctor 確認完開始算）。
+const APPLIED_FLASH_MS = 2500;
+// 樹節點的假 resourceUri —— 只為了讓 FileDecoration 把要注意的那幾行的文字也上色（ThemeIcon 只染得到圖示）。
+const DECO_SCHEME = 'codex-sdlc-node';
 const WALKTHROUGH = 'codexSdlc.start';
 // vsix 內附的那一份發佈物（pack.ps1 打包時放進來的）。沒有它也能跑，安裝那條路會退回「選擇發佈物…」。
 const PAYLOAD_DIR = 'payload';
@@ -68,6 +77,7 @@ export interface CockpitApi {
   writeSettings(assignments: string[], opts?: WriteOptions): Promise<SetData | undefined>;
   calls(): Record<string, number>;
   settingsViewVisible(): boolean;
+  statusCard(root?: string): StatusCard | undefined;
 }
 
 interface RootState {
@@ -83,6 +93,9 @@ interface RootState {
   // 寫了 agents.*、doctor 還沒回來確認的 agent。doctor 回來之後以它的 tuning.stale 為準。
   pendingAgents: Set<string>;
   lastWrite: number;
+  doctorAt?: number;
+  // 剛套用完、還在顯示「已套用」的那幾個 agent。
+  justApplied?: string[];
 }
 
 type SdlcCall =
@@ -92,15 +105,19 @@ type SdlcCall =
 const samePath = (a: string, b: string) =>
   process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
 
-const toneColor: Record<Tone, string> = {
-  ok: 'testing.iconPassed',
+// 正常（ok）不上色：正常不需要被慶祝。待套用與建議用品牌強調色（package.json 的 codexSdlc.accent），不用警告色 ——
+// 那是你自己的改動，不是危險。
+const ACCENT = 'codexSdlc.accent';
+const toneColor: Record<Tone, string | undefined> = {
+  ok: undefined,
   warn: 'list.warningForeground',
   error: 'list.errorForeground',
-  pending: 'charts.orange',
+  pending: ACCENT,
   muted: 'disabledForeground',
+  accent: ACCENT,
 };
 
-function toTreeItem(n: SettingNode): vscode.TreeItem {
+function toTreeItem(n: SettingNode, media: (file: string) => vscode.Uri): vscode.TreeItem {
   const state = n.children && n.children.length > 0
     ? (n.expanded ? vscode.TreeItemCollapsibleState.Expanded : vscode.TreeItemCollapsibleState.Collapsed)
     : vscode.TreeItemCollapsibleState.None;
@@ -109,9 +126,44 @@ function toTreeItem(n: SettingNode): vscode.TreeItem {
   item.description = n.description;
   item.tooltip = n.tooltip;
   item.contextValue = n.contextValue;
-  if (n.icon) item.iconPath = new vscode.ThemeIcon(n.icon, n.tone ? new vscode.ThemeColor(toneColor[n.tone]) : undefined);
+  const color = n.tone ? toneColor[n.tone] : undefined;
+  if (n.iconFile) {
+    // 異常版本兩種主題共用一張（紅色在兩邊都看得到）；其他分淺色、深色各一張。
+    item.iconPath = n.iconFile.endsWith('-error')
+      ? media(`${n.iconFile}.svg`)
+      : { light: media(`${n.iconFile}-light.svg`), dark: media(`${n.iconFile}-dark.svg`) };
+  } else if (n.icon) {
+    item.iconPath = new vscode.ThemeIcon(n.icon, color ? new vscode.ThemeColor(color) : undefined);
+  }
   if (n.command) item.command = n.command;
+  if (n.tone && labelColor[n.tone]) {
+    item.resourceUri = vscode.Uri.from({ scheme: DECO_SCHEME, path: `/${n.id}`, query: n.tone });
+    // 有 resourceUri 又沒有 tooltip 時，VS Code 會把那個假路徑當 tooltip 顯示。
+    item.tooltip ??= n.label;
+  }
+  // 「未套用」在畫面上只是行尾一個 ●，螢幕閱讀器要聽得到字。
+  if (n.tone === 'pending') item.accessibilityInformation = { label: `${n.label} ${n.description ?? ''} 未套用` };
   return item;
+}
+
+// 只有要人注意的才連文字一起上色；ok／muted 維持一般文字。
+const labelColor: Partial<Record<Tone, string>> = { warn: toneColor.warn, error: toneColor.error, pending: ACCENT, accent: ACCENT };
+
+const nodeDecorations: vscode.FileDecorationProvider = {
+  provideFileDecoration(uri) {
+    if (uri.scheme !== DECO_SCHEME) return undefined;
+    const tone = uri.query as Tone;
+    const color = labelColor[tone];
+    // 待套用在行尾放一個 ●（跟 Git 面板的 M 同一個位置）。
+    return color ? new vscode.FileDecoration(tone === 'pending' ? '●' : undefined, tone === 'pending' ? '未套用' : undefined, new vscode.ThemeColor(color)) : undefined;
+  },
+};
+
+function nonce(): string {
+  let s = '';
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  for (let i = 0; i < 32; i++) s += chars[Math.floor(Math.random() * chars.length)];
+  return s;
 }
 
 function isEditTarget(x: unknown): x is EditTarget {
@@ -134,6 +186,13 @@ class Cockpit implements vscode.Disposable {
   private updateTimer?: NodeJS.Timeout;
   private lastPicked?: string;
   private settingsView?: vscode.TreeView<SettingNode>;
+  private readonly views: Partial<Record<ViewId, vscode.TreeView<SettingNode>>> = {};
+  // 三個 view 共用同一次算出來的結果（treeInput 會讀好幾個檔，不要每個 view 各讀一次）。
+  private panel?: Panel;
+  private statusView?: vscode.WebviewView;
+  // 卡片上每一顆按鈕對應的指令。webview 只送回索引 —— 它叫不動任何不在這張表裡的東西。
+  private cardActions: CardAction[] = [];
+  private cardHtml?: string;
 
   constructor(private readonly context: vscode.ExtensionContext) {
     this.item.command = 'codexSdlc.menu';
@@ -154,9 +213,15 @@ class Cockpit implements vscode.Disposable {
     reg('codexSdlc.showOutput', () => this.output.show());
     // 設定面板
     reg('codexSdlc.openSettings', () => vscode.commands.executeCommand(`${SETTINGS_VIEW}.focus`));
+    reg('codexSdlc.openAdvanced', () => vscode.commands.executeCommand(`${VIEW_IDS.advanced}.focus`));
     reg('codexSdlc.editSetting', (arg: unknown) => this.withRoot((r) => this.editSettingCommand(r, arg)));
     reg('codexSdlc.applyPreset', () => this.withRoot((r) => this.applyPresetCommand(r)));
     reg('codexSdlc.applyProposalFor', (root: string, agent: string) => this.applyProposal(root, [agent]));
+    // 調校 view 裡 tune 那一行的行內「採用」：拿到的是節點本身，root 與要採用的 agent 放在 data。
+    reg('codexSdlc.adoptProposal', (node?: SettingNode) => {
+      const [root, agents] = (node?.data ?? []) as [string?, string[]?];
+      return root && agents?.length ? this.applyProposal(root, agents) : this.withRoot((r) => this.tuneCommand(r));
+    });
     reg('codexSdlc.toggleGate', () => this.withRoot((r) => this.toggleGateCommand(r)));
     reg('codexSdlc.pickPwsh', () => this.pickPwsh());
     // 安裝與修復：這三條在**還沒裝工作流**的工作區也要能叫得動。
@@ -168,13 +233,33 @@ class Cockpit implements vscode.Disposable {
     reg('codexSdlc.openFile', (file: string) => vscode.window.showTextDocument(vscode.Uri.file(file)));
     reg('codexSdlc.openWalkthrough', () => vscode.commands.executeCommand('workbench.action.openWalkthrough', `${this.context.extension.id}#${WALKTHROUGH}`, false));
 
-    const tree: vscode.TreeDataProvider<SettingNode> = {
-      onDidChangeTreeData: this.treeChanged.event,
-      getTreeItem: (n) => toTreeItem(n),
-      getChildren: (n) => (n ? n.children ?? [] : this.settingsTree()),
-    };
+    const media = (file: string) => vscode.Uri.joinPath(this.context.extensionUri, 'media', 'icons', file);
+    for (const [view, id] of Object.entries(VIEW_IDS) as [ViewId, string][]) {
+      const provider: vscode.TreeDataProvider<SettingNode> = {
+        onDidChangeTreeData: this.treeChanged.event,
+        getTreeItem: (n) => toTreeItem(n, media),
+        getChildren: (n) => (n ? n.children ?? [] : this.panel?.views[view] ?? []),
+      };
+      const tv = vscode.window.createTreeView(id, { treeDataProvider: provider, showCollapseAll: view === 'advanced' });
+      this.views[view] = tv;
+      this.disposables.push(tv);
+    }
+    this.settingsView = this.views.settings;
     this.disposables.push(
-      (this.settingsView = vscode.window.createTreeView(SETTINGS_VIEW, { treeDataProvider: tree, showCollapseAll: true })),
+      vscode.window.registerWebviewViewProvider(STATUS_VIEW, {
+        resolveWebviewView: (view) => {
+          this.statusView = view;
+          this.cardHtml = undefined;
+          // 不載入任何本機資源；也不開 command: 連結 —— 按鈕一律走 postMessage ＋ 上面那張表。
+          view.webview.options = { enableScripts: true, enableCommandUris: false, localResourceRoots: [] };
+          view.webview.onDidReceiveMessage((m: unknown) => this.runCardAction(m));
+          view.onDidDispose(() => { if (this.statusView === view) this.statusView = undefined; });
+          this.renderStatusCard();
+        },
+      }),
+    );
+    this.disposables.push(
+      vscode.window.registerFileDecorationProvider(nodeDecorations),
       vscode.languages.registerCodeLensProvider({ pattern: `**/${CONFIG_REL}` }, {
         onDidChangeCodeLenses: this.lensChanged.event,
         provideCodeLenses: (doc) => this.codeLenses(doc),
@@ -263,6 +348,7 @@ class Cockpit implements vscode.Disposable {
     },
     calls: () => ({ ...this.callCount }),
     settingsViewVisible: () => this.settingsView?.visible ?? false,
+    statusCard: (root) => { const s = this.pick(root); return s ? buildPanel(this.treeInput(s)).card : undefined; },
   };
 
   // ---- 工作區 ----
@@ -457,6 +543,7 @@ class Cockpit implements vscode.Disposable {
         if (call.ok) {
           try {
             s.doctor = parseDoctor(call.env);
+            s.doctorAt = Date.now();
             s.view = statusFromDoctor(s.doctor, new Date());
             // 這次 doctor 是在最後一次寫檔之後才開始的 → 它的 tuning.stale 已經算進那次寫檔，本地的標記可以放掉。
             if (started >= s.lastWrite) s.pendingAgents.clear();
@@ -497,8 +584,38 @@ class Cockpit implements vscode.Disposable {
   }
 
   private refreshViews(): void {
+    const s = this.pick();
+    this.panel = s ? buildPanel(this.treeInput(s)) : undefined;
+    // 標題列的「套用」按鈕跟著這個 context key 出現／消失。
+    void vscode.commands.executeCommand('setContext', 'codexSdlc.tuningPending', (this.panel?.pending.length ?? 0) > 0);
+    this.renderStatusCard();
     this.treeChanged.fire();
     this.lensChanged.fire();
+  }
+
+  // 卡片與活動列上的數字是同一份 StatusCard：卡片上列幾件，圖示上就是幾。
+  private renderStatusCard(): void {
+    const v = this.statusView;
+    if (!v) return;
+    const card = this.panel?.card;
+    const n = card?.items.length ?? 0;
+    v.badge = n > 0 ? { value: n, tooltip: `${n} 件事要處理` } : undefined;
+    if (!card) return;
+    const n0 = nonce();
+    const r = renderCard(card, { nonce: n0, cspSource: v.webview.cspSource });
+    this.cardActions = r.actions;
+    // nonce 每次都不一樣，比 HTML 之前先拿掉 —— 內容沒變就不重設（重設會整頁重載、閃一下）。
+    const key = r.html.split(n0).join('');
+    if (key === this.cardHtml) return;
+    this.cardHtml = key;
+    v.webview.html = r.html;
+  }
+
+  private runCardAction(m: unknown): void {
+    const i = typeof m === 'object' && m !== null ? (m as { a?: unknown }).a : undefined;
+    const a = typeof i === 'number' ? this.cardActions[i] : undefined;
+    if (!a || !a.command.startsWith('codexSdlc.')) return;
+    void vscode.commands.executeCommand(a.command, ...(a.arguments ?? []));
   }
 
   private async backgroundUpdateCheck(root: string): Promise<void> {
@@ -572,6 +689,9 @@ class Cockpit implements vscode.Disposable {
       knownAgents,
       doctor: s.doctor,
       checking: !!s.running,
+      checkedAt: s.doctor ? s.doctorAt : undefined,
+      failure: !s.doctor && s.view?.level === 'error' ? s.view.tooltip[0] ?? s.view.text : undefined,
+      justApplied: s.justApplied,
       pendingAgents: [...s.pendingAgents],
       proposal: this.readProposal(s.root),
       guidelines: { dir: gExists, files, rulesExists: fs.existsSync(rulesPath), ruleCount, gateDisabled: fs.existsSync(path.join(s.root, GATE_MARKER_REL)) },
@@ -891,9 +1011,13 @@ class Cockpit implements vscode.Disposable {
       if (pick) await vscode.commands.executeCommand(pick.id);
       return;
     }
-    const u = s.doctor?.update;
+    const offer = upgradeOffer({ doctor: s.doctor, workflowVersion: this.workflowVersion(s.root), payloadVersion: this.payloadVersion() });
     const items: (vscode.QuickPickItem & { id?: string })[] = [
-      ...(u?.newer && u.latest ? [{ label: `$(arrow-up) 升級到 ${u.latest}`, description: '先列出會動哪些檔，確認才升級', id: 'codexSdlc.upgrade' }] : []),
+      ...(offer ? [{
+        label: `$(arrow-up) 升級到 ${offer.version}`,
+        description: offer.from === 'bundled' ? 'extension 內附，不用連網；先列出會動哪些檔，確認才升級' : '先列出會動哪些檔，確認才升級',
+        id: 'codexSdlc.upgrade',
+      }] : []),
       { label: '$(settings-gear) 開啟設定面板', description: '一眼看到全部設定；改值、套用、換預設組合', id: 'codexSdlc.openSettings' },
       { label: '$(refresh) 重新整理狀態', id: 'codexSdlc.refresh' },
       { label: '$(checklist) doctor', description: '完整健檢，結果寫進輸出面板', id: 'codexSdlc.doctor' },
@@ -948,7 +1072,7 @@ class Cockpit implements vscode.Disposable {
       ? '這個 extension 沒有內附發佈物（開發模式下裝的？），而這個資料夾裡也沒有一份可以用的。'
       : f.remote.reason === 'no-source'
         ? '找不到發佈物：extension 沒有內附，也沒有設定發佈物來源。'
-        : `找不到可用的發佈物（遠端：${f.remote.reason ?? '沒有回應'}）。`;
+        : `沒有自動下載到發佈物：${whyNoRemote(f)}`;
     void vscode.window.showWarningMessage(why, '選擇發佈物…', '設定發佈物來源…').then((c) => {
       if (c === '選擇發佈物…') retryWithPicked();
       if (c === '設定發佈物來源…') void vscode.commands.executeCommand('workbench.action.openSettings', 'codexSdlc.releaseSource');
@@ -1007,7 +1131,7 @@ class Cockpit implements vscode.Disposable {
     );
     if (ok !== '照樣用這一份') return undefined;
     return {
-      chosen: 'bundled', version, path: uris[0].fsPath, cacheDir: this.context.globalStorageUri.fsPath,
+      chosen: 'bundled', version, path: uris[0].fsPath, cacheDir: this.context.globalStorageUri.fsPath, warning: null,
       remote: { checked: false, reachable: false, latest: null, url: null, reason: 'skipped', provider: null },
       bundled: { version, path: uris[0].fsPath },
     };
@@ -1232,18 +1356,11 @@ class Cockpit implements vscode.Disposable {
   // 拿到的不比專案新：講清楚**為什麼**，給做得到的下一步。最常見的是發佈頁有新版卻拿不到（沒附 zip、私有 repo 沒 token）。
   private explainNoUpgrade(root: string, f: FetchData, installed: string): void {
     const remoteNewer = f.remote.latest && compareVersions(f.remote.latest, installed) > 0;
-    const why: Record<string, string> = {
-      'no-asset': `發佈頁的 ${f.remote.latest} 沒有附 codex-sdlc-${f.remote.latest}.zip —— 發佈時要把 pack.ps1 產出的 zip 掛上去。`,
-      unreachable: '連不到發佈頁（離線、逾時，或私有 repo 沒有設 CODEX_SDLC_TOKEN_<主機> 這個環境變數 —— 設了要整個重開 VS Code）。',
-      'download-failed': '下載發佈物失敗。',
-      'unsupported-source': '更新來源的寫法認不得（自架的寫成 gitea:https://… 或 gitlab:https://…）。',
-      'no-source': '沒有設更新來源。',
-    };
     const msg = remoteNewer
-      ? `發佈頁有 ${f.remote.latest}，但拿不到：${why[f.remote.reason ?? ''] ?? `下載回來的發佈物驗不過（${f.remote.reason ?? '原因不明'}）。`}`
+      ? `發佈頁有 ${f.remote.latest}，但沒有自動下載到：${whyNoRemote(f)}`
       : f.remote.checked && f.remote.reachable
         ? `已是最新（${installed}）。`
-        : `沒有找到比 ${installed} 新的發佈物。${why[f.remote.reason ?? ''] ?? ''}這次只拿到 ${f.version}，不拿它覆蓋。`;
+        : `沒有找到比 ${installed} 新的發佈物。${f.remote.reason ? whyNoRemote(f) : ''}這次只拿到 ${f.version}，不拿它覆蓋。`;
     const actions = remoteNewer || !f.remote.reachable ? ['選擇發佈物…', '顯示輸出'] : [];
     void (remoteNewer || !f.remote.reachable ? vscode.window.showWarningMessage : vscode.window.showInformationMessage)(msg, ...actions).then((c) => {
       if (c === '選擇發佈物…') void this.upgradeCommand(root, true);
@@ -1310,7 +1427,7 @@ class Cockpit implements vscode.Disposable {
     if (!env) return;
     const d = parseDoctor(env);
     const s = this.pick(root);
-    if (s) { s.doctor = d; s.view = statusFromDoctor(d, new Date()); this.render(); this.refreshViews(); }
+    if (s) { s.doctor = d; s.doctorAt = Date.now(); s.view = statusFromDoctor(d, new Date()); this.render(); this.refreshViews(); }
     if (d.problems === 0) void vscode.window.showInformationMessage('doctor：沒有問題。');
     else void vscode.window.showWarningMessage(`doctor：${d.problems} 個問題。`, '看詳細').then((c) => { if (c) this.output.show(); });
   }
@@ -1324,8 +1441,12 @@ class Cockpit implements vscode.Disposable {
       return;
     }
     const d = parseApply(env);
-    void vscode.window.showInformationMessage(d.changed.length > 0 ? `apply：更新了 ${d.changed.join('、')}` : 'apply：沒有變更，agent 定義已經跟設定檔一致。');
+    // 回饋就在按下去的那個位置：「套用 N 項」那一行換成「已套用 …」，停一下再收起來。不另外跳通知。
+    const s = this.pick(root);
+    if (s) { s.justApplied = d.changed.map((f) => path.basename(f).replace(/\.toml$/i, '')); this.refreshViews(); }
+    this.log(d.changed.length > 0 ? `apply：更新了 ${d.changed.join('、')}` : 'apply：沒有變更，agent 定義已經跟設定檔一致。');
     await this.refresh(root);
+    if (s) setTimeout(() => { s.justApplied = undefined; this.refreshViews(); }, APPLIED_FLASH_MS);
   }
 
   private async tuneCommand(root: string): Promise<void> {
@@ -1357,11 +1478,13 @@ class Cockpit implements vscode.Disposable {
     if (!env) return;
     const w = parseWhatsNew(env);
     this.output.show(true);
-    await this.refresh(root);
+    // 先跳按鈕再健檢：refresh 要跑 doctor（數秒），等它跑完按鈕才出現，人早就以為「只有說明、不能升」了。
     if (w.source === 'cache' && w.latest) {
-      const c = await vscode.window.showInformationMessage(`新版 ${w.latest} 的說明在輸出面板。`, `升級到 ${w.latest}`);
-      if (c) await this.upgradeCommand(root);
+      void vscode.window.showInformationMessage(`新版 ${w.latest} 的說明在輸出面板。`, `升級到 ${w.latest}`).then((c) => {
+        if (c) void this.upgradeCommand(root);
+      });
     }
+    await this.refresh(root);
   }
 
   private async checkUpdateCommand(root: string): Promise<void> {
@@ -1375,12 +1498,36 @@ class Cockpit implements vscode.Disposable {
       unreachable: '檢查不到更新（離線或來源不可達）。不影響任何流程。',
       'unsupported-source': '更新來源沒有設定，或寫法認不得（github.com／gitlab.com 直接寫網址；自架的寫成 gitea:https://… 或 gitlab:https://…）—— 在設定面板的「更新 → 來源」填上。',
     };
-    const choice = d.status === 'unsupported-source' ? '開啟設定面板' : undefined;
-    void vscode.window.showInformationMessage(text[d.status] ?? `check-update：${d.status}`, ...(choice ? [choice] : [])).then((c) => {
-      if (c) void vscode.commands.executeCommand('codexSdlc.openSettings');
+    const upgrade = d.status === 'newer' && d.latest ? `升級到 ${d.latest}` : undefined;
+    const choices = d.status === 'unsupported-source' ? ['開啟設定面板'] : upgrade ? [upgrade, '看變更說明'] : [];
+    void vscode.window.showInformationMessage(text[d.status] ?? `check-update：${d.status}`, ...choices).then((c) => {
+      if (c === '開啟設定面板') void vscode.commands.executeCommand('codexSdlc.openSettings');
+      else if (c && c === upgrade) void this.upgradeCommand(root);
+      else if (c === '看變更說明') void this.whatsNewCommand(root);
     });
     await this.refresh(root);
   }
+}
+
+// 遠端拿不到時要講兩件事：**實際發生了什麼**（sdlc.ps1 的頭一條警告，例如「下載發佈物失敗（HTTP 401）」——
+// 只給 reason 代碼的話使用者只看得到 download-failed），以及**他能做什麼**。
+export function whyNoRemote(f: FetchData): string {
+  const fact: Record<string, string> = {
+    'no-asset': `發佈頁的 ${f.remote.latest ?? '最新版'} 沒有附 codex-sdlc-${f.remote.latest ?? '<版本>'}.zip。`,
+    unreachable: '連不到發佈頁。',
+    'download-failed': '下載發佈物失敗。',
+    'unsupported-source': '更新來源的寫法認不得。',
+    'no-source': '沒有設更新來源。',
+  };
+  const next: Record<string, string> = {
+    'no-asset': '發佈時要把 pack.ps1 產出的 zip 掛在 release 的附件上。',
+    unreachable: '離線或逾時；私有 repo 要設環境變數 CODEX_SDLC_TOKEN_<主機>（設完要整個重開 VS Code）。',
+    'download-failed': '私有 repo 要設 CODEX_SDLC_TOKEN_<主機>（設完要整個重開 VS Code）；網路擋下載的話，手動下載後用「選擇發佈物…」。',
+    'unsupported-source': '自架的寫成 gitea:https://… 或 gitlab:https://…。',
+    'no-source': '在設定面板的「更新 → 來源」填上發佈頁。',
+  };
+  const r = f.remote.reason ?? '';
+  return `${f.warning ?? fact[r] ?? `下載回來的發佈物驗不過（${r || '原因不明'}）。`}${next[r] ? ` ${next[r]}` : ''}`;
 }
 
 function toDiagnostic(r: DiagnosticRecord): vscode.Diagnostic {

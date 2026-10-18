@@ -2,7 +2,7 @@
   "name": "codex-sdlc",
   "displayName": "Codex SDLC",
   "description": "Codex SDLC 工作流的駕駛艙：狀態列、設定面板、Problems、一鍵 doctor／apply／tune。它只是 sdlc.ps1 與各 gate 的殼，真相仍在 sdlc.config.json 與腳本裡。",
-  "version": "4.16.0",
+  "version": "4.17.0",
   "publisher": "codex-sdlc",
   "private": true,
   "engines": {
@@ -38,9 +38,25 @@
     "views": {
       "codexSdlc": [
         {
+          "type": "webview",
+          "id": "codexSdlc.status",
+          "name": "狀態",
+          "contextualTitle": "Codex SDLC",
+          "when": "codexSdlc.active",
+          "initialSize": 1
+        },
+        {
           "id": "codexSdlc.settings",
-          "name": "設定",
-          "contextualTitle": "Codex SDLC"
+          "name": "調校",
+          "contextualTitle": "Codex SDLC",
+          "initialSize": 2
+        },
+        {
+          "id": "codexSdlc.advanced",
+          "name": "進階",
+          "contextualTitle": "Codex SDLC",
+          "when": "codexSdlc.active",
+          "visibility": "collapsed"
         }
       ]
     },
@@ -55,13 +71,13 @@
       "view/title": [
         {
           "command": "codexSdlc.refresh",
-          "when": "view == codexSdlc.settings && codexSdlc.active",
+          "when": "view == codexSdlc.status",
           "group": "navigation@1"
         },
         {
-          "command": "codexSdlc.doctor",
-          "when": "view == codexSdlc.settings && codexSdlc.active",
-          "group": "navigation@2"
+          "command": "codexSdlc.apply",
+          "when": "view == codexSdlc.settings && codexSdlc.tuningPending",
+          "group": "navigation@0"
         },
         {
           "command": "codexSdlc.install",
@@ -69,45 +85,60 @@
           "group": "navigation@1"
         },
         {
+          "command": "codexSdlc.applyPreset",
+          "when": "view == codexSdlc.settings && codexSdlc.active",
+          "group": "overflow@1"
+        },
+        {
+          "command": "codexSdlc.tune",
+          "when": "view == codexSdlc.settings && codexSdlc.active",
+          "group": "overflow@1"
+        },
+        {
           "command": "codexSdlc.openWalkthrough",
-          "when": "view == codexSdlc.settings",
+          "when": "view =~ /^codexSdlc\\.(status|settings)$/",
           "group": "overflow"
         },
         {
           "command": "codexSdlc.showOutput",
-          "when": "view == codexSdlc.settings",
+          "when": "view =~ /^codexSdlc\\.(status|settings)$/",
           "group": "overflow"
         }
       ],
       "view/item/context": [
         {
           "command": "codexSdlc.editSetting",
-          "when": "view == codexSdlc.settings && viewItem == editable",
+          "when": "view =~ /^codexSdlc\\./ && viewItem == editable",
           "group": "inline"
         },
         {
           "command": "codexSdlc.apply",
-          "when": "view == codexSdlc.settings && viewItem == tuningPending",
+          "when": "view =~ /^codexSdlc\\./ && viewItem == tuningPending",
+          "group": "inline"
+        },
+        {
+          "command": "codexSdlc.adoptProposal",
+          "when": "view =~ /^codexSdlc\\./ && viewItem == tuneProposal",
           "group": "inline"
         },
         {
           "command": "codexSdlc.repair",
-          "when": "view == codexSdlc.settings && viewItem == toolFilesMissing",
+          "when": "view =~ /^codexSdlc\\./ && viewItem == toolFilesMissing",
           "group": "inline"
         },
         {
           "command": "codexSdlc.mergeAgents",
-          "when": "view == codexSdlc.settings && viewItem == needsMerge",
+          "when": "view =~ /^codexSdlc\\./ && viewItem == needsMerge",
           "group": "inline"
         },
         {
           "command": "codexSdlc.pickPwsh",
-          "when": "view == codexSdlc.settings && viewItem == machinePwsh",
+          "when": "view =~ /^codexSdlc\\./ && viewItem == machinePwsh",
           "group": "inline"
         },
         {
           "command": "codexSdlc.toggleGate",
-          "when": "view == codexSdlc.settings && viewItem =~ /^gate(On|Off)$/",
+          "when": "view =~ /^codexSdlc\\./ && viewItem =~ /^gate(On|Off)$/",
           "group": "inline"
         }
       ],
@@ -118,6 +149,10 @@
         },
         {
           "command": "codexSdlc.applyProposalFor",
+          "when": "false"
+        },
+        {
+          "command": "codexSdlc.adoptProposal",
           "when": "false"
         },
         {
@@ -209,6 +244,11 @@
         "category": "Codex SDLC"
       },
       {
+        "command": "codexSdlc.openAdvanced",
+        "title": "開啟進階設定（更新、規範、這台機器）",
+        "category": "Codex SDLC"
+      },
+      {
         "command": "codexSdlc.editSetting",
         "title": "修改",
         "category": "Codex SDLC",
@@ -223,6 +263,12 @@
         "command": "codexSdlc.applyProposalFor",
         "title": "採用 tune 對這個 agent 的建議",
         "category": "Codex SDLC"
+      },
+      {
+        "command": "codexSdlc.adoptProposal",
+        "title": "採用建議",
+        "category": "Codex SDLC",
+        "icon": "$(check)"
       },
       {
         "command": "codexSdlc.install",
@@ -295,6 +341,28 @@
         "command": "codexSdlc.showOutput",
         "title": "顯示輸出",
         "category": "Codex SDLC"
+      }
+    ],
+    "colors": [
+      {
+        "id": "codexSdlc.accent",
+        "description": "Codex SDLC 的強調色：主要按鈕、待套用、建議。",
+        "defaults": {
+          "dark": "#2EC4B6",
+          "light": "#0F7C73",
+          "highContrast": "#2EC4B6",
+          "highContrastLight": "#0F7C73"
+        }
+      },
+      {
+        "id": "codexSdlc.accentForeground",
+        "description": "放在 Codex SDLC 強調色上的文字。",
+        "defaults": {
+          "dark": "#0B1F1D",
+          "light": "#FFFFFF",
+          "highContrast": "#000000",
+          "highContrastLight": "#FFFFFF"
+        }
       }
     ],
     "configuration": {

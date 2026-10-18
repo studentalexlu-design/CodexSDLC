@@ -106,6 +106,11 @@ export async function run(): Promise<void> {
   const tree = api.settingsTree();
   assert.deepEqual(tree.map((n) => n.label), ['狀態', 'Agent 調校', '審核', '更新', '規範', '這台機器']);
   log(`settings tree: ${tree.map((n) => `${n.label}${n.description ? `(${n.description})` : ''}`).join(' / ')}`);
+  // 狀態卡片（webview）：打得開，而且講的是 doctor 的結論，不是一張空卡
+  await vscode.commands.executeCommand('codexSdlc.status.focus');
+  const card = api.statusCard();
+  assert.ok(card && (card.state === 'ok' || card.state === 'attention'), `狀態卡片沒有拿到 doctor 的結果：${JSON.stringify(card)}`);
+  log(`status card: ${card!.state} · ${card!.items.length} 件 · 其他 ${card!.quiet} 項正常`);
 
   // 8. 改三個值 → apply 只跑一次（計畫 S2 的驗收）；順便量「現況」與「S2」各等多久（動手前要先驗證的第 3 件）
   const flat = (nodes: typeof tree): typeof tree => nodes.flatMap((n) => [n, ...flat(n.children ?? [])]);

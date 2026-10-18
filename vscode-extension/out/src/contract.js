@@ -260,6 +260,7 @@ function parseFetch(env) {
         },
         bundled: { version: optStr(bundled, 'version', `${at}.bundled`), path: optStr(bundled, 'path', `${at}.bundled`) },
         cacheDir: str(d, 'cacheDir', at),
+        warning: env.warnings.length ? String(env.warnings[0]) : null,
     };
 }
 const EMPTY_INSTALL = {

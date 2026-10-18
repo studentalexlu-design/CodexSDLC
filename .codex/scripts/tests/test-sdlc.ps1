@@ -1037,6 +1037,46 @@ Describe-Suite 'sdlc / 發佈來源不只 GitHub：Gitea、GitLab（含自架）
         return , [IO.File]::ReadAllBytes($zip)
     }
 
+    It-Should 'fetch：本機那一份比發佈頁的新 → 不下載、用本機的（新版 extension 先裝了、發佈頁還沒掛上去）' {
+        $forge = Start-StubForge
+        try {
+            Add-GiteaRelease $forge "$($forge.a)/api/v1/repos/team/flow" "$($forge.a)/team/flow"
+            $forge.routes["$($forge.a)/team/flow/releases/download/v9.9.0/codex-sdlc-9.9.0.zip"] = @{ status = 200; type = 'application/zip'; body = (Get-PayloadBytes '9.9.0') }
+            $newer = New-SdlcRelease 'r-bn' -Version '10.0.0'; $t = New-SdlcTarget 't-bn'
+            $j = Invoke-SdlcJson fetch @{ Source = $newer; Target = $t; SourceUrl = "gitea:$($forge.a)/team/flow"; CacheDir = (Join-Path $SdlcRoot 'cache') } -Env (Get-ForgeEnv)
+            $seen = Stop-StubForge $forge; $forge = $null
+            Assert-Equal 'bundled' $j.data.chosen "warnings: $($j.warnings -join ' | ')"
+            Assert-Equal '10.0.0' $j.data.version '點「升級到 10.0.0」卻拿到發佈頁比較舊的那一版'
+            Assert-Equal '9.9.0' $j.data.remote.latest '發佈頁查到的版本要照實回報'
+            Assert-Equal 0 @($seen | Where-Object { $_ -match 'releases/download' }).Count "用不到的東西照樣下載了：$($seen -join ' ; ')"
+        } finally { if ($forge) { Stop-StubForge $forge | Out-Null }; Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'fetch：vsix 是發佈頁上另一個附件 → 補進快取的 editor/，第二次走快取不再下載' {
+        # zip 預設不帶 vsix。沒補的話 update -Preview 找不到它，extension 升級完就不會提示「安裝新版 extension」。
+        $forge = Start-StubForge
+        try {
+            $api = "$($forge.a)/api/v1/repos/team/flow"; $web = "$($forge.a)/team/flow"
+            $forge.routes["$api/releases/latest"] = @{ status = 200; type = 'application/json'; body = (@{
+                tag_name = 'v9.9.0'; body = ''; html_url = "$web/releases/tag/v9.9.0"; draft = $false; prerelease = $false
+                assets = @(
+                    @{ name = 'codex-sdlc-9.9.0.zip'; browser_download_url = "$web/releases/download/v9.9.0/codex-sdlc-9.9.0.zip" }
+                    @{ name = 'codex-sdlc-9.9.0.vsix'; browser_download_url = "$web/releases/download/v9.9.0/codex-sdlc-9.9.0.vsix" })
+            } | ConvertTo-Json -Depth 5) }
+            $forge.routes["$web/releases/download/v9.9.0/codex-sdlc-9.9.0.zip"] = @{ status = 200; type = 'application/zip'; body = (Get-PayloadBytes '9.9.0') }
+            $forge.routes["$web/releases/download/v9.9.0/codex-sdlc-9.9.0.vsix"] = @{ status = 200; type = 'application/octet-stream'; body = 'not really a vsix' }
+            $rel = New-SdlcRelease 'r-vx'; $t = New-SdlcTarget 't-vx'; $cache = Join-Path $SdlcRoot 'cache'
+            $p = @{ Source = $rel; Target = $t; Bundled = ''; SourceUrl = "gitea:$($forge.a)/team/flow"; CacheDir = $cache }
+            $j = Invoke-SdlcJson fetch $p -Env (Get-ForgeEnv)
+            $j2 = Invoke-SdlcJson fetch $p -Env (Get-ForgeEnv)
+            $seen = Stop-StubForge $forge; $forge = $null
+            Assert-Equal 'remote' $j.data.chosen "warnings: $($j.warnings -join ' | ')"
+            Assert-True (Test-Path (Join-Path $j.data.path 'editor/codex-sdlc-9.9.0.vsix')) "vsix 沒進快取的 editor/：$($seen -join ' ; ')"
+            Assert-Equal 'cached' $j2.data.chosen
+            Assert-Equal 1 @($seen | Where-Object { $_ -match '\.vsix' }).Count "快取裡已經有了還再下載一次：$($seen -join ' ; ')"
+        } finally { if ($forge) { Stop-StubForge $forge | Out-Null }; Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
     It-Should '自架 Gitea（裝在子路徑底下）：check-update 查得到新版，中文說明與發佈頁網址都對' {
         $forge = Start-StubForge
         try {
@@ -1526,6 +1566,28 @@ Describe-Suite 'sdlc / VS Code extension（每台機器一份，不屬於任何�
             Assert-Equal 0 @($j.data.editor.installed).Count
             Assert-Match 'VS Code extension：這台機器沒裝' (@($j.output) -join "`n") '在 VS Code 裡找不到介面的人跑 doctor，卻沒人告訴他 extension 沒裝'
             Assert-Equal 0 $j.exit '選用的東西沒裝，不該讓 doctor 紅'
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'whatsnew 的「怎麼升級」照裝的 extension 講：4.16.0 以前的先換 extension，之後的點「有新版」' {
+        $rel = New-SdlcRelease 'r-e7'; $t = New-SdlcTarget 't-e7'
+        $editorHome = Join-Path $SdlcRoot 'editor-home'
+        try {
+            Invoke-Sdlc install @{ Source = $rel; Target = $t } | Out-Null
+            $cache = Join-Path $t 'bdd-docs/.sdlc/update-cache.json'
+            $writeCache = { New-SdlcFile $cache "{ `"checked-at`": `"$((Get-Date).ToString('o'))`", `"installed`": `"4.6.0`", `"latest`": `"9.9.9`", `"newer`": true, `"notes`": `"x`", `"url`": `"`", `"seen`": `"`" }" }
+
+            & $writeCache; New-InstalledExtension $editorHome '4.15.1'
+            $old = (@((Invoke-SdlcJson whatsnew @{ Target = $t; EditorHome = $editorHome }).output) -join "`n")
+            # 4.15 的 extension 點「有新版」只會跑 whatsnew：不在這裡叫他先換 extension，他就一直只看得到說明。
+            Assert-Match 'extension 是 4\.15\.1，還沒有一鍵升級' $old
+            Assert-Match 'install-extension .*codex-sdlc-9\.9\.9\.vsix' $old
+
+            & $writeCache; New-InstalledExtension $editorHome '4.16.0'
+            $new = (@((Invoke-SdlcJson whatsnew @{ Target = $t; EditorHome = $editorHome }).output) -join "`n")
+            Assert-Match '升級到 9\.9\.9' $new
+            Assert-True ($new -notmatch '還沒有一鍵升級') '新版的 extension 也被叫去換'
+            Assert-Match 'update -Target' $new '終端機的做法不見了'
         } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
     }
 }

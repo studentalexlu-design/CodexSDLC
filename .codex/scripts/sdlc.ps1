@@ -118,6 +118,7 @@ $DefaultReviewRounds = 3
 
 $JsonSchema  = 1
 $ExtensionId = 'codex-sdlc.codex-sdlc'
+$MinUpgradeExtension = '4.16.0'          # extension 從這一版起有「升級」（codexSdlc.upgrade）；更舊的點「有新版」只會跑 whatsnew
 # 編輯器的 CLI 名稱與各自的 extension 目錄。VS Code／Insiders／Cursor／Windsurf／VSCodium 都吃同一個 .vsix，
 # 但執行檔名與目錄各一個 —— 只找 `code` 的話，另外四種的使用者會收到一句「找不到」而他們明明裝了編輯器。
 $Editors = @(
@@ -1234,7 +1235,7 @@ function Install-Editor([string]$vsix) {
     $result = [ordered]@{ vsix = $vsix; requested = [bool]$WithEditor; installed = $false; product = $null; cli = $null; error = $null }
     if (-not $vsix) {
         if ($WithEditor) {
-            Warn '這份發佈物沒有附 VS Code extension（editor/ 底下沒有 .vsix）—— 工作流照常裝好了，只是沒有編輯器那一層。'
+            Warn '這份 zip 沒有附 VS Code extension（editor/ 底下沒有 .vsix）—— 工作流照常裝好了。extension 在發佈頁是另一個附件（codex-sdlc-<版本>.vsix），下載後 code --install-extension <那個檔>。'
             $result.error = 'no-vsix'
         }
         return $result
@@ -1522,7 +1523,12 @@ function Invoke-Fetch {
             $remote.latest = $latest
             $asset = @($rel.assets | Where-Object { $_.name -eq "codex-sdlc-$latest.zip" })[0]
             if (-not $asset) { $asset = @($rel.assets | Where-Object { $_.name -like 'codex-sdlc-*.zip' })[0] }
-            if (-not $asset) {
+            # 本機那一份（extension 內附的）比發佈頁的還新：新版 extension 先裝了、發佈頁還沒掛上去時就是這樣。
+            # 照「遠端優先」去下載的話，點「升級到 4.16.2」拿回來的是 4.16.1 —— 不下載，交給下面的本機那一份。
+            if ($bundledInfo.version -and (Compare-Semver $bundledInfo.version $latest) -gt 0) {
+                $remote.reachable = $true
+                Say "發佈頁最新的是 $latest，本機那一份 $($bundledInfo.version) 比較新 —— 不下載，用本機的。"
+            } elseif (-not $asset) {
                 $remote.reason = 'no-asset'
                 Warn "發佈頁的 $latest 沒有附 codex-sdlc-*.zip —— 用本機現有的那一份。"
             } else {
@@ -1556,6 +1562,22 @@ function Invoke-Fetch {
                         Warn "下載發佈物失敗（$($_.Exception.Message)）—— 用本機現有的那一份。"
                     } finally {
                         Remove-Item $tmpZip -Force -ErrorAction SilentlyContinue
+                    }
+                }
+                # zip 預設不帶 vsix（pack 的 -VsixInZip 才帶）—— 它在發佈頁是另一個附件。補進快取的 editor/，
+                # update -Preview 的 Find-ReleaseVsix 才找得到，extension 也才會在升級後提示「安裝新版 extension」。
+                # 拿不到只少了那個提示，工作流照常升級，所以失敗不擋。
+                $vsixAsset = @($rel.assets | Where-Object { $_.name -eq "codex-sdlc-$latest.vsix" })[0]
+                if ($script:Data.chosen -in 'cached', 'remote' -and $vsixAsset -and -not (Find-ReleaseVsix $script:Data.path $latest)) {
+                    $vsixDir = Join-Path $script:Data.path 'editor'
+                    $vsixDest = Join-Path $vsixDir "codex-sdlc-$latest.vsix"
+                    try {
+                        New-Item -ItemType Directory -Path $vsixDir -Force | Out-Null
+                        Save-ReleaseAsset $repo $vsixAsset "$vsixDest.part"
+                        Move-Item "$vsixDest.part" $vsixDest -Force
+                    } catch {
+                        Remove-Item "$vsixDest.part" -Force -ErrorAction SilentlyContinue
+                        Say "（VS Code extension 的 vsix 沒下載到：$($_.Exception.Message) —— 工作流照常，extension 之後自己從發佈頁裝。）"
                     }
                 }
             }
@@ -2340,9 +2362,22 @@ function Invoke-CheckUpdate {
     $script:Data.newer     = $newer
     $script:Data.url       = [string]$rel.url
     $script:Data.checkedAt = $checkedAt
-    if ($newer) { Say "有新版 $latest（你在 $($tgtVer.contract)）。看變更：pwsh .codex/scripts/sdlc.ps1 whatsnew" }
+    if ($newer) { Say "有新版 $latest（你在 $($tgtVer.contract)）。看變更：pwsh .codex/scripts/sdlc.ps1 whatsnew"; Write-UpgradeHow $latest }
     else        { Say "已是最新（$($tgtVer.contract)）。" }
     return 0
+}
+
+# 「怎麼升級」照這台裝的 extension 講。4.16.0 以前的 extension 沒有一鍵升級，點「有新版」只會跑 whatsnew ——
+# 這段文字就是它顯示在輸出面板的東西，所以要在這裡告訴他先換 extension，不然他會一直點、一直只看到說明。
+function Write-UpgradeHow([string]$latest) {
+    $ext = @(Get-InstalledExtensions | Where-Object { $_.version })
+    $old = @($ext | Where-Object { (Compare-Semver $_.version $MinUpgradeExtension) -lt 0 })
+    $new = @($ext | Where-Object { (Compare-Semver $_.version $MinUpgradeExtension) -ge 0 })
+    foreach ($x in $old) {
+        Say "VS Code：$($x.product) 裡的 extension 是 $($x.version)，還沒有一鍵升級（$MinUpgradeExtension 起才有）。先換 extension：從發佈頁下載附件 codex-sdlc-$latest.vsix，跑 code --install-extension codex-sdlc-$latest.vsix --force，重新載入視窗；之後點側欄的「有新版」就會直接升級這個專案。"
+    }
+    if ($new.Count -gt 0) { Say "VS Code：點側欄的「有新版 $latest」或狀態列選「升級到 $latest」—— 先列出會動哪些檔，你確認了才升級。" }
+    Say '終端機：把新版發佈物解壓到別處，然後 pwsh <發佈物>/.codex/scripts/sdlc.ps1 update -Target .'
 }
 
 function Invoke-WhatsNew {
@@ -2365,7 +2400,7 @@ function Invoke-WhatsNew {
         Write-JsonFile $cachePath $cache
         $script:Data.markedSeen = $true
         Say ''
-        Say '要升級：把新版發佈物解壓到別處，然後 pwsh <發佈物>/.codex/scripts/sdlc.ps1 update -Target .'
+        Write-UpgradeHow ([string]$cache.latest)
         return 0
     }
     if (-not $v) { Warn '這個專案還沒安裝這套工作流。'; $script:Data.source = 'not-installed'; return 2 }
@@ -2630,7 +2665,7 @@ function Invoke-Doctor {
     $ext = @(Get-InstalledExtensions)
     $script:Data.editor = [ordered]@{ installed = @($ext | ForEach-Object { [ordered]@{ product = $_.product; version = $_.version; jsonSchema = $_.jsonSchema; compatible = $_.compatible } }) }
     # 沒裝也說一行：在 VS Code 裡找不到介面的人會來跑 doctor，而沒裝的 extension 自己不可能告訴他。
-    if ($ext.Count -eq 0) { Say "VS Code extension：這台機器沒裝（選用）。要狀態列與一鍵指令，用發佈物 editor/ 底下的 .vsix 裝：code --install-extension <那個檔>。" }
+    if ($ext.Count -eq 0) { Say "VS Code extension：這台機器沒裝（選用）。要狀態列與一鍵指令，用發佈頁的附件 codex-sdlc-<版本>.vsix 裝：code --install-extension <那個檔>。" }
     foreach ($x in $ext) {
         if ($x.compatible) { Say "VS Code extension：$($x.product) 裝的是 $($x.version)，跟這個專案相容。" }
         else { Say "VS Code extension：$($x.product) 裝的是 $($x.version)，跟這個專案（$($v.contract)）的 -Json 形狀對不上 —— 狀態列會顯示不了；換成這一版發佈物附的 vsix。" }

@@ -11,7 +11,9 @@
 # 維護者在自己 repo 跑過 apply 之後那些區塊會留在工作區，跟著出貨就等於把
 # 維護者的調校偷渡進所有人的專案。
 #
-# repo 裡有 vscode-extension/ 時，出貨前也會 npm ci ＋ build ＋ 跑它自己的測試，產出 .vsix 放進發佈物的 editor/。
+# repo 裡有 vscode-extension/ 時，出貨前也會 npm ci ＋ build ＋ 跑它自己的測試，產出 dist/codex-sdlc-{version}.vsix，
+# 跟 zip 並排、在發佈頁上是各自的附件。zip 預設**不含** vsix：vsix 內附整份 payload，塞進 zip 等於同一份工作流帶兩次，
+# 而且升級工作流的人多半早就裝好 extension 了。要 zip 裡帶 editor/（給 install -WithEditor 用）就加 -VsixInZip。
 # 紅燈一樣不出貨。vsix **不進 manifest**：它不是工具那半、也不是使用者那半，是每台機器一份的編輯器外掛，
 # 升級邏輯管不到、也不該管（理由見 docs/vscode-extension-plan.md 事實 1）。
 #
@@ -33,6 +35,7 @@ param(
     [string]$OutDir = 'dist',
     [switch]$SkipTests,
     [switch]$SkipExtension,              # 不打包 VS Code extension（沒有 Node.js 的機器、或這一版不帶編輯器那一層）
+    [switch]$VsixInZip,                  # vsix 也放進 zip 的 editor/（install -WithEditor 才拿得到）；預設只放在 zip 旁邊
     [string]$NpmRegistry,                # 另外產生 vsix 的 npm 發佈包，publishConfig.registry 指向這裡（例如 Nexus npm hosted）
     [switch]$Json
 )
@@ -121,7 +124,7 @@ if ($buildExtension) {
         }
     }
 } elseif ($SkipExtension) {
-    Say 'VS Code extension：-SkipExtension，這一版的發佈物不帶 editor/、vsix 也不會內附 payload。'
+    Say 'VS Code extension：-SkipExtension，這一版不產生 vsix、也不會內附 payload。'
 }
 
 # ---- 收集檔案 ----
@@ -256,10 +259,12 @@ try {
         }
         Say "VS Code extension：codex-sdlc-$version.vsix（-Json schema $($vpkg.codexSdlc.jsonSchema)，內附 payload $version）"
 
-        # vsix 跟著出貨，但**不進 manifest**（$files 在上面就算完了，這裡放進 stage 的檔不會被列進去）。
+        # -VsixInZip：vsix 也放進 zip，但**不進 manifest**（$files 在上面就算完了，這裡放進 stage 的檔不會被列進去）。
         # install 的複製迴圈只走工具那半，看不到 editor/；只有 -WithEditor 才會拿它去裝。
-        New-Item -ItemType Directory -Path (Join-Path $stage 'editor') -Force | Out-Null
-        Copy-Item $vsix (Join-Path $stage "editor/codex-sdlc-$version.vsix") -Force
+        if ($VsixInZip) {
+            New-Item -ItemType Directory -Path (Join-Path $stage 'editor') -Force | Out-Null
+            Copy-Item $vsix (Join-Path $stage "editor/codex-sdlc-$version.vsix") -Force
+        }
     }
 
     # ---- zip ----
@@ -268,6 +273,11 @@ try {
     $zip = Join-Path $outAbs "codex-sdlc-$version.zip"
     if (Test-Path $zip) { Remove-Item $zip -Force }
     Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip -CompressionLevel Optimal
+    $vsixOut = $null
+    if ($vsix) {
+        $vsixOut = Join-Path $outAbs "codex-sdlc-$version.vsix"
+        Copy-Item $vsix $vsixOut -Force
+    }
 
     # ---- npm 發佈包（-NpmRegistry）----
     # Private Extension Manager 的格式：一般的 npm 套件，帶 publisher／engines.vscode，files 裡第一個 .vsix 就是它要裝的。
@@ -305,15 +315,17 @@ try {
     }
 
     if ($Json) {
-        [pscustomobject]@{ version = $version; zip = $zip; file_count = $files.Count; vsix = $(if ($vsix) { "editor/codex-sdlc-$version.vsix" } else { $null }); npm = $npmTgz } | ConvertTo-Json -Compress
+        [pscustomobject]@{ version = $version; zip = $zip; file_count = $files.Count; vsix = $vsixOut; vsix_in_zip = [bool]($vsix -and $VsixInZip); npm = $npmTgz } | ConvertTo-Json -Compress
     } else {
         Say ''
         Say "打包完成：$zip"
-        Say "版本 $version，$($files.Count) 個工具檔（manifest 已寫入 $ManifestRel）$(if ($skelCount) { "，另附 $skelCount 個 guidelines/ 骨架檔（不在 manifest 內 —— 那是使用者的）" })$(if ($vsix) { "，以及 editor/codex-sdlc-$version.vsix（不在 manifest 內 —— 那是每台機器一份的編輯器外掛）" })"
+        Say "版本 $version，$($files.Count) 個工具檔（manifest 已寫入 $ManifestRel）$(if ($skelCount) { "，另附 $skelCount 個 guidelines/ 骨架檔（不在 manifest 內 —— 那是使用者的）" })$(if ($vsix -and $VsixInZip) { "，以及 editor/codex-sdlc-$version.vsix（不在 manifest 內 —— 那是每台機器一份的編輯器外掛）" })"
+        if ($vsixOut -and -not $VsixInZip) { Say "VS Code extension：$vsixOut（不在 zip 裡；發佈時另外上傳成一個附件）" }
         Say ''
         Say '使用者的安裝方式（解壓到別處，不要直接蓋在專案上）：'
         Say '  pwsh <解壓目錄>/.codex/scripts/sdlc.ps1 install -Target <他的專案>'
-        if ($vsix) { Say '  （要順便裝 VS Code extension 就加 -WithEditor）' }
+        if ($vsix -and $VsixInZip) { Say '  （要順便裝 VS Code extension 就加 -WithEditor）' }
+        elseif ($vsixOut) { Say "  VS Code extension 另外裝：code --install-extension codex-sdlc-$version.vsix（裝好後，其他專案在活動列按「安裝到這個工作區」就好，不必再找 zip）" }
         if ($npmTgz) {
             Say ''
             Say "npm 發佈包：$npmTgz（publishConfig.registry = $NpmRegistry）"

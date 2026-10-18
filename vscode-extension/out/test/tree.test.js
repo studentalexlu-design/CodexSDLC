@@ -80,17 +80,89 @@ const nodes = (i) => new Map((0, tree_1.flatten)((0, tree_1.buildSettingsTree)(i
 (0, node_test_1.test)('六個區段，順序固定（人找東西靠位置）', () => {
     strict_1.default.deepEqual((0, tree_1.buildSettingsTree)(input()).map((n) => n.label), ['狀態', 'Agent 調校', '審核', '更新', '規範', '這台機器']);
 });
+const statusRows = (i) => (0, tree_1.buildSettingsTree)(i)[0].children;
+(0, node_test_1.test)('調校 view 不包標題：agent 直接列，審核接在後面；其他收進進階', () => {
+    const p = (0, tree_1.buildPanel)(input());
+    const ids = p.views.settings.map((n) => n.id);
+    strict_1.default.deepEqual(ids.filter((id) => /^agents\/[^/]+$/.test(id) && id !== 'agents/tune').sort(), ['agents/implementer', 'agents/orchestrator', 'agents/reviewer', 'agents/sa-analyst']);
+    strict_1.default.equal(ids[ids.length - 1], 'review/maxRounds');
+    strict_1.default.ok(!ids.includes('agents') && !ids.includes('review'), '又多包了一層區段標題');
+    strict_1.default.deepEqual(p.views.advanced.map((n) => n.id), ['update', 'guidelines', 'machine']);
+});
+(0, node_test_1.test)('有未套用 → 調校最上面一行就是「套用 N 項」；剛套用完換成「已套用」', () => {
+    const pending = (0, tree_1.buildPanel)(input({ pendingAgents: ['reviewer', 'implementer'] })).views.settings[0];
+    strict_1.default.equal(pending.label, '套用 2 項');
+    strict_1.default.equal(pending.command?.command, 'codexSdlc.apply');
+    strict_1.default.equal(pending.tone, 'accent', '待套用是你自己的改動，不該用警告色');
+    const applied = (0, tree_1.buildPanel)(input({ pendingAgents: ['reviewer'], justApplied: ['reviewer'] })).views.settings[0];
+    strict_1.default.equal(applied.label, '已套用 reviewer');
+    strict_1.default.ok(!(0, tree_1.buildPanel)(input({ pendingAgents: ['reviewer'], justApplied: ['reviewer'] })).views.settings.some((n) => n.id === 'settings/apply'));
+    strict_1.default.notEqual((0, tree_1.buildPanel)(input()).views.settings[0].id, 'settings/apply');
+});
+(0, node_test_1.test)('全部正常 → 狀態只剩「一切正常」一行，其他收在它底下', () => {
+    const top = statusRows(input());
+    strict_1.default.deepEqual(top.map((n) => n.label), ['一切正常']);
+    strict_1.default.ok(top[0].children.some((n) => n.id === 'status/hooks'));
+    strict_1.default.ok(!top[0].expanded);
+});
+(0, node_test_1.test)('有事 → 要處理的排最上面，沒事的收成「其他 N 項正常」', () => {
+    const top = statusRows(input({ agentsNewExists: true, doctor: doctor((x) => { x.hooks = { status: 'no-hooks', codex: null }; }) }));
+    strict_1.default.deepEqual(top.slice(0, 2).map((n) => n.id), ['status/hooks', 'status/merge']);
+    strict_1.default.match(top[top.length - 1].label, /^其他 \d+ 項正常$/);
+});
+(0, node_test_1.test)('狀態卡片：全部正常 → ok，帶專案、版本、幾點檢查過', () => {
+    const c = (0, tree_1.statusCard)(input({ checkedAt: new Date(2026, 9, 18, 9, 5).getTime() }));
+    strict_1.default.equal(c.state, 'ok');
+    strict_1.default.deepEqual(c.items, []);
+    strict_1.default.equal(c.project, 'shop');
+    strict_1.default.equal(c.version, '4.9.0');
+    strict_1.default.equal(c.checkedAt, '09:05');
+    strict_1.default.ok(c.quiet > 0);
+});
+(0, node_test_1.test)('狀態卡片：要處理的事各帶一顆短按鈕；hooks 不在 → 補回、.new 沒合併 → 合併', () => {
+    const c = (0, tree_1.statusCard)(input({ agentsNewExists: true, doctor: doctor((x) => { x.hooks = { status: 'no-hooks', codex: null }; }) }));
+    strict_1.default.equal(c.state, 'attention');
+    strict_1.default.deepEqual(c.items.map((x) => [x.level, x.action?.label, x.action?.command]), [
+        ['error', '補回', 'codexSdlc.repair'],
+        ['error', '合併', 'codexSdlc.mergeAgents'],
+    ]);
+    strict_1.default.deepEqual(c.items[1].action?.arguments, ['C:/work/shop'], '合併要帶著是哪個專案');
+});
+(0, node_test_1.test)('狀態卡片：新版與調校未套用都不算要處理的事', () => {
+    const c = (0, tree_1.statusCard)(input({ doctor: doctor((x) => {
+            x.update = { ...x.update, cached: true, newer: true, latest: '4.16.0' };
+            x.tuning = { status: 'stale', stale: ['reviewer.toml'] };
+        }) }));
+    strict_1.default.equal(c.state, 'ok', '待套用或新版把卡片變成「有事」');
+    strict_1.default.equal(c.upgrade?.version, '4.16.0');
+    strict_1.default.equal(c.upgrade?.action.command, 'codexSdlc.upgrade');
+    strict_1.default.equal((0, tree_1.attentionCount)(input({ pendingAgents: ['reviewer'] })), 0);
+});
+(0, node_test_1.test)('狀態卡片：活動列的數字＝卡片上列的件數', () => {
+    const i = input({ agentsNewExists: true, doctor: doctor((x) => { x.config.comments = true; }) });
+    strict_1.default.equal((0, tree_1.attentionCount)(i), (0, tree_1.statusCard)(i).items.length);
+    strict_1.default.equal((0, tree_1.attentionCount)(i), 2);
+});
+(0, node_test_1.test)('狀態卡片：doctor 還沒回來 → 檢查中；沒跑起來 → 說原因，不說一切正常', () => {
+    strict_1.default.equal((0, tree_1.statusCard)(input({ doctor: undefined, checking: true })).state, 'checking');
+    const f = (0, tree_1.statusCard)(input({ doctor: undefined, failure: '找不到 PowerShell 7' }));
+    strict_1.default.equal(f.state, 'failed');
+    strict_1.default.equal(f.failure, '找不到 PowerShell 7');
+});
 (0, node_test_1.test)('ID 不重複（VS Code 的樹靠它記住展開狀態，重複會直接丟錯）', () => {
     const all = (0, tree_1.flatten)((0, tree_1.buildSettingsTree)(input({ pendingAgents: ['reviewer'], proposal: [{ agent: 'reviewer', effort: 'high', reason: 'r' }] })));
     strict_1.default.equal(new Set(all.map((n) => n.id)).size, all.length);
 });
 (0, node_test_1.test)('看到的值就是設定檔裡的值', () => {
     const n = nodes(input());
-    strict_1.default.match(n.get('agents/reviewer').description, /effort medium · model gpt-5\.5/);
+    // 側邊欄很窄：那一行只放兩個值，完整的說法在 tooltip。
+    strict_1.default.equal(n.get('agents/reviewer').description, 'medium · gpt-5.5');
+    strict_1.default.match(n.get('agents/reviewer').tooltip, /effort medium · model gpt-5\.5/);
     strict_1.default.equal(n.get('agents/reviewer/model').description, 'gpt-5.5');
     const unverified = nodes(input({ doctor: doctor((x) => { x.unverifiedModel = ['reviewer']; }) }));
     strict_1.default.equal(unverified.get('agents/reviewer/model').description, 'gpt-5.5 · 沒對 Codex 驗證');
-    strict_1.default.match(n.get('review/maxRounds').description, /^4 輪 · 下一次委派就生效/);
+    strict_1.default.equal(n.get('review/maxRounds').description, '4 輪');
+    strict_1.default.match(n.get('review/maxRounds').tooltip, /下一次委派就生效/);
     strict_1.default.equal(n.get('update/check').description, '每天');
     strict_1.default.match(n.get('update/source').description, /未設定/);
 });
@@ -140,7 +212,8 @@ const nodes = (i) => new Map((0, tree_1.flatten)((0, tree_1.buildSettingsTree)(i
     const problem = { agent: 'sa-analyst', model: 'inherit', effort: 'high', effectiveModel: 'gpt-x', status: 'effort-unsupported', level: 'problem', message: 'gpt-x 只支援 low —— sa-analyst 會起不來（Codex 拒絕這次 spawn）', suggestion: 'agents.sa-analyst.effort=low', allowed: ['low'] };
     const n = nodes(input({ doctor: doctor((x) => { x.models = (0, fixtures_1.modelsFixture)([problem]); }) }));
     strict_1.default.equal(n.get('agents/sa-analyst').tone, 'error');
-    strict_1.default.match(n.get('agents/sa-analyst').description, /這台跑不起來/);
+    strict_1.default.equal(n.get('agents/sa-analyst').description, 'high · 跑不起來');
+    strict_1.default.equal(n.get('agents/sa-analyst').iconFile, 'effort-high-error', '跑不起來時訊號格要換成異常色');
     strict_1.default.equal(n.get('agents/sa-analyst/effort').tone, 'error');
     strict_1.default.match(n.get('agents/sa-analyst/effort').description, /sa-analyst 會起不來/);
     const stale = nodes(input({ doctor: doctor((x) => { x.models = (0, fixtures_1.modelsFixture)([{ ...problem, effort: 'xhigh' }]); }) }));
@@ -158,8 +231,9 @@ const nodes = (i) => new Map((0, tree_1.flatten)((0, tree_1.buildSettingsTree)(i
     const agents = n.get('agents');
     strict_1.default.equal(agents.contextValue, 'tuningPending', '沒有「套用」按鈕');
     strict_1.default.equal(agents.description, '2 項未套用');
-    strict_1.default.match(n.get('agents/implementer').description, /未套用/);
-    strict_1.default.doesNotMatch(n.get('agents/sa-analyst').description, /未套用/);
+    strict_1.default.equal(n.get('agents/implementer').tone, 'pending');
+    strict_1.default.match(n.get('agents/implementer').tooltip, /未套用/);
+    strict_1.default.notEqual(n.get('agents/sa-analyst').tone, 'pending');
 });
 (0, node_test_1.test)('都套用了 → 沒有「套用」按鈕，寫明已套用', () => {
     const agents = nodes(input()).get('agents');
@@ -167,13 +241,15 @@ const nodes = (i) => new Map((0, tree_1.flatten)((0, tree_1.buildSettingsTree)(i
     strict_1.default.equal(agents.description, '已套用');
 });
 (0, node_test_1.test)('orchestrator 說清楚「只是記錄，強制不了」', () => {
-    strict_1.default.match(nodes(input()).get('agents/orchestrator').description, /只是記錄，強制不了/);
+    const o = nodes(input()).get('agents/orchestrator');
+    strict_1.default.match(o.description, /只是記錄/);
+    strict_1.default.match(o.tooltip, /只是記錄，強制不了/);
 });
 (0, node_test_1.test)('工作流太舊（沒有 set／schema）→ 只顯示、不給改，並說要升到哪一版', () => {
     const n = nodes(input({ canEdit: false, schema: undefined, workflowVersion: '4.8.0', editBlockedReason: '升到 4.9.0 以上才能在這裡改' }));
     strict_1.default.ok([...n.values()].every((x) => !x.edit && x.contextValue !== 'editable'), '不能改的專案出現了修改按鈕');
     strict_1.default.match(n.get('agents/blocked').label, /4\.9\.0/);
-    strict_1.default.match(n.get('agents/reviewer').description, /effort medium/, '不能改也要看得到值');
+    strict_1.default.match(n.get('agents/reviewer').description, /^medium · gpt-5\.5/, '不能改也要看得到值');
 });
 (0, node_test_1.test)('hooks.json 在 → 那一行綠，而且不提信任（要問 codex 的事一律不做）', () => {
     const n = nodes(input({ doctor: doctor((x) => { x.hooks = { status: 'skipped', codex: null }; }) }));
@@ -199,6 +275,26 @@ const nodes = (i) => new Map((0, tree_1.flatten)((0, tree_1.buildSettingsTree)(i
     const none = nodes(input({ doctor: doctor((x) => { x.update = { ...x.update, cached: true, newer: false, latest: '4.9.0' }; }) }));
     strict_1.default.notEqual(none.get('status/update').command?.command, 'codexSdlc.upgrade');
 });
+(0, node_test_1.test)('連不到發佈頁，但 extension 內附的比專案新 → 一樣提示可以升，點下去是升級', () => {
+    const offline = doctor((x) => { x.update = { ...x.update, cached: false, newer: false, latest: null }; });
+    const m = (payloadVersion) => ({ pwsh: { ok: true, path: 'C:/pwsh/pwsh.exe' }, extensionVersion: payloadVersion ?? '4.16.0', payloadVersion });
+    const u = nodes(input({ workflowVersion: '4.16.0', doctor: offline, machine: m('4.16.1') })).get('status/update');
+    strict_1.default.match(u.label, /4\.16\.1/);
+    strict_1.default.equal(u.command?.command, 'codexSdlc.upgrade');
+    strict_1.default.match(u.description ?? '', /內附/);
+    // 內附的跟專案一樣或更舊 → 不提示（升級會被當成沒東西可升或降級擋下）
+    for (const same of ['4.16.0', '4.15.1', undefined]) {
+        const n = nodes(input({ workflowVersion: '4.16.0', doctor: offline, machine: m(same) })).get('status/update');
+        strict_1.default.notEqual(n.command?.command, 'codexSdlc.upgrade', `內附 ${same} 卻提示升級`);
+    }
+});
+(0, node_test_1.test)('upgradeOffer：發佈頁與內附都比專案新 → 講較新的那一個', () => {
+    const remote = (latest) => doctor((x) => { x.update = { ...x.update, cached: true, newer: true, latest }; });
+    strict_1.default.deepEqual((0, tree_1.upgradeOffer)({ doctor: remote('4.17.0'), workflowVersion: '4.16.0', payloadVersion: '4.16.1' }), { version: '4.17.0', from: 'remote' });
+    strict_1.default.deepEqual((0, tree_1.upgradeOffer)({ doctor: remote('4.16.1'), workflowVersion: '4.16.0', payloadVersion: '4.16.2' }), { version: '4.16.2', from: 'bundled' });
+    strict_1.default.deepEqual((0, tree_1.upgradeOffer)({ doctor: remote('4.16.1'), workflowVersion: '4.16.0', payloadVersion: '4.16.1' }), { version: '4.16.1', from: 'remote' });
+    strict_1.default.equal((0, tree_1.upgradeOffer)({ doctor: undefined, workflowVersion: undefined, payloadVersion: '4.16.1' }), undefined);
+});
 (0, node_test_1.test)('doctor 的其他問題列在「需要處理」底下', () => {
     const n = nodes(input({ doctor: doctor((x) => { x.config.comments = true; x.problems = 0; }) }));
     const issues = n.get('status/issues');
@@ -223,9 +319,10 @@ const nodes = (i) => new Map((0, tree_1.flatten)((0, tree_1.buildSettingsTree)(i
             { agent: 'nobody', effort: 'low', reason: '專案沒有這個 agent' },
         ] }));
     const t = n.get('agents/tune');
-    strict_1.default.equal(t.label, 'tune 有 1 項建議');
-    strict_1.default.equal(t.description, 'reviewer → high');
-    strict_1.default.equal(nodes(input()).get('agents/tune').label, '依 repo 現況給建議…');
+    strict_1.default.equal(t.label, '1 項建議：reviewer → high');
+    strict_1.default.equal(t.contextValue, 'tuneProposal', '沒有行內「採用」');
+    strict_1.default.deepEqual(t.data, ['C:/work/shop', ['reviewer']], '採用的範圍不是只有跟現值不同的那幾個');
+    strict_1.default.equal(nodes(input()).get('agents/tune').label, '依 repo 現況給建議');
 });
 (0, node_test_1.test)('規範：README 不算規範文件；機械層關著 → 警告並給「打開」', () => {
     const n = nodes(input({ guidelines: { dir: true, files: ['README.md', 'coding.md', 'rules.json'], rulesExists: true, ruleCount: 8, gateDisabled: true } }));
@@ -260,7 +357,7 @@ const nodes = (i) => new Map((0, tree_1.flatten)((0, tree_1.buildSettingsTree)(i
     strict_1.default.match(n.get('agents/none').description, /全部 inherit/);
     strict_1.default.equal(n.get('agents/none').tone, 'muted', '合法狀態不該顯示成錯誤');
     strict_1.default.equal(n.get('agents/reviewer/effort').edit?.key, 'agents.reviewer.effort', '沒有設定檔就不給改 —— 使用者會被丟回去手動建檔');
-    strict_1.default.match(n.get('agents/reviewer').description, /effort inherit/);
+    strict_1.default.match(n.get('agents/reviewer').description, /^跟隨 · 跟隨主對話/);
     strict_1.default.equal(n.get('review/maxRounds').edit?.key, 'review.maxRounds');
 });
 (0, node_test_1.test)('沒有 hooks.json → 面板那一行是紅的，而且點下去就能補（不是叫人去終端機）', () => {

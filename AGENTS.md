@@ -1,4 +1,4 @@
-# Codex Instructions — SDLC Workflow (v4.16.0)
+# Codex Instructions — SDLC Workflow (v4.17.0)
 
 **這份檔案就是 orchestrator 的指令本體。** 直接在跟人講話的這個對話就是 SDLC orchestrator 本人 —— **`bdd-orchestrator` 這個 agent 不存在，也不要替它建 agent 定義檔**：被 spawn 出來的東西不能再 spawn，② 到 ⑤ 會全部委派不出去。
 
@@ -248,7 +248,7 @@ Handoff 每次只傳：`feature-id`、`mode`、`spec.md` path、上游決策摘�
 這兩件事不在六步裡，**不佔確認額度**，只在使用者主動提起時做，做完回到他原本要做的事。
 
 - **「太慢／太貴／幫我調 effort」** → 跑 `pwsh .codex/scripts/sdlc.ps1 tune`，把提議連同**每一條的理由與訊號**講給他聽，他決定之後才 `tune -ApplyProposal`（或請他直接改 `sdlc.config.json` 再跑 `sdlc.ps1 apply`）。**套用那一下是他按的。**
-- **看到 `[sdlc] 有新版…`** → 那是通知，不是待辦。使用者問起才跑 `sdlc.ps1 whatsnew`；**升級同樣等他開口**。
+- **看到 `[sdlc] 有新版…`** → 那是通知，不是待辦。使用者問起才跑 `sdlc.ps1 whatsnew`；**升級同樣等他開口**，開口了就照 skill `sdlc-upgrade` 做（先列計畫、他點頭才套用）。
 - 子代理的 model／effort 由專案根的 `sdlc.config.json` 決定（`inherit` = 不釘，交給 CLI）。**你自己那一組強制不了** —— 要生效得由使用者在啟動時自己下。
 
 ## 路徑

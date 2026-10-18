@@ -73,10 +73,27 @@ test('README 講清楚三件刻意不做的事與「移除專案不等於移除 
 });
 
 test('面板永遠在；還沒裝工作流時它是安裝入口（以前這裡什麼都沒有，使用者無路可走）', () => {
-  const views = pkg.contributes.views.codexSdlc;
-  assert.equal(views.length, 1);
-  assert.equal(views[0].id, 'codexSdlc.settings');
-  assert.equal(views[0].when, undefined, '掛了 when 的話，沒裝工作流的工作區又會變成一片空白');
+  const views = pkg.contributes.views.codexSdlc as { id: string; when?: string; visibility?: string }[];
+  assert.deepEqual(views.map((v) => v.id), ['codexSdlc.status', 'codexSdlc.settings', 'codexSdlc.advanced']);
+  const settings = views.find((v) => v.id === 'codexSdlc.settings')!;
+  assert.equal(settings.when, undefined, '掛了 when 的話，沒裝工作流的工作區又會變成一片空白');
+  // 另外兩個只在裝了之後出現 —— 沒裝時只剩一個帶安裝按鈕的 view，不會有兩個空殼。
+  for (const v of views.filter((x) => x !== settings)) assert.equal(v.when, 'codexSdlc.active', `${v.id} 沒裝工作流時也會出現（空的）`);
+  assert.equal(views.find((v) => v.id === 'codexSdlc.advanced')!.visibility, 'collapsed');
+  const src0 = fs.readFileSync(path.join(ext, 'src/extension.ts'), 'utf8');
+  for (const v of views) assert.ok(src0.includes(`'${v.id}'`), `${v.id} 宣告了，但 extension.ts 沒有替它建 view`);
+  // 狀態是 webview（卡片）；宣告成 webview 卻沒註冊 provider，那一塊會永遠轉圈。
+  assert.equal((views[0] as { type?: string }).type, 'webview');
+  assert.match(src0, /registerWebviewViewProvider\(STATUS_VIEW/);
+  // 強調色要宣告，不然樹與卡片拿到的是空值（ThemeColor 指到不存在的顏色就是沒顏色）。
+  const colors = (pkg.contributes.colors as { id: string; defaults: Record<string, string> }[]).map((c) => c.id);
+  for (const c of ['codexSdlc.accent', 'codexSdlc.accentForeground']) assert.ok(colors.includes(c), `沒有宣告 ${c}`);
+  // effort 訊號格：tree.ts 認得的每一級都要有三張圖，少一張那一行就沒有圖示。
+  const levels = [...fs.readFileSync(path.join(ext, 'src/tree.ts'), 'utf8').match(/EFFORT_ICONS = new Set\(\[([^\]]+)\]/)![1].matchAll(/'([a-z]+)'/g)].map((m) => m[1]);
+  assert.ok(levels.length >= 7);
+  for (const l of levels) for (const v of ['dark', 'light', 'error']) {
+    assert.ok(fs.existsSync(path.join(ext, 'media/icons', `effort-${l}-${v}.svg`)), `少了 media/icons/effort-${l}-${v}.svg`);
+  }
   const welcome = pkg.contributes.viewsWelcome.find((w: { view: string }) => w.view === 'codexSdlc.settings');
   assert.ok(welcome, '沒有 welcome view —— 面板會是空的，而使用者不知道要打哪個指令');
   assert.equal(welcome.when, '!codexSdlc.active');

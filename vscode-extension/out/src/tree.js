@@ -9,8 +9,13 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.pendingAgentsOf = pendingAgentsOf;
 exports.buildSettingsTree = buildSettingsTree;
+exports.buildPanel = buildPanel;
+exports.statusCard = statusCard;
+exports.attentionCount = attentionCount;
+exports.upgradeOffer = upgradeOffer;
 exports.effortChoicesForModel = effortChoicesForModel;
 exports.flatten = flatten;
+const contract_1 = require("./contract");
 const schema_1 = require("./schema");
 const status_1 = require("./status");
 const RULES_FILE = 'guidelines/rules.json';
@@ -22,6 +27,76 @@ function pendingAgentsOf(i) {
 function buildSettingsTree(i) {
     return [statusSection(i), agentsSection(i), reviewSection(i), updateSection(i), guidelinesSection(i), machineSection(i)];
 }
+function buildPanel(i) {
+    const sections = buildSettingsTree(i);
+    const section = (id) => sections.find((s) => s.id === id);
+    const pending = pendingAgentsOf(i);
+    // 調校 view 不再包「Agent 調校」「審核」兩層標題：agent 直接列，最上面一行就是要按的那個動作。
+    const top = [];
+    if (i.justApplied) {
+        top.push({ id: 'settings/applied', label: i.justApplied.length > 0 ? `已套用 ${i.justApplied.join('、')}` : '已套用，沒有變更', icon: 'check', tone: 'accent' });
+    }
+    else if (pending.length > 0) {
+        top.push({
+            id: 'settings/apply', label: `套用 ${pending.length} 項`, description: pending.join('、'), icon: 'check-all', tone: 'accent',
+            command: { command: 'codexSdlc.apply', title: '套用' },
+            tooltip: `改了還沒套用：${pending.join('、')}。不套用的話流程用的是舊值 —— 按一下只跑一次 apply。`,
+        });
+    }
+    return {
+        views: {
+            // 「不能改」那一句兩個區段各有一份；攤平之後只留一份。
+            settings: [...top, ...(section('agents').children ?? []), ...(section('review').children ?? []).filter((n) => n.id !== 'review/blocked')],
+            advanced: [section('update'), section('guidelines'), section('machine')],
+        },
+        card: statusCard(i, section('status')),
+        pending,
+        upgrade: upgradeOffer({ doctor: i.doctor, workflowVersion: i.workflowVersion, payloadVersion: i.machine.payloadVersion }),
+    };
+}
+// 卡片上的按鈕要短：一兩個字的動詞。沒列到的就用指令自己的 title。
+const ACTION_LABEL = {
+    'codexSdlc.mergeAgents': '合併', 'codexSdlc.repair': '補回', 'codexSdlc.apply': '套用', 'codexSdlc.openSettings': '去調校',
+    'codexSdlc.openAdvanced': '去設定', 'codexSdlc.doctor': '健檢', 'codexSdlc.showOutput': '看輸出', 'codexSdlc.upgrade': '升級',
+};
+const cardAction = (c) => c && { label: ACTION_LABEL[c.command] ?? c.title, command: c.command, arguments: c.arguments };
+// 要處理的事 = 狀態區段裡亮紅／黃的那幾行。兩種刻意不算：
+//   - 新版：那是提示，不是待辦（卡片下面另外一顆小膠囊）。
+//   - 調校未套用：那是你自己剛做的改動，不是危險 —— 「套用」在調校 view 的最上面。
+function statusCard(i, status = statusSection(i)) {
+    const rows = status.children ?? [];
+    const quietNode = rows.find((n) => n.id === 'status/quiet');
+    const items = [];
+    const push = (n) => {
+        if (n.contextValue === 'tuningPending')
+            return;
+        items.push({ level: n.tone === 'error' ? 'error' : 'warn', title: n.label, detail: n.tooltip, action: cardAction(n.command) });
+    };
+    for (const n of rows) {
+        if (n === quietNode || n.id === 'status/update')
+            continue;
+        if (n.id === 'status/issues')
+            (n.children ?? []).forEach(push);
+        else
+            push(n);
+    }
+    const offer = upgradeOffer({ doctor: i.doctor, workflowVersion: i.workflowVersion, payloadVersion: i.machine.payloadVersion });
+    const at = i.checkedAt !== undefined ? new Date(i.checkedAt) : undefined;
+    return {
+        state: items.length > 0 ? 'attention' : i.doctor ? 'ok' : i.checking ? 'checking' : i.failure ? 'failed' : 'none',
+        items,
+        quiet: quietNode?.children?.length ?? 0,
+        project: i.rootName,
+        version: i.workflowVersion ?? i.doctor?.version.contract,
+        checkedAt: at && `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`,
+        failure: i.failure,
+        upgrade: offer && { version: offer.version, action: { label: '升級', command: 'codexSdlc.upgrade' } },
+    };
+}
+// 活動列圖示上的數字＝卡片上那幾件。兩邊同一個來源，不會一邊說 2 一邊說 3。
+function attentionCount(i) {
+    return statusCard(i).items.length;
+}
 // ---- 狀態 ----
 function statusSection(i) {
     const d = i.doctor;
@@ -30,8 +105,9 @@ function statusSection(i) {
         id: 'status/workflow',
         label: `工作流 ${i.workflowVersion ?? d?.version.contract ?? '（讀不到版本）'}`,
         description: i.checking ? '檢查中…' : d ? (d.problems === 0 ? 'doctor 沒有問題' : `doctor：${d.problems} 個問題`) : '',
+        // 問題本身列在「需要處理」底下；這一行只在 doctor 有問題、底下卻一條都沒列出來時才跟著亮。
         icon: d && d.problems > 0 ? 'warning' : 'check',
-        tone: d ? (d.problems > 0 ? 'warn' : 'ok') : 'muted',
+        tone: d ? (d.problems > 0 && (0, status_1.issuesFromDoctor)(d).length === 0 ? 'warn' : 'ok') : 'muted',
         tooltip: '點一下跑完整健檢（doctor），結果寫進輸出面板。',
         command: { command: 'codexSdlc.doctor', title: 'doctor' },
     });
@@ -60,7 +136,21 @@ function statusSection(i) {
             })),
         });
     }
-    return { id: 'status', label: '狀態', description: i.rootName, expanded: true, children };
+    return { id: 'status', label: '狀態', description: i.rootName, expanded: true, children: foldQuiet(i, children) };
+}
+// 要處理的放最上面；沒事的收成一行（展開還看得到）。全部正常時整段就只剩「一切正常」那一行。
+function foldQuiet(i, rows) {
+    const loud = rows.filter((n) => n.tone === 'warn' || n.tone === 'error');
+    const quiet = rows.filter((n) => !loud.includes(n));
+    if (quiet.length === 0)
+        return loud;
+    const version = i.workflowVersion ?? i.doctor?.version.contract;
+    const summary = loud.length > 0
+        ? { id: 'status/quiet', label: `其他 ${quiet.length} 項正常`, icon: 'check', tone: 'ok', children: quiet }
+        : !i.doctor
+            ? { id: 'status/quiet', label: i.checking ? '檢查中…' : '還沒有健檢結果', icon: i.checking ? 'sync~spin' : 'circle-outline', tone: 'muted', description: i.rootName, children: quiet }
+            : { id: 'status/quiet', label: '一切正常', icon: 'pass-filled', tone: 'ok', description: [version ? `工作流 ${version}` : '', i.rootName].filter(Boolean).join(' · '), children: quiet };
+    return [...loud, summary];
 }
 // 機械強制層在不在。**這裡不再顯示 Codex 的信任狀態** —— 那要啟動一個 codex 子行程去問，
 // 而答案是使用者在這個面板裡按不動的東西。hooks.json 在不在則留著：那是工具檔缺了，而它有得修。
@@ -92,18 +182,34 @@ function mergeNode(i) {
         tooltip: '新版的 AGENTS.md 寫成 .new、沒有覆蓋你那一份。把流程那幾節合進去之前，orchestrator 不會照這一版跑。點一下開左右對照。',
     };
 }
+function upgradeOffer(i) {
+    const u = i.doctor?.update;
+    const remote = u?.newer && u.latest ? u.latest : undefined;
+    const bundled = i.payloadVersion && i.workflowVersion && (0, contract_1.compareVersions)(i.payloadVersion, i.workflowVersion) > 0 ? i.payloadVersion : undefined;
+    if (bundled && (!remote || (0, contract_1.compareVersions)(bundled, remote) > 0))
+        return { version: bundled, from: 'bundled' };
+    return remote ? { version: remote, from: 'remote' } : undefined;
+}
 function updateStatusNode(i) {
     const u = i.doctor?.update;
     const base = { id: 'status/update', icon: 'cloud' };
-    if (!u)
-        return { ...base, label: '更新：檢查中…', tone: 'muted' };
-    if (u.newer && u.latest) {
+    const offer = upgradeOffer({ doctor: i.doctor, workflowVersion: i.workflowVersion, payloadVersion: i.machine.payloadVersion });
+    if (offer?.from === 'remote') {
         return {
-            ...base, label: `有新版 ${u.latest}`, description: '點一下升級', tone: 'warn',
+            ...base, label: `有新版 ${offer.version}`, description: '點一下升級', tone: 'warn',
             command: { command: 'codexSdlc.upgrade', title: '升級' },
             tooltip: '點一下升級：先下載、列出會動哪些檔，你確認了才寫。只想看變更說明：Codex SDLC：whatsnew。',
         };
     }
+    if (offer) {
+        return {
+            ...base, label: `可升級到 ${offer.version}`, description: 'extension 內附，點一下升級', tone: 'warn',
+            command: { command: 'codexSdlc.upgrade', title: '升級' },
+            tooltip: `這個 extension 內附的工作流是 ${offer.version}，比這個專案的 ${i.workflowVersion} 新 —— 不用連到發佈頁也能升。點一下會先列出會動哪些檔，你確認了才寫。`,
+        };
+    }
+    if (!u)
+        return { ...base, label: '更新：檢查中…', tone: 'muted' };
     if (u.check === 'never')
         return { ...base, label: '更新檢查：關閉', tone: 'muted', tooltip: 'update.check = never —— 一條連線都沒有。' };
     if (!u.cached)
@@ -134,9 +240,7 @@ function agentsSection(i) {
         for (const a of agents)
             children.push(agentNode(i, a.name, a.effort, a.model, pending.includes(a.name)));
         children.push(tuneNode(i));
-        if (i.canEdit) {
-            children.push({ id: 'agents/preset', label: '換成預設組合…', icon: 'layers', tooltip: 'fast／balanced／deep —— 先列出會改什麼，確認才寫。', command: { command: 'codexSdlc.applyPreset', title: '換成預設組合' } });
-        }
+        // 「換成預設組合…」在調校 view 標題列的「…」裡 —— 一年按一次的東西不佔一整行。
     }
     if (!i.canEdit && i.editBlockedReason)
         children.push(blockedNode('agents', i.editBlockedReason));
@@ -145,7 +249,7 @@ function agentsSection(i) {
         label: 'Agent 調校',
         description: pending.length > 0 ? `${pending.length} 項未套用` : i.doctor?.tuning.status === 'in-sync' ? '已套用' : undefined,
         tone: pending.length > 0 ? 'pending' : undefined,
-        icon: pending.length > 0 ? 'circle-filled' : undefined,
+        icon: pending.length > 0 ? 'circle-filled' : 'organization',
         contextValue: pending.length > 0 ? 'tuningPending' : undefined,
         tooltip: pending.length > 0
             ? `改了還沒套用：${pending.join('、')}。不套用的話流程用的是舊值，而畫面上看不出來 —— 按「套用」（只跑一次 apply）。`
@@ -184,6 +288,11 @@ function agentNode(i, name, effort, model, pending) {
         ? (effective ? `inherit（${effective}）` : 'inherit')
         : modelBad ? `${model} · 這台的 Codex 不認得`
             : i.doctor?.unverifiedModel.includes(name) ? `${model} · 沒對 Codex 驗證` : model;
+    const effortEdit = s && {
+        kind: 'choice', key: `agents.${name}.effort`, title: `${name} 的 effort${levels && effective ? `（${effective} 支援的）` : ''}`, current: effort,
+        choices: effortChoicesForModel((0, schema_1.effortChoicesFor)(s, name), levels),
+        placeholder: isOrch ? 'orchestrator 的值只是記錄，強制不了' : '選完會標成未套用，改完一起按「套用」',
+    };
     const children = [
         {
             id: `agents/${name}/effort`,
@@ -191,11 +300,7 @@ function agentNode(i, name, effort, model, pending) {
             description: [effort, !knownEffort ? '不認得的值' : '', effortBad ? (effortBad.level === 'problem' ? `${name} 會起不來` : '只有部分模型支援') : '', hint && hint.startsWith('⚠') ? hint : ''].filter(Boolean).join(' · '),
             tone: effortBad ? (effortBad.level === 'problem' ? 'error' : 'warn') : !knownEffort || (hint ?? '').startsWith('⚠') ? 'warn' : pending ? 'pending' : undefined,
             tooltip: s ? [s.effort.description, hint ? `${name}：${hint}` : '', effortBad?.message ?? ''].filter(Boolean).join('\n\n') : effortBad?.message ?? undefined,
-            ...editable(i, s && {
-                kind: 'choice', key: `agents.${name}.effort`, title: `${name} 的 effort${levels && effective ? `（${effective} 支援的）` : ''}`, current: effort,
-                choices: effortChoicesForModel((0, schema_1.effortChoicesFor)(s, name), levels),
-                placeholder: isOrch ? 'orchestrator 的值只是記錄，強制不了' : '選完會標成未套用，改完一起按「套用」',
-            }),
+            ...editable(i, effortEdit),
         },
         {
             id: `agents/${name}/model`,
@@ -216,33 +321,52 @@ function agentNode(i, name, effort, model, pending) {
             }),
         },
     ];
+    // 給人看的字：inherit 在畫面上講成它的意思，真正的值在 tooltip 與展開後的那兩行。
+    const effortText = effort === 'inherit' ? '跟隨' : effort;
+    const modelText = model === 'inherit' ? '跟隨主對話' : model;
+    const problem = bad?.level === 'problem';
     return {
         id: `agents/${name}`,
         label: name,
-        description: [`effort ${effort}`, `model ${model}`, isOrch ? '只是記錄，強制不了' : '', bad?.level === 'problem' ? '這台跑不起來' : '', pending ? '未套用' : ''].filter(Boolean).join(' · '),
-        icon: pending ? 'circle-filled' : isOrch ? 'info' : 'person',
-        tone: bad?.level === 'problem' ? 'error' : pending ? 'pending' : badTone ?? (isOrch ? 'muted' : undefined),
-        tooltip: [isOrch ? 'orchestrator 沒有 agent 定義檔（它就是 AGENTS.md），這裡的值強制不了 —— 啟動 codex 時要自己帶。' : '', bad?.message ?? ''].filter(Boolean).join('\n\n') || undefined,
+        // 側邊欄很窄：只放兩個值；「未套用」由行尾的 ● 表示，「跑不起來」取代 model —— 那時 model 不是重點。
+        description: problem ? `${effortText} · 跑不起來`
+            : isOrch && effort === 'inherit' && model === 'inherit' ? '只是記錄'
+                : [effortText, modelText, isOrch ? '只是記錄' : ''].filter(Boolean).join(' · '),
+        icon: isOrch ? 'info' : 'person',
+        // 認得的 effort 用訊號格（一眼比較每個 agent 開多深）；Codex 新加、這裡還沒有圖的值退回一般圖示。
+        iconFile: EFFORT_ICONS.has(effort) ? `effort-${effort}${problem ? '-error' : ''}` : undefined,
+        tone: problem ? 'error' : pending ? 'pending' : badTone ?? (isOrch ? 'muted' : undefined),
+        tooltip: [
+            `effort ${effort} · model ${model}${pending ? ' · 未套用' : ''}`,
+            isOrch ? 'orchestrator 沒有 agent 定義檔（它就是 AGENTS.md），這裡的值只是記錄，強制不了 —— 啟動 codex 時要自己帶。' : '',
+            bad?.message ?? '',
+            effortEdit && i.canEdit ? '點一下改 effort；展開改 model。' : '',
+        ].filter(Boolean).join('\n\n'),
+        // effort 是最常改的：點那一行就直接選，不必先展開。
+        ...editable(i, effortEdit),
         children,
     };
 }
+const EFFORT_ICONS = new Set(['inherit', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
 function tuneNode(i) {
     const tune = { command: 'codexSdlc.tune', title: 'tune' };
     if (!i.proposal || !i.config) {
-        return { id: 'agents/tune', label: '依 repo 現況給建議…', icon: 'lightbulb', command: tune, tooltip: '跑 tune：只看 repo 規模與舊系統線索，給每個 agent 一個 effort 建議。這是提議，不會自己套用。' };
+        return { id: 'agents/tune', label: '依 repo 現況給建議', icon: 'sparkle', tone: 'muted', command: tune, tooltip: '跑 tune：只看 repo 規模與舊系統線索，給每個 agent 一個 effort 建議。這是提議，不會自己套用。' };
     }
     const current = new Map(i.config.agents.map((a) => [a.name, a.effort]));
     const diffs = i.proposal.filter((p) => current.has(p.agent) && current.get(p.agent) !== p.effort);
     if (diffs.length === 0) {
-        return { id: 'agents/tune', label: 'tune：現在的設定跟建議一致', icon: 'lightbulb', tone: 'muted', command: tune, tooltip: '點一下依 repo 現況重新給建議。' };
+        return { id: 'agents/tune', label: '設定跟建議一致', icon: 'sparkle', tone: 'muted', command: tune, tooltip: '點一下依 repo 現況重新給建議。' };
     }
     return {
         id: 'agents/tune',
-        label: `tune 有 ${diffs.length} 項建議`,
-        description: diffs.map((p) => `${p.agent} → ${p.effort}`).join('、'),
-        icon: 'lightbulb',
-        tone: 'warn',
+        label: `${diffs.length} 項建議：${diffs.map((p) => `${p.agent} → ${p.effort}`).join('、')}`,
+        icon: 'sparkle',
+        // 建議是好消息，不是警告：用強調色。行內「採用」一次採用這幾項（點那一行則是重跑 tune、看理由）。
+        tone: 'accent',
         command: tune,
+        contextValue: i.canEdit ? 'tuneProposal' : undefined,
+        data: [i.rootPath, diffs.map((p) => p.agent)],
         tooltip: diffs.map((p) => `${p.agent}：${current.get(p.agent)} → ${p.effort}（${p.reason}）`).join('\n'),
     };
 }
@@ -259,7 +383,7 @@ function reviewSection(i) {
         tone = 'warn';
     }
     else if (d) {
-        description = `${d.maxRounds} 輪${d.source === 'config' ? '' : '（預設）'} · 下一次委派就生效`;
+        description = `${d.maxRounds} 輪${d.source === 'config' ? '' : '（預設）'}`;
     }
     else {
         description = raw === undefined ? `${def} 輪（預設）` : `${String(raw)} 輪`;
@@ -267,11 +391,12 @@ function reviewSection(i) {
     const current = typeof raw === 'number' ? String(raw) : String(d?.maxRounds ?? def);
     const node = {
         id: 'review/maxRounds',
-        label: s?.reviewRounds.title ?? '修正輪上限',
+        // 調校 view 不再有「審核」這層標題，所以這一行自己要說清楚是審核的。
+        label: '審核修正輪',
         description,
         tone,
-        icon: 'debug-restart',
-        tooltip: s?.reviewRounds.description,
+        icon: 'eye',
+        tooltip: [s?.reviewRounds.description ?? '', '不必套用 —— 下一次委派就生效。'].filter(Boolean).join('\n\n'),
         ...editable(i, s && {
             kind: 'choice', key: 'review.maxRounds', title: '審核最多修幾輪？', current,
             choices: range(s.reviewRounds.min, s.reviewRounds.max).map((n) => ({ value: String(n), label: `${n} 輪`, description: n === s.reviewRounds.default ? '預設' : '' })),
@@ -281,7 +406,7 @@ function reviewSection(i) {
     const children = [node];
     if (!i.canEdit && i.editBlockedReason)
         children.push(blockedNode('review', i.editBlockedReason));
-    return { id: 'review', label: '審核', expanded: true, children };
+    return { id: 'review', label: '審核', icon: 'eye', expanded: true, children };
 }
 // ---- 更新 ----
 function updateSection(i) {
@@ -320,7 +445,7 @@ function updateSection(i) {
     const children = [checkNode, sourceNode, { id: 'update/now', label: '立即檢查更新', icon: 'cloud-download', command: { command: 'codexSdlc.checkUpdate', title: '立即檢查更新' } }];
     if (!i.canEdit && i.editBlockedReason)
         children.push(blockedNode('update', i.editBlockedReason));
-    return { id: 'update', label: '更新', children };
+    return { id: 'update', label: '更新', icon: 'cloud', children };
 }
 // ---- 規範 ----
 function guidelinesSection(i) {
@@ -328,7 +453,7 @@ function guidelinesSection(i) {
     const children = [];
     if (!g.dir) {
         children.push({ id: 'guidelines/none', label: '沒有 guidelines/（選用）', icon: 'info', tone: 'muted', tooltip: '團隊規範放在 guidelines/，升級永遠不動它。不需要就不用建。' });
-        return { id: 'guidelines', label: '規範', children };
+        return { id: 'guidelines', label: '規範', icon: 'library', children };
     }
     const docs = g.files.filter((f) => f.toLowerCase().endsWith('.md') && f.toLowerCase() !== 'readme.md');
     children.push({
@@ -365,7 +490,7 @@ function guidelinesSection(i) {
                 : '寫檔後會用 rules.json 掃剛寫出去的檔。點一下關閉（會先說明後果再確認）。',
         });
     }
-    return { id: 'guidelines', label: '規範', children };
+    return { id: 'guidelines', label: '規範', icon: 'library', children };
 }
 // ---- 這台機器 ----
 function machineSection(i) {
@@ -373,6 +498,7 @@ function machineSection(i) {
     return {
         id: 'machine',
         label: '這台機器',
+        icon: 'vm',
         description: '只影響這台機器，不進 sdlc.config.json',
         children: [
             {
