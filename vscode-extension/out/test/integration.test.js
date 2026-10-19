@@ -272,7 +272,10 @@ async function gate(rel, files, extra = []) {
     const nodes = (0, tree_1.flatten)((0, tree_1.buildSettingsTree)(input));
     const byId = new Map(nodes.map((n) => [n.id, n]));
     strict_1.default.equal(byId.get('agents')?.contextValue, 'tuningPending', 'set 之後沒 apply，面板卻沒標未套用');
-    strict_1.default.match(byId.get('agents/implementer')?.description ?? '', /effort medium.*未套用/);
+    const impl = byId.get('agents/implementer');
+    strict_1.default.match(impl?.description ?? '', /^medium/);
+    strict_1.default.equal(impl?.tone, 'pending', '未套用的那一行要有 ●');
+    strict_1.default.match(String(impl?.tooltip ?? ''), /未套用/);
     strict_1.default.equal(byId.get('agents/implementer/effort')?.edit?.key, 'agents.implementer.effort');
     strict_1.default.equal(byId.get('status/hooks')?.tone, 'ok', 'hooks.json 在，這一行就該是綠的（信任狀態不在這裡看）');
     const lenses = (0, codelens_1.configLenses)(fs.readFileSync(path.join(project, 'sdlc.config.json'), 'utf8'), { rootPath: project, pendingAgents: ['implementer'], canEdit: true });

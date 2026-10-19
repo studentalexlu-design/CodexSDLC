@@ -258,7 +258,10 @@ test('設定面板：拿真的 doctor 與 schema 建出來的樹，值跟設定�
   const nodes = flatten(buildSettingsTree(input));
   const byId = new Map(nodes.map((n) => [n.id, n]));
   assert.equal(byId.get('agents')?.contextValue, 'tuningPending', 'set 之後沒 apply，面板卻沒標未套用');
-  assert.match(byId.get('agents/implementer')?.description ?? '', /effort medium.*未套用/);
+  const impl = byId.get('agents/implementer');
+  assert.match(impl?.description ?? '', /^medium/);
+  assert.equal(impl?.tone, 'pending', '未套用的那一行要有 ●');
+  assert.match(String(impl?.tooltip ?? ''), /未套用/);
   assert.equal(byId.get('agents/implementer/effort')?.edit?.key, 'agents.implementer.effort');
   assert.equal(byId.get('status/hooks')?.tone, 'ok', 'hooks.json 在，這一行就該是綠的（信任狀態不在這裡看）');
 
