@@ -419,6 +419,31 @@ Describe-Suite 'agent-lint / 檢查 6：產物路徑合約' {
         } finally { Remove-Item $Scratch -Recurse -Force -ErrorAction SilentlyContinue }
     }
 
+    It-Should 'current-state.md 只有 sa-analyst 提到、orchestrator 沒提到 → 紅燈' {
+        # v4.18.0：需求很空時 sa-analyst 先盤點現況寫成這個檔，orchestrator 拿它起草主流程。
+        # orchestrator 不知道有這個檔，survey 就白跑 —— 起草退回只靠常識，而且不會報錯。
+        New-CleanScratch | Out-Null
+        New-ScratchAgent 'sa-analyst' '`mode: survey` 把現況寫進 `bdd-docs/{feature-id}/current-state.md`。' | Out-Null
+        try {
+            $r = Invoke-Lint
+            Assert-Equal 2 $r.exit 'orchestrator 沒提到 current-state.md 卻通過了'
+            Assert-Match 'artifact-path-orphan' $r.stderr
+            Assert-Match 'current-state\.md' $r.stderr
+            New-ScratchOrchestrator @'
+## 委派
+
+| 要什麼 | 給誰 | mode |
+|---|---|---|
+| 查現況 | `sa-analyst` | `analyze` |
+| 需求很空：盤點現況 | `sa-analyst` | `survey` |
+
+需求很空 → 先讀 `bdd-docs/{feature-id}/current-state.md` 再起草。
+'@ | Out-Null
+            $r = Invoke-Lint
+            Assert-Equal 0 $r.exit "兩方都提到卻紅了；stderr: $($r.stderr)"
+        } finally { Remove-Item $Scratch -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
     It-Should '沒有人用到的產物不強制' {
         # 這一版可能就是沒有 legacy-schema 的需求，不該因此紅燈。
         New-CleanScratch | Out-Null

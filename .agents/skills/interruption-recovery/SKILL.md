@@ -1,6 +1,6 @@
 ---
 name: interruption-recovery
-version: 2.0.0
+version: 2.1.0
 description: "Use when: a subagent returns blocked, is cancelled, times out, returns partial, or the conversation resumes after an interruption."
 user-invocable: false
 ---
@@ -65,18 +65,19 @@ user-invocable: false
 ## 子代理回 `partial`
 
 1. 讀它寫的「做完了／沒做完」與「風險與待確認」。
-2. **`sa-analyst` 的 `partial`，而且「風險與待確認」裡沒有要問使用者的問題 → 不問，直接再委派一次**，帶 `bdd-docs/{feature-id}/analysis.md` 與它寫的「下一件最小的事」。它停下來是撞到讀量上限，不是需要裁定；先問只是多等一次人，而他多半只會回「繼續」。**同一個需求只自動續跑這一次** —— 第二次 `partial` 照下一條問。
+2. **`sa-analyst` 的 `partial`，而且「風險與待確認」裡沒有要問使用者的問題 → 不問，直接再委派一次**，帶 `bdd-docs/{feature-id}/analysis.md` 與它寫的「下一件最小的事」。它停下來是撞到讀量上限，不是需要裁定；先問只是多等一次人，而他多半只會回「繼續」。**同一個需求只自動續跑這一次** —— 第二次 `partial` 照下一條問。**`mode: survey` 的 `partial` 不續跑**：照它寫的 `current-state.md` 起草，「沒查到」的標假設（skill `requirement-gap-analysis`）；資料來源不明時只問標「來源待確認」的，「沒查到」的留給 ②。
 3. 其餘（第二次 `partial`、有要問的問題、`implementer`／`reviewer` 的 `partial`）→ 以 `Codex user confirmation` 提供：繼續下一片／先審核已完成的部分／暫停／✏️ 自行輸入。`implementer` 的 `partial` 常是「範圍比 spec 大」，那是要使用者決定的事，不能自動續。
 4. 若繼續，新 spawn 帶上「已完成的部分」與「下一件最小的事」。
 
 ## 中斷後續跑
 
-這套流程是無狀態的，所以續跑不靠狀態檔，靠這三樣，依序：
+這套流程是無狀態的，所以續跑不靠狀態檔，靠這幾樣，依序：
 
 1. **`bdd-docs/{feature-id}/spec.md`** —— 需求與驗收條件都在裡面，這是唯一必須存在的東西。
 2. **`bdd-docs/{feature-id}/evidence/`** —— DB 盤點結果。**有這個就絕對不要重查 DB**：那要再花一次使用者批准、一次連線、一次等待，而答案已經在檔案裡了。
 3. **`bdd-docs/{feature-id}/analysis.md`** —— `sa-analyst` 上次沒做完時留下的現況與做法。**有這個就從它接續，不要叫 SA 從頭重讀 repo** —— 那是逾時最常發生的地方。
-4. **實際的程式碼與測試** —— 跑一次測試就知道做到哪了。
-5. 使用者。
+4. **`bdd-docs/{feature-id}/current-state.md`** —— 需求很空、或資料來源不明時 `survey` 盤點的現況（後者多一節「資料來源」）。**有這個就不要再 `survey`**，拿它接著起草或問來源；`spec.md`「需求決議」裡已經談定的步驟不要重問。
+5. **實際的程式碼與測試** —— 跑一次測試就知道做到哪了。
+6. 使用者。
 
-**`spec.md` 不在就從 ① 重跑。** BA 是純推理，幾乎免費；只有 SA 的靜態分析要重付一次 spawn（evidence 還在的話，DB 那段不用重付）。不要為了省那一次而猜使用者原本決定了什麼。
+**`spec.md` 不在就從 ① 重跑。** BA 是純推理，幾乎免費；只有 SA 的靜態分析要重付一次 spawn（evidence 還在的話，DB 那段不用重付；`current-state.md` 還在的話，`survey` 也不用重跑）。不要為了省那一次而猜使用者原本決定了什麼。

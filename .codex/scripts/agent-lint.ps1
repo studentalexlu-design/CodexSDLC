@@ -268,6 +268,11 @@ $artifactContracts = @(
     # 生產者與路由者是同一方；消費者仍是 sa-analyst，它靠 handoff 帶的 path 讀檔。
     @{ path = 'bdd-docs/{feature-id}/evidence/';   roles = @('bdd-orchestrator', 'sa-analyst') }
     @{ path = 'bdd-docs/{feature-id}/analysis.md'; roles = @('sa-analyst', 'bdd-orchestrator') }
+    # v4.18.0：需求很空、或資料來源不明時的現況（後者多一節「資料來源」）。生產者 sa-analyst（`survey`，
+    # 或 `analyze` 發現需求還很空、來源對不到時），消費者是 orchestrator（拿它起草主流程、問對不到的來源）
+    # 與下一次的 sa-analyst（`analyze` 先讀它、不重查）。漏掉 orchestrator 的症狀
+    # 不是報錯：survey 寫了檔卻沒人讀，起草退回只靠常識 —— 正是這個 mode 要修的那件事。
+    @{ path = 'bdd-docs/{feature-id}/current-state.md'; roles = @('sa-analyst', 'bdd-orchestrator') }
     # v4.3.0：spec.md 多了一個消費者 —— sa-analyst 在 ② 讀 ① 的需求決議。
     # implementer／reviewer 有 handoff-lint 檢查 3a 保底（build／fix／code 必須帶 spec.md
     # 路徑），但 `analyze` **不在**那份清單裡，所以沒有任何機械層在守 SA 讀不讀得到決議。

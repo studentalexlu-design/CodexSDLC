@@ -134,6 +134,14 @@ Describe-Suite 'handoff-lint / 驗收依據與修正輪' {
         Assert-Equal 0 $r.exit "stderr: $($r.stderr)"
     }
 
+    It-Should 'mode: survey 不需要 spec.md（需求還很空，還沒有 spec 可帶）' {
+        # survey 跑在 ① 起草之前，那時 spec.md 根本還不存在。把它加進交付型 mode 的清單，
+        # 需求很空的那條路就在第一次 spawn 被擋死。
+        $p = $ValidAnalyze -replace 'mode: analyze', 'mode: survey'
+        $r = Invoke-Script $Script -Stdin (New-Payload -Prompt $p)
+        Assert-Equal 0 $r.exit "stderr: $($r.stderr)"
+    }
+
     foreach ($m in @('build', 'code')) {
         It-Should "mode: $m 缺 spec.md 被阻斷" {
             # 沒有驗收條件就開工 = 讓子代理猜使用者要什麼。那是最貴的一種返工，
