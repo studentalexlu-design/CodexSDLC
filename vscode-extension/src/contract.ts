@@ -102,6 +102,9 @@ export interface Finding { level: string; code: string; text: string }
 export interface Violation { rule: string; detail: string; fix: string }
 export interface HookCounts { total: number; trusted: number; untrusted: number; modified: number; disabled: number }
 export interface HookTrust { status: string; reason?: string; codex: string | null; counts?: HookCounts }
+// 4.19.0 起：hooks 有沒有真的在跑，從心跳檔與 agent 產出的修改時間看出來（不叫 codex）。
+// status 是 running／pending／no-activity／no-hooks（只說明）或 silent（agent 寫了產出，之後沒有任何 hook 跑）。
+export interface Heartbeat { status: string; lastRun: string | null; lastOutput: { path: string; at: string } | null }
 export interface InstalledEditor { product: string; version: string; compatible: boolean }
 
 export interface LintResult { ran: boolean; passed: boolean; violations: Violation[] }
@@ -186,6 +189,8 @@ export interface DoctorData {
   lint: LintResult;
   review: { maxRounds: number; source: string; valid: boolean };
   hooks: HookTrust;
+  // 4.18.0 與更舊的 doctor 沒有這一段，讀成 undefined（不報）。
+  heartbeat?: Heartbeat;
   update: { cached: boolean; stale: boolean; newer: boolean; latest: string | null; seen: boolean; checkedAt: string | null; check: string };
   editor: { installed: InstalledEditor[] };
   // 加入環境檢查之前的 doctor（4.10.0 與更舊）沒有這一段，讀成空的（同 rule_problems 的做法）。
@@ -224,6 +229,17 @@ function parseLint(o: Json, at: string): LintResult {
       return { rule: str(x, 'rule', vat), detail: str(x, 'detail', vat), fix: str(x, 'fix', vat) };
     }),
   };
+}
+
+function parseHeartbeat(d: Json, at: string): Heartbeat {
+  const h = obj(d, 'heartbeat', at);
+  const hat = `${at}.heartbeat`;
+  let lastOutput: Heartbeat['lastOutput'] = null;
+  if ('lastOutput' in h && h.lastOutput !== null) {
+    const o = obj(h, 'lastOutput', hat);
+    lastOutput = { path: str(o, 'path', `${hat}.lastOutput`), at: str(o, 'at', `${hat}.lastOutput`) };
+  }
+  return { status: str(h, 'status', hat), lastRun: optStr(h, 'lastRun', hat), lastOutput };
 }
 
 export function parseDoctor(env: Envelope): DoctorData {
@@ -273,6 +289,7 @@ export function parseDoctor(env: Envelope): DoctorData {
       codex: 'codex' in hooks ? optStr(hooks, 'codex', `${at}.hooks`) : null,
       counts,
     },
+    heartbeat: 'heartbeat' in d && d.heartbeat !== null ? parseHeartbeat(d, at) : undefined,
     update: {
       cached: bool(update, 'cached', `${at}.update`),
       stale: bool(update, 'stale', `${at}.update`),

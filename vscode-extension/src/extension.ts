@@ -61,6 +61,9 @@ const PAYLOAD_DIR = 'payload';
 // 這裡**沒有**任何跟 Codex 信任狀態有關的參數，而且刻意不加：4.10.0 起 doctor 預設就不問
 // （問它要另外叫起一個 codex 子行程，而答案在這個介面裡按不動）。要查的人在終端機加 -CheckHookTrust。
 // hooks.json 在不在照樣會查 —— 那是工具檔缺了，有得修。
+// agent 寫了地圖／分析／現況／審核之後，過多久再健檢一次「hooks 有沒有在跑」。doctor 對兩分鐘內的產出不下結論
+// （hook 是寫完才跑，心跳可能還沒寫），所以要比那兩分鐘久；立刻跑的話永遠落在 pending。
+const HEARTBEAT_RECHECK_MS = 150 * 1000;
 const UPDATE_INTERVAL_MS = 60 * 60 * 1000;   // 只是「問 sdlc.ps1 到期了沒」—— 真的連網與否由 update.check 決定
 
 export interface WriteOptions { apply?: boolean; yes?: boolean; preset?: string; preview?: boolean; quiet?: boolean; root?: string }
@@ -87,6 +90,9 @@ interface RootState {
   running?: Promise<void>;
   again: boolean;
   timer?: NodeJS.Timeout;
+  // agent 寫了產出之後、等 hook 的心跳落地再健檢一次（見 HEARTBEAT_RECHECK_MS）。跟 timer 分開：共用的話，
+  // 這一個兩分半的延後會把其他事件排好的立即健檢一起往後推。
+  heartbeatTimer?: NodeJS.Timeout;
   scanPending: Set<string>;
   scanTimer?: NodeJS.Timeout;
   scanning?: Promise<void>;
@@ -292,11 +298,19 @@ class Cockpit implements vscode.Disposable {
       this.refreshViews();
       this.schedule(s, 800);
     };
+    // agent 的產出（doctor 拿來跟 hook 心跳比的那幾種檔）：只排一次延後的健檢，同一段時間寫再多次也只跑一次。
+    const outputWatcher = vscode.workspace.createFileSystemWatcher('**/bdd-docs/{project-map.md,*/analysis.md,*/current-state.md,*/review.md}');
+    const onOutput = (uri: vscode.Uri) => {
+      const s = this.stateFor(uri);
+      if (!s || s.heartbeatTimer) return;
+      s.heartbeatTimer = setTimeout(() => { s.heartbeatTimer = undefined; this.schedule(s, 0); }, HEARTBEAT_RECHECK_MS);
+    };
     // tune 的提議與 schema 只影響面板與 CodeLens，不必重跑 doctor。
     const viewWatcher = vscode.workspace.createFileSystemWatcher('**/{bdd-docs/.sdlc/tuning-proposal.json,.codex/bdd-workflow/*.schema.json}');
     const onViewFile = () => this.refreshViews();
     this.disposables.push(
       watcher, watcher.onDidChange(onFile), watcher.onDidCreate(onFile), watcher.onDidDelete(onFile),
+      outputWatcher, outputWatcher.onDidChange(onOutput), outputWatcher.onDidCreate(onOutput),
       viewWatcher, viewWatcher.onDidChange(onViewFile), viewWatcher.onDidCreate(onViewFile), viewWatcher.onDidDelete(onViewFile),
     );
 
@@ -319,7 +333,7 @@ class Cockpit implements vscode.Disposable {
 
   dispose(): void {
     if (this.updateTimer) clearInterval(this.updateTimer);
-    for (const s of this.states.values()) { if (s.timer) clearTimeout(s.timer); if (s.scanTimer) clearTimeout(s.scanTimer); }
+    for (const s of this.states.values()) { if (s.timer) clearTimeout(s.timer); if (s.scanTimer) clearTimeout(s.scanTimer); if (s.heartbeatTimer) clearTimeout(s.heartbeatTimer); }
     for (const d of this.disposables) d.dispose();
   }
 

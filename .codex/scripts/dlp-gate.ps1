@@ -1,5 +1,6 @@
 # dlp-gate.ps1
 # PostToolUse 縱深防禦：對寫入 bdd-docs/** 的 artifact 執行殘留掃描。
+# 另外順手兩件不阻斷的事：寫心跳（Write-HookHeartbeat），以及替掃過、乾淨的 review.md 留一份快照（檔尾）。
 #
 # 短路條件：存在 `bdd-docs/.dlp-disabled` 時整條掃描鏈路跳過。
 # 這是**專案層級**的宣告（v4.0.0 起；v3 是 run 層級，而 v4 沒有 run）。
@@ -28,7 +29,7 @@ param(
 # code page 走（zh-TW 是 cp950；並行的 hook 共用同一個 console，偶爾連輸出端也是）。Codex 0.154.0 實測的後果：
 # 一份 743 字、meta 完整的中文 handoff 被解成 1772 字、JSON 解析失敗、抓不到 mode —— **每一次 spawn 都被擋**；
 # 阻斷理由的中文到模型手上是亂碼。只在被重導向時才換：人在終端機跑的時候照 console 的 code page 顯示。
-# 同一段在 handoff-lint／dlp-gate／guideline-gate／build-check／agent-lint／sdlc.ps1 各有一份。
+# 同一段在每一支會被程式呼叫的腳本裡各有一份（清單由 test-hook-payload.ps1 守住）。
 $Utf8NoBom = [Text.UTF8Encoding]::new($false)
 if ([Console]::IsOutputRedirected) { $w = [IO.StreamWriter]::new([Console]::OpenStandardOutput(), $Utf8NoBom); $w.AutoFlush = $true; [Console]::SetOut($w) }
 if ([Console]::IsErrorRedirected)  { $w = [IO.StreamWriter]::new([Console]::OpenStandardError(),  $Utf8NoBom); $w.AutoFlush = $true; [Console]::SetError($w) }
@@ -104,6 +105,21 @@ function Read-HookPayload([string]$raw) {
     return $result
 }
 
+# ---- 心跳：證明 hook 真的有在跑 ----
+# 四支 hook（handoff-lint／dlp-gate／guideline-gate／build-check）各有一份**逐字相同**的副本（test-hook-payload.ps1 守住）。
+# Codex 沒信任 hooks、hooks.json 改過待重審、或叫不起 pwsh 時，這四支一次都不會跑，而且沒有任何提示 ——
+# 看得見那件事的唯一線索是「agent 寫了產出，這裡的檔卻沒跟著變新」。doctor 拿它跟 bdd-docs/ 的產出比（Get-HookHeartbeat）。
+# 只在 hook 在叫（payload 帶 hook_event_name）時寫：手動跑、-Path、-Json 都不算數。
+# 寫不進去就算了 —— 心跳是證據，不是 gate；為了它讓一次寫檔或委派失敗是本末倒置。
+function Write-HookHeartbeat([string]$eventName, [string]$name) {
+    if (-not $eventName) { return }
+    try {
+        $dir = Join-Path (Get-Location).Path 'bdd-docs/.cache/hooks'
+        [void][IO.Directory]::CreateDirectory($dir)
+        [IO.File]::WriteAllText((Join-Path $dir "$name.last"), "$([DateTime]::UtcNow.ToString('o')) $eventName`n", [Text.UTF8Encoding]::new($false))
+    } catch { }
+}
+
 # 一律正規化成「相對 cwd、正斜線」—— hook 的 cwd 就是專案根。
 function ConvertTo-RelPath([string]$p) {
     $n = $p.Trim() -replace '\\', '/'
@@ -134,6 +150,7 @@ if (-not $Path) {
     if (-not $Payload) { $Payload = Read-StdinUtf8 }
     if (-not $Payload) { Write-Result $true $false @() @(); exit 0 }
     $hook = Read-HookPayload $Payload
+    Write-HookHeartbeat $hook.event 'dlp-gate'
     $Path = $hook.paths
 }
 if (-not (Test-Path $ScanScript)) { Write-Result $true $false @() @(); exit 0 }
@@ -171,6 +188,30 @@ foreach ($p in $targets) {
         $cats = @(); $refs = @()
         if ($scan) { $cats = @($scan.categories); $refs = @($scan.line_refs) }
         $findings += [pscustomobject]@{ file = $p; categories = $cats; lines = $refs }
+    }
+}
+
+# ---- 每一輪審核留一份快照 ----
+# reviewer 每一輪都整份覆寫 review.md（修正輪的 implementer 只該看最新那份）。代價是 PASS 之後，前幾輪抓到、
+# 已經修掉的 [必修] 在磁碟上一項都不剩 —— 而「同一類錯一再被抓」只看得到那些（sdlc.ps1 learn 讀這些快照）。
+# 放在這支，是因為它是唯一只看 bdd-docs/ 寫入的 hook；另開一條 hook 每個 patch 多付一次 pwsh 啟動，還要重新信任。
+# 掃出殘留的不留：那一份照 runbook 要刪掉，快照會把它保存下來（DLP 被關掉時上面就 exit 了，理由相同）。
+# 跟最新一份快照逐字相同就不留 —— 一輪審核常是好幾個 patch。只在 hook 在叫時做：手動 -Path 掃不算一輪。
+if ($hook.event) {
+    foreach ($p in $targets) {
+        $m = [regex]::Match($p, '^bdd-docs/([^/.][^/]*)/review\.md$')
+        if (-not $m.Success -or @($findings | Where-Object file -eq $p).Count) { continue }
+        try {
+            $text = [IO.File]::ReadAllText((Join-Path (Get-Location).Path $p))
+            $dir = Join-Path (Get-Location).Path "bdd-docs/$($m.Groups[1].Value)/reviews"
+            $last = @(Get-ChildItem -LiteralPath $dir -Filter '*.md' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTimeUtc, Name | Select-Object -Last 1)
+            if ($last.Count -and [IO.File]::ReadAllText($last[0].FullName) -eq $text) { continue }
+            [void][IO.Directory]::CreateDirectory($dir)
+            $stamp = [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss')
+            $dest = Join-Path $dir "$stamp.md"; $n = 1
+            while (Test-Path -LiteralPath $dest) { $n++; $dest = Join-Path $dir "$stamp-$n.md" }
+            [IO.File]::WriteAllText($dest, $text, [Text.UTF8Encoding]::new($false))
+        } catch { }
     }
 }
 

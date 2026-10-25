@@ -31,7 +31,7 @@
    pwsh .codex/scripts/sdlc.ps1 doctor -CheckHookTrust   # 另行確認 hooks 信任狀態
    ```
 
-   `doctor` 預設不檢查 hooks 信任；全綠不代表已信任。
+   `doctor` 預設不向 Codex 查詢信任狀態，而是比對 hook 心跳與 agent 產出的時間，於產出後無任何 hook 執行時回報問題。尚未於 Codex 中執行過需求的專案無從判斷，故全綠不代表已信任。
 4. **使用**：於專案中啟動 Codex，直接描述需求（例：「我要讓客戶可以取消訂單」）。
 
 安裝後的結構：
@@ -50,14 +50,16 @@
 
 | 步驟 | 內容 | 執行者 | 產出 |
 | --- | --- | --- | --- |
-| ① 需求 | 找出必須由使用者決定的缺口 | orchestrator | `spec.md` |
+| ① 需求 | 找出必須由使用者決定的缺口；需求很空時，先盤點現況並起草主流程供使用者修改；需要其他系統的資料而未說明來源時，先比對 repo 中的來源，比對不到者才詢問 | orchestrator（現況由 `sa-analyst` 盤點） | `spec.md`、`current-state.md` |
 | ② 分析 | 查閱規格、repo、schema，提出 2–4 個做法 | `sa-analyst` | `project-map.md` |
 | ③ 定案 | 選定做法、確認 Gherkin 驗收條件 | 使用者 | `spec.md` |
 | ④ 實作 | test-first 實作至測試通過 | `implementer` | `.feature`、程式碼、測試 |
 | ⑤ 審核 | 於獨立 context 審核，未通過則返回 ④ | `reviewer` | PASS／FAIL |
-| ⑥ 交付 | 回報變更、驗證方式與剩餘風險 | orchestrator | — |
+| ⑥ 交付 | 回報變更、驗證方式與剩餘風險（含僅以替身驗證的外部來源） | orchestrator | — |
 
-- 使用者僅於三處被詢問：① 有缺口時（至多 5 題，均附建議）、③ 定案（必問）、⑥ 涉及既有資料、線上流量或既有 step 措辭時。執行 smoke test、啟動服務或連線外部 DB 前亦會先行確認。
+- 使用者僅於三處被詢問：① 有缺口時（每輪至多 5 題，均附建議；答完若出現新的前置缺口會再問一輪，至多三輪）、③ 定案（必問）、⑥ 涉及既有資料、線上流量或既有 step 措辭時。執行 smoke test、啟動服務或連線外部 DB 前亦會先行確認。
+- 需求只有一句話、連主流程都還沒講時，① 會先請 `sa-analyst` 盤點這塊系統的現況，再起草一份主流程供使用者修改；草稿每一行標明出處（使用者所述、系統現況或假設），只詢問假設與不一致之處，至多三輪。
+- 需求要用到其他系統的資料、但未說明來源時，① 會先請 `sa-analyst` 將每一項資料比對到 repo 中的來源（資料表、欄位、既有的 client、設定 key）；比對不到者一次列出，詢問來源系統、負責人與取得方式。建議將 API 文件或樣本放入 repo，後續的分析、測試替身與審核均以其為準。
 - ② 僅以會編譯、會執行的程式碼為現況；註解掉的程式碼與 TODO 不視為需求。
 - 純技術變更可省略 ①；可由單一 commit 還原且無驗收行為的小改動將直接完成。
 - **缺陷無法重現時**：略過 ①，先建立重現該症狀的失敗測試，並回查原始需求；若行為與原需求一致，改以需求變更處理。
@@ -68,12 +70,14 @@
 | 位置 | 內容 |
 | --- | --- |
 | `bdd-docs/{feature-id}/spec.md` | 需求決議、選定做法、驗收條件 |
+| `bdd-docs/{feature-id}/current-state.md` | 需求很空或資料來源不明時盤點的系統現況（流程、狀態、規則、角色、資料來源） |
 | `bdd-docs/{feature-id}/review.md` | 審核結論與發現 |
+| `bdd-docs/{feature-id}/reviews/` | 各輪審核的快照（由 hook 自動留存），供 `sdlc.ps1 learn` 讀取 |
 | `bdd-docs/{feature-id}/evidence/` | 經核准的 DB 盤點結果（已遮蔽），請勿刪除 |
 | `bdd-docs/{feature-id}/contract/` | 對外 API、事件或 schema 契約 |
 | `bdd-docs/project-map.md` | 系統地圖與領域詞彙 |
 | `bdd-docs/.sdlc/` | 升級基準線與備份，請勿刪除 |
-| `bdd-docs/.cache/` | 索引快取，可隨時刪除 |
+| `bdd-docs/.cache/` | 索引快取與 hook 心跳，可隨時刪除；刪除後至 hook 再次執行前，`doctor` 可能誤報 hooks 未執行 |
 
 - `.feature` 置於單元測試旁（C#：Reqnroll；Java：Cucumber；或沿用既有框架）。首行 `# feature-id:` 請保留。
 - 修改既有 step 措辭屬破壞性變更，交付前會列出新舊對照。
@@ -112,6 +116,7 @@ pwsh .codex/scripts/sdlc.ps1 tune                   # 依 repo 規模提出建�
 - `rules.json`：可機械判定的規則，寫檔後由 `guideline-gate` 掃描；`severity: block` 將阻擋寫入。
 - 驗證規則：`pwsh -NoProfile -File .codex/scripts/guideline-gate.ps1 -Validate`。
 - 暫停檢查：建立 `guidelines/.gate-disabled`（規範）或 `bdd-docs/.dlp-disabled`（DLP）。
+- 由審核歸納規範：`pwsh .codex/scripts/sdlc.ps1 learn` 列出各需求、各輪的審核發現（唯讀）。於 Codex 中要求「把審核一再抓到的問題整理成規範」，會將兩個以上需求共有的問題起草為 `rules.json` 規則或 `*.md` 條文，經使用者確認後寫入。
 
 ## VS Code extension（選用）
 
@@ -121,7 +126,7 @@ pwsh .codex/scripts/sdlc.ps1 tune                   # 依 repo 規模提出建�
 code --install-extension codex-sdlc-{版本}.vsix
 ```
 
-狀態列的綠勾不包含 hooks 信任狀態。
+狀態列的綠勾不代表 hooks 已信任；偵測到 hooks 未執行時，狀態列顯示「hooks 沒在跑」。
 
 ## 升級
 
@@ -130,7 +135,7 @@ code --install-extension codex-sdlc-{版本}.vsix
 
 說明：
 
-- 使用者改過的檔案會先備份至 `bdd-docs/.sdlc/backup-{舊版}/`。`guidelines/` 不變動；`sdlc.config.json` 僅補足新欄位。
+- 使用者改過的檔案會先備份至 `bdd-docs/.sdlc/backup-{舊版}/`。`guidelines/` 不變動；`sdlc.config.json` 僅補足新欄位與空白的 `update.source`。
 - `hooks.json` 變更後須重新信任。`update` 不會重新安裝 extension。
 - 檢查新版：`sdlc.ps1 check-update`；變更內容：`sdlc.ps1 whatsnew` 或 [CHANGELOG.md](CHANGELOG.md)。
 - `update.source` 格式：
@@ -144,6 +149,7 @@ code --install-extension codex-sdlc-{版本}.vsix
 | 現象 | 處理 |
 | --- | --- |
 | 違規內容未被阻擋、亦無訊息 | hooks 未信任；執行 `doctor -CheckHookTrust` 並依提示處理 |
+| `doctor` 回報「hooks 好像沒在跑」，或狀態列顯示「hooks 沒在跑」 | 於專案中啟動 `codex` 並信任 hooks；已信任者，確認 Codex 可執行 `pwsh`。若所列產出檔為手動修改，可忽略 |
 | `doctor` 回報 `.codex/hooks.json` 不存在 | 執行 `update -Target <專案>` 或於面板補回工具檔，再重新信任 |
 | `doctor` 回報缺少 git、JDK、.NET SDK 等 | 依提示安裝；勿為遷就本機修改 `global.json` |
 | 委派被擋：`missing-spec-ref` | 先完成 ③ |

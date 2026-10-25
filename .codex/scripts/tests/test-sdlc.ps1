@@ -1192,6 +1192,37 @@ Describe-Suite 'sdlc / 發佈來源不只 GitHub：Gitea、GitLab（含自架）
         }
     }
 
+    # 發佈物第一次填 source 之前裝的專案，update.source 是空字串。不補 = 那些專案永遠查不到新版。
+    It-Should '升級：空的 update.source 從新發佈物補上；使用者填過的（含認不得的）不動' {
+        foreach ($c in @(
+            @{ old = '';                                 want = 'https://github.com/acme/flow';     filled = $true }
+            @{ old = $null;                              want = 'https://github.com/acme/flow';     filled = $true }    # 連 source 這個 key 都沒有
+            @{ old = 'gitea:https://git.acme.local/a/b'; want = 'gitea:https://git.acme.local/a/b'; filled = $false }
+            @{ old = 'https://git.acme.local/a/b';       want = 'https://git.acme.local/a/b';       filled = $false }   # 認不得的也是使用者的
+        )) {
+            $r1 = New-SdlcRelease 'r-fill1'; $t = New-SdlcTarget 't-fill'
+            try {
+                Invoke-Sdlc install @{ Source = $r1; Target = $t } | Out-Null
+                $p = Join-Path $t 'sdlc.config.json'
+                $cfg = Get-Content $p -Raw -Encoding UTF8 | ConvertFrom-Json
+                if ($null -eq $c.old) { $cfg.update.PSObject.Properties.Remove('source') } else { $cfg.update.source = $c.old }
+                [IO.File]::WriteAllText($p, ($cfg | ConvertTo-Json -Depth 8), $Utf8)
+                $r2 = New-SdlcRelease 'r-fill2' -Version '4.7.0' -SourceUrl 'https://github.com/acme/flow'
+                $j = Invoke-SdlcJson update @{ Source = $r2; Target = $t; Yes = $true }
+                Assert-Equal $c.want (Get-Content $p -Raw -Encoding UTF8 | ConvertFrom-Json).update.source "升級後的 update.source（原本 '$($c.old)'）"
+                Assert-Equal $c.filled ($null -ne $j.data.sourceFilled) "'$($c.old)'：sourceFilled 不對"
+            } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+        # 對照組：新發佈物也沒填 → 照舊是空的，不報補上
+        $r1 = New-SdlcRelease 'r-fill1'; $t = New-SdlcTarget 't-fill'
+        try {
+            Invoke-Sdlc install @{ Source = $r1; Target = $t } | Out-Null
+            $j = Invoke-SdlcJson update @{ Source = (New-SdlcRelease 'r-fill2' -Version '4.7.0'); Target = $t; Yes = $true }
+            Assert-Equal '' (Get-Content (Join-Path $t 'sdlc.config.json') -Raw -Encoding UTF8 | ConvertFrom-Json).update.source
+            Assert-True ($null -eq $j.data.sourceFilled) '新發佈物沒填，卻報了補上'
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
     It-Should '沒標明是哪一家的自架網址 → 認不得，並且講清楚怎麼寫' {
         $t = New-ForgeTarget 'unk' 'https://git.acme.local/team/flow'
         try {
@@ -2278,6 +2309,129 @@ Describe-Suite 'sdlc / 檔不在的時候：哪一個該吵、哪一個給預設
             Assert-Equal 0 $ap.exit "warnings: $($ap.warnings -join ' | ')"
             Assert-True $ap.data.configCreated
             Assert-Equal 'high' (Get-Content (Join-Path $t 'sdlc.config.json') -Raw | ConvertFrom-Json).agents.reviewer.effort
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+Describe-Suite 'sdlc / doctor 從心跳看出 hooks 沒在跑（不叫 codex）' {
+
+    # 信任狀態預設不問（要另外叫起 codex），但「沒在跑」看得到：agent 寫了產出，心跳卻沒跟著變新。
+    # 這一組守的是兩邊的誤判：真的沒在跑卻是綠的（最貴），以及人改了 spec.md、或升級前的舊產出就喊（喊多了沒人看）。
+
+    function Set-Age([string]$file, [int]$minutes) {
+        [IO.File]::SetLastWriteTimeUtc($file, [DateTime]::UtcNow.AddMinutes(-$minutes))
+    }
+    function New-HbTarget([string]$name) {
+        $rel = New-SdlcRelease "r-$name" -WithHooks; $t = New-SdlcTarget "t-$name"
+        Invoke-Sdlc install @{ Source = $rel; Target = $t } | Out-Null
+        Set-Age (Join-Path $t '.codex/hooks.json') 120
+        Set-Age (Join-Path $t 'bdd-docs/.sdlc/installed-manifest.json') 60
+        return $t
+    }
+    function New-HbFile([string]$t, [string]$rel, [int]$minutes) {
+        $f = Join-Path $t $rel
+        New-SdlcFile $f "# $rel`n"
+        if ($minutes) { Set-Age $f $minutes }
+    }
+
+    It-Should 'agent 的產出比心跳新 → silent，doctor 紅並說去哪裡信任' {
+        $t = New-HbTarget 'hb1'
+        try {
+            New-HbFile $t 'bdd-docs/f1/analysis.md' 10
+            New-HbFile $t 'bdd-docs/.cache/hooks/dlp-gate.last' 30
+            $j = Invoke-SdlcJson doctor (Get-IsolatedDoctorParams $t)
+            Assert-Shape $j.data @{ heartbeat = @{ status = 'string'; lastRun = 'any'; since = 'any' } }
+            Assert-Equal 'silent' $j.data.heartbeat.status
+            Assert-Equal 'bdd-docs/f1/analysis.md' $j.data.heartbeat.lastOutput.path
+            Assert-Equal 2 $j.exit 'agent 寫了產出、hook 一次都沒跑，doctor 卻是綠的'
+            Assert-Match 'Trust all' (@($j.warnings) -join "`n") '沒說去哪裡信任'
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '從來沒有心跳、但有產出 → 一樣是 silent' {
+        $t = New-HbTarget 'hb2'
+        try {
+            New-HbFile $t 'bdd-docs/project-map.md' 10
+            $j = Invoke-SdlcJson doctor (Get-IsolatedDoctorParams $t)
+            Assert-Equal 'silent' $j.data.heartbeat.status
+            Assert-Equal $null $j.data.heartbeat.lastRun
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '心跳比產出新 → running，不算問題' {
+        $t = New-HbTarget 'hb3'
+        try {
+            New-HbFile $t 'bdd-docs/f1/review.md' 10
+            New-HbFile $t 'bdd-docs/.cache/hooks/guideline-gate.last' 9
+            $j = Invoke-SdlcJson doctor (Get-IsolatedDoctorParams $t)
+            Assert-Equal 'running' $j.data.heartbeat.status
+            Assert-Equal 0 $j.exit "hooks 有在跑，doctor 卻紅了：$(@($j.warnings) -join ' / ')"
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '產出剛寫（兩分鐘內）→ pending，不下結論（hook 是寫完才跑，背景健檢可能搶在前面）' {
+        $t = New-HbTarget 'hb4'
+        try {
+            New-HbFile $t 'bdd-docs/f1/current-state.md' 0
+            $j = Invoke-SdlcJson doctor (Get-IsolatedDoctorParams $t)
+            Assert-Equal 'pending' $j.data.heartbeat.status
+            Assert-Equal 0 $j.exit
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '升級前的舊產出、人會改的 spec.md 都不算證據 → no-activity' {
+        $t = New-HbTarget 'hb5'
+        try {
+            New-HbFile $t 'bdd-docs/old/analysis.md' 90
+            New-HbFile $t 'bdd-docs/f1/spec.md' 10
+            $j = Invoke-SdlcJson doctor (Get-IsolatedDoctorParams $t)
+            Assert-Equal 'no-activity' $j.data.heartbeat.status '升級前（還沒有心跳的版本）寫的、或人在編輯器裡改的檔，被當成「hooks 沒在跑」的證據'
+            Assert-Equal 0 $j.exit
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+Describe-Suite 'sdlc / learn：把每個需求、每一輪的審核發現收成一份清單（一個字都不寫）' {
+
+    It-Should '讀快照與最新的 review.md，同一需求內去重，數得出幾輪' {
+        $rel = New-SdlcRelease 'r-ln1'; $t = New-SdlcTarget 't-ln1'
+        try {
+            Invoke-Sdlc install @{ Source = $rel; Target = $t } | Out-Null
+            $r1 = "VERDICT: FAIL`n`n## 發現`n1. [必修] src/A.cs:10 —— 斷言只檢查沒有丟例外`n   會怎麼壞：刪掉實作測試照樣綠`n2. [必修] src/B.cs:3 —— 空的 catch`n"
+            $r2 = "VERDICT: FAIL`n`n## 發現`n1. [必修] src/A.cs:12 —— 斷言只檢查沒有丟例外`n   會怎麼壞：刪掉實作測試照樣綠`n"
+            New-SdlcFile (Join-Path $t 'bdd-docs/f1/reviews/20261001-010000.md') $r1
+            [IO.File]::SetLastWriteTimeUtc((Join-Path $t 'bdd-docs/f1/reviews/20261001-010000.md'), [DateTime]::UtcNow.AddMinutes(-20))
+            New-SdlcFile (Join-Path $t 'bdd-docs/f1/reviews/20261001-020000.md') $r2
+            New-SdlcFile (Join-Path $t 'bdd-docs/f1/review.md') "VERDICT: PASS`n`n## 發現`n1. [建議] src/A.cs:20 —— 命名跟地圖分岔`n"
+            New-SdlcFile (Join-Path $t 'bdd-docs/f2/review.md') "VERDICT: FAIL`n`n## 發現`n1. [必修] ``src/C.cs:7`` —— 斷言只檢查沒有丟例外`n"
+            New-SdlcFile (Join-Path $t 'bdd-docs/.cache/review.md') "1. [必修] x —— 不該被讀`n"
+            $j = Invoke-SdlcJson learn @{ Target = $t }
+            Assert-Equal 0 $j.exit
+            Assert-Shape $j.data.learn @{ features = 'array'; findings = 'array'; counts = @{ features = 'int'; snapshots = 'int'; findings = 'int'; must = 'int' }; guidelines = @{ files = 'array'; ruleIds = 'array' } }
+            Assert-Equal 2 $j.data.learn.counts.features '. 開頭的目錄（.cache、.sdlc）被當成需求'
+            Assert-Equal 2 $j.data.learn.counts.snapshots
+            Assert-Equal 4 $j.data.learn.counts.findings '同一需求裡同檔同問題（行號不同）沒去重，或前幾輪的必修沒讀到'
+            Assert-Equal 3 $j.data.learn.counts.must
+            $a = @($j.data.learn.findings | Where-Object { $_.feature -eq 'f1' -and $_.file -eq 'src/A.cs' -and $_.severity -eq '必修' })
+            Assert-Equal 1 $a.Count
+            Assert-Equal 2 $a[0].rounds '兩輪都被抓的那一項沒數成 2 輪'
+            Assert-Equal '刪掉實作測試照樣綠' $a[0].failure
+            Assert-Equal 'src/C.cs' (@($j.data.learn.findings | Where-Object feature -eq 'f2'))[0].file '包在反引號裡的位置沒剝乾淨'
+            Assert-Equal 0 (@($j.data.learn.features | Where-Object id -eq 'f2'))[0].snapshots
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '沒有審核紀錄 → 說一句、exit 0，而且一個檔都不寫；沒裝工作流 → exit 2' {
+        $rel = New-SdlcRelease 'r-ln2'; $t = New-SdlcTarget 't-ln2'; $empty = New-SdlcTarget 't-ln2-empty'
+        try {
+            Invoke-Sdlc install @{ Source = $rel; Target = $t } | Out-Null
+            $before = @(Get-ChildItem $t -Recurse -File | ForEach-Object { "$($_.FullName)|$($_.LastWriteTimeUtc.Ticks)" }) -join "`n"
+            $j = Invoke-SdlcJson learn @{ Target = $t }
+            Assert-Equal 0 $j.exit
+            Assert-Equal 0 $j.data.learn.counts.features
+            $after = @(Get-ChildItem $t -Recurse -File | ForEach-Object { "$($_.FullName)|$($_.LastWriteTimeUtc.Ticks)" }) -join "`n"
+            Assert-Equal $before $after 'learn 寫了東西 —— 規範是團隊的，寫進去要他點頭'
+            Assert-Equal 2 (Invoke-SdlcJson learn @{ Target = $empty }).exit
         } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
     }
 }

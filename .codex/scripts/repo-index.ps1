@@ -32,6 +32,21 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+# ---- 標準 I/O：被程式呼叫時一律 UTF-8 ----
+# Codex 送進來的 payload 是 UTF-8、也用 UTF-8 解讀 hook 的輸出；Windows 上 [Console] 的編碼卻跟著 console 的
+# code page 走（zh-TW 是 cp950；並行的 hook 共用同一個 console，偶爾連輸出端也是）。Codex 0.154.0 實測的後果：
+# 一份 743 字、meta 完整的中文 handoff 被解成 1772 字、JSON 解析失敗、抓不到 mode —— **每一次 spawn 都被擋**；
+# 阻斷理由的中文到模型手上是亂碼。只在被重導向時才換：人在終端機跑的時候照 console 的 code page 顯示。
+# 同一段在每一支會被程式呼叫的腳本裡各有一份（清單由 test-hook-payload.ps1 守住）。
+$Utf8NoBom = [Text.UTF8Encoding]::new($false)
+if ([Console]::IsOutputRedirected) { $w = [IO.StreamWriter]::new([Console]::OpenStandardOutput(), $Utf8NoBom); $w.AutoFlush = $true; [Console]::SetOut($w) }
+if ([Console]::IsErrorRedirected)  { $w = [IO.StreamWriter]::new([Console]::OpenStandardError(),  $Utf8NoBom); $w.AutoFlush = $true; [Console]::SetError($w) }
+function Read-StdinUtf8 {
+    if ([Console]::IsInputRedirected) { return [IO.StreamReader]::new([Console]::OpenStandardInput(), $Utf8NoBom).ReadToEnd() }
+    return [Console]::In.ReadToEnd()
+}
+
 . (Join-Path $PSScriptRoot 'lib/source-files.ps1')
 . (Join-Path $PSScriptRoot 'lib/map-status.ps1')
 # lib/active-code.ps1（剝註解）只有真的要讀原始碼時才載入 —— -StatusOnly 用不到，而光是載入它就要兩三百毫秒。

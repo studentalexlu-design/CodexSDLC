@@ -161,6 +161,16 @@ function parseLint(o, at) {
         }),
     };
 }
+function parseHeartbeat(d, at) {
+    const h = obj(d, 'heartbeat', at);
+    const hat = `${at}.heartbeat`;
+    let lastOutput = null;
+    if ('lastOutput' in h && h.lastOutput !== null) {
+        const o = obj(h, 'lastOutput', hat);
+        lastOutput = { path: str(o, 'path', `${hat}.lastOutput`), at: str(o, 'at', `${hat}.lastOutput`) };
+    }
+    return { status: str(h, 'status', hat), lastRun: optStr(h, 'lastRun', hat), lastOutput };
+}
 function parseDoctor(env) {
     const d = env.data;
     const at = '$.data';
@@ -206,6 +216,7 @@ function parseDoctor(env) {
             codex: 'codex' in hooks ? optStr(hooks, 'codex', `${at}.hooks`) : null,
             counts,
         },
+        heartbeat: 'heartbeat' in d && d.heartbeat !== null ? parseHeartbeat(d, at) : undefined,
         update: {
             cached: bool(update, 'cached', `${at}.update`),
             stale: bool(update, 'stale', `${at}.update`),

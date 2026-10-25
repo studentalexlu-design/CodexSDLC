@@ -26,6 +26,13 @@ export interface StatusView {
 
 const rank: Record<Level, number> = { ok: 0, warn: 1, error: 2 };
 
+function localTime(iso: string): string {
+  const t = new Date(iso);
+  if (Number.isNaN(t.getTime())) return iso;
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${t.getFullYear()}-${p(t.getMonth() + 1)}-${p(t.getDate())} ${p(t.getHours())}:${p(t.getMinutes())}`;
+}
+
 // 環境：只有 doctor 算成問題的那三種上狀態列。名稱、會壞在哪、怎麼補都由 doctor 給 —— 這裡不自己維護一份工具清單。
 // unknown（查不到）與 not-applicable（這個專案用不到）只進 tooltip：理由同 doctor，查不到不等於有問題，但要講。
 function envProblem(e: EnvironmentItem): { badge: string; what: string } | undefined {
@@ -49,6 +56,17 @@ export function issuesFromDoctor(d: DoctorData): Issue[] {
       badge: '$(shield) 沒有 hooks.json',
       detail: '.codex/hooks.json 不在 —— 機械強制層整層不存在：寫檔與委派完全沒有人擋，而且 Codex 不會提示。用發佈物把工具檔補回來。',
       fix: { contextValue: 'toolFilesMissing', command: { command: 'codexSdlc.repair', title: '補回工具檔' } },
+    });
+  }
+
+  // 4.19.0 起：信任狀態問不到，但「沒在跑」看得到 —— agent 寫了產出，之後沒有任何一支 hook 跑（心跳沒變新）。
+  // 跟 no-hooks 同一個嚴重度：那段時間寫檔與委派沒有人擋，而且 Codex 不會提示。修法只能在 Codex 裡按，所以沒有按鈕。
+  if (d.heartbeat?.status === 'silent' && d.heartbeat.lastOutput) {
+    const last = d.heartbeat.lastRun ? `最後一次是 ${localTime(d.heartbeat.lastRun)}` : '一次都沒有';
+    issues.push({
+      level: 'error',
+      badge: '$(shield) hooks 沒在跑',
+      detail: `${d.heartbeat.lastOutput.path} 在 ${localTime(d.heartbeat.lastOutput.at)} 被 agent 寫過，之後沒有任何一支 hook 跑（${last}）—— 寫檔與委派沒有人擋。多半是 Codex 還沒信任 hooks：在專案裡開 codex，出現「Hooks need review」時選 Trust all and continue（要確認就在終端機跑 doctor -CheckHookTrust）。那個檔若是你手動改的，可以忽略。`,
     });
   }
 

@@ -31,7 +31,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('install', 'update', 'check-update', 'apply', 'set', 'tune', 'doctor', 'whatsnew', 'fetch', 'models')]
+    [ValidateSet('install', 'update', 'check-update', 'apply', 'set', 'tune', 'doctor', 'whatsnew', 'fetch', 'models', 'learn')]
     [string]$Command = 'doctor',
 
     [string]$Source,                       # 發佈物根目錄；預設 = 本腳本所在的工作流根
@@ -68,7 +68,7 @@ $ErrorActionPreference = 'Stop'
 # code page 走（zh-TW 是 cp950；並行的 hook 共用同一個 console，偶爾連輸出端也是）。Codex 0.154.0 實測的後果：
 # 一份 743 字、meta 完整的中文 handoff 被解成 1772 字、JSON 解析失敗、抓不到 mode —— **每一次 spawn 都被擋**；
 # 阻斷理由的中文到模型手上是亂碼。只在被重導向時才換：人在終端機跑的時候照 console 的 code page 顯示。
-# 同一段在 handoff-lint／dlp-gate／guideline-gate／build-check／agent-lint／sdlc.ps1 各有一份。
+# 同一段在每一支會被程式呼叫的腳本裡各有一份（清單由 test-hook-payload.ps1 守住）。
 $Utf8NoBom = [Text.UTF8Encoding]::new($false)
 if ([Console]::IsOutputRedirected) { $w = [IO.StreamWriter]::new([Console]::OpenStandardOutput(), $Utf8NoBom); $w.AutoFlush = $true; [Console]::SetOut($w) }
 if ([Console]::IsErrorRedirected)  { $w = [IO.StreamWriter]::new([Console]::OpenStandardError(),  $Utf8NoBom); $w.AutoFlush = $true; [Console]::SetError($w) }
@@ -89,6 +89,7 @@ $StateDir    = 'bdd-docs/.sdlc'
 $BaselineRel = "$StateDir/installed-manifest.json"
 $CacheRel    = "$StateDir/update-cache.json"
 $ProposalRel = "$StateDir/tuning-proposal.json"
+$HeartbeatRel = 'bdd-docs/.cache/hooks'                     # 四支 hook 的 Write-HookHeartbeat 寫的地方
 
 $TuneBegin   = '# SDLC-TUNING:BEGIN'
 $TuneEnd     = '# SDLC-TUNING:END'
@@ -695,6 +696,84 @@ function Show-HookTrust($trust) {
         # 而且新寫出來的檔還要使用者去 Codex 重新信任 —— 靜默產生只會讓人以為已經在擋了。
         'no-hooks' {
             Warn "$HooksRel 不在 —— 機械強制層整層不存在：handoff-lint／dlp-gate／guideline-gate／build-check 一支都不會跑，寫檔與委派完全沒有人擋，而且 Codex 不會提示。把發佈物解壓到別處，跑 update -Target <這個專案> 把工具檔補回來（或重跑一次 install）。"
+            return 1
+        }
+        default { return 0 }
+    }
+}
+
+# ---- hooks 有沒有真的在跑：心跳 vs. agent 的產出 ----
+#
+# 信任狀態只有 Codex 知道，問它要另外叫起一個 codex（最久 15 秒），所以 doctor 預設不問。但「沒在跑」看得到痕跡：
+# agent 每寫一次檔，PostToolUse 的三支 gate 就會各寫一次心跳（Write-HookHeartbeat）。agent 的產出比最新的心跳還新 →
+# 那幾次寫檔沒有任何一支 hook 跑 —— 沒信任、hooks.json 改過待重審、叫不起 pwsh，症狀都是這一個，而且都沒有提示。
+# 不叫子行程、只讀檔的修改時間，所以 VS Code 的背景健檢也付得起。
+#
+# 只拿 agent 才會寫的檔當證據（地圖、分析、現況、審核、DB 證據、契約）：spec.md 會被人在編輯器裡改，
+# 拿它當證據，人改一次就喊一次「hooks 沒在跑」。起點是最後一次裝／升級（基準線）或 hooks.json 被換掉的時間 ——
+# 更早的產出是舊版（還沒有心跳）寫的，不算數；而 hooks.json 一換，Codex 就要重新信任，正是要盯的那一刻。
+# 剛寫的兩分鐘內不下結論：hook 是寫完才跑，背景健檢可能搶在心跳之前讀。
+$HeartbeatGraceSec = 120
+
+function Get-HookHeartbeat([string]$target) {
+    $root = (Resolve-Path $target).Path
+    $none = [ordered]@{ status = 'no-hooks'; lastRun = $null; lastOutput = $null; since = $null }
+    $hooksFile = Join-Path $root $HooksRel
+    if (-not (Test-Path $hooksFile)) { return $none }
+
+    $since = [IO.File]::GetLastWriteTimeUtc($hooksFile)
+    $baseFile = Join-Path $root $BaselineRel
+    if (Test-Path $baseFile) { $b = [IO.File]::GetLastWriteTimeUtc($baseFile); if ($b -gt $since) { $since = $b } }
+
+    $beat = @(Get-ChildItem (Join-Path $root $HeartbeatRel) -Filter '*.last' -File -ErrorAction SilentlyContinue |
+              Sort-Object LastWriteTimeUtc | Select-Object -Last 1)
+    $lastRun = if ($beat.Count) { $beat[0].LastWriteTimeUtc } else { $null }
+
+    $docs = Join-Path $root 'bdd-docs'
+    $evidence = @()
+    if (Test-Path (Join-Path $docs 'project-map.md')) { $evidence += Get-Item (Join-Path $docs 'project-map.md') }
+    foreach ($f in @(Get-ChildItem $docs -Directory -ErrorAction SilentlyContinue | Where-Object { -not $_.Name.StartsWith('.') })) {
+        $evidence += @(Get-ChildItem $f.FullName -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -in @('analysis.md', 'current-state.md', 'review.md') })
+        foreach ($sub in @('evidence', 'contract')) {
+            $evidence += @(Get-ChildItem (Join-Path $f.FullName $sub) -File -Recurse -ErrorAction SilentlyContinue)
+        }
+    }
+    $newest = @($evidence | Where-Object { $_.LastWriteTimeUtc -gt $since } | Sort-Object LastWriteTimeUtc | Select-Object -Last 1)
+
+    $out = [ordered]@{
+        status     = 'no-activity'
+        lastRun    = $(if ($lastRun) { $lastRun.ToString('o') } else { $null })
+        lastOutput = $null
+        since      = $since.ToString('o')
+    }
+    if (-not $newest.Count) { return $out }
+    $w = $newest[0]
+    $out.lastOutput = [ordered]@{ path = (ConvertTo-Rel $root $w.FullName); at = $w.LastWriteTimeUtc.ToString('o') }
+    # 2 秒的餘裕：檔案系統的時間精度，加上 Bash 寫檔時「寫完」與「hook 開始」幾乎同時。
+    if ($lastRun -and $lastRun -ge $w.LastWriteTimeUtc.AddSeconds(-2)) { $out.status = 'running' }
+    elseif (([DateTime]::UtcNow - $w.LastWriteTimeUtc).TotalSeconds -lt $HeartbeatGraceSec) { $out.status = 'pending' }
+    else { $out.status = 'silent' }
+    return $out
+}
+
+function Show-HookHeartbeat($hb) {
+    $fmt = { param($iso) ([DateTime]::Parse($iso, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind)).ToLocalTime().ToString('yyyy-MM-dd HH:mm') }
+    switch ($hb.status) {
+        'running' {
+            Say "hooks 有在跑：最近一次 $(& $fmt $hb.lastRun)，agent 之後寫的產出都有 hook 跟著跑。"
+            return 0
+        }
+        'pending' {
+            Say "hooks 有沒有在跑：$($hb.lastOutput.path) 剛被寫過，hook 可能還在跑 —— 過兩分鐘再跑一次 doctor 才判得準。"
+            return 0
+        }
+        'no-activity' {
+            Say 'hooks 有沒有在跑：裝好（或 hooks.json 換過）之後 agent 還沒寫過產出，判不出來 —— 在 Codex 裡跑過一個需求之後，doctor 就看得出來。'
+            return 0
+        }
+        'silent' {
+            $last = if ($hb.lastRun) { "最後一次是 $(& $fmt $hb.lastRun)" } else { '一次都沒有' }
+            Warn "hooks 好像沒在跑：$($hb.lastOutput.path) 在 $(& $fmt $hb.lastOutput.at) 被 agent 寫過，但之後沒有任何一支 hook 跑（$last）—— 那段時間寫檔與委派沒有人擋。最常見的原因是 Codex 還沒信任 hooks（或 hooks.json 換過、待重新審核）：在專案裡開 codex，出現「Hooks need review」時選 Trust all and continue。其次是 Codex 叫不起 pwsh。要確認信任狀態：doctor -CheckHookTrust。那個檔如果是你自己手動改的，可以忽略這一條。"
             return 1
         }
         default { return 0 }
@@ -1881,6 +1960,20 @@ function Invoke-Update {
         $cfg.update.source = "https://github.com/$($Matches[1])/$($Matches[2])"
         $script:Data.sourceMigrated = [ordered]@{ from = $oldSrc; to = $cfg.update.source }
     }
+    # 空的才補：發佈物還沒填 source 時裝的專案，update.source 是空字串 —— 之後發佈物填好了，不補的話那些專案
+    # 永遠查不到新版（症狀是零）。使用者自己填過的（包括認不得的）一個字不動。
+    $script:Data.sourceFilled = $null
+    $relSrc = if ($srcVer.raw -and $srcVer.raw.PSObject.Properties['source']) { ([string]$srcVer.raw.source).Trim() } else { '' }
+    if (-not $oldSrc -and $relSrc -and (Get-ReleaseRepo $relSrc)) {
+        if (-not $cfg.PSObject.Properties['update']) {
+            $cfg | Add-Member -NotePropertyName 'update' -NotePropertyValue ([pscustomobject]@{ source = $relSrc; check = 'daily' })
+        } elseif (-not $cfg.update.PSObject.Properties['source']) {
+            $cfg.update | Add-Member -NotePropertyName 'source' -NotePropertyValue $relSrc
+        } else {
+            $cfg.update.source = $relSrc
+        }
+        $script:Data.sourceFilled = $relSrc
+    }
     # 下面整份改寫會把註解吃掉 —— 先備份原檔，再說一聲。
     $script:Data.configCommentsBackup = $null
     if (Test-JsonHasComments ([IO.File]::ReadAllText($cfgPath))) {
@@ -1896,6 +1989,7 @@ function Invoke-Update {
     if ($script:Data.reviewAdded) { Say "$ConfigFile：新增 review.maxRounds = $DefaultReviewRounds（⑤ 的修正輪上限，跟以前寫死的一樣；可改成 1–5）。" }
     if ($script:Data.schemaAdded) { Say "$ConfigFile：加上 `$schema —— 在編輯器裡改這個檔會有補全與錯字提示。" }
     if ($script:Data.sourceMigrated) { Say "$ConfigFile：update.source 換成 $($cfg.update.source)（原本的 $oldSrc 這一版起認不得）。" }
+    elseif ($script:Data.sourceFilled) { Say "$ConfigFile：update.source 原本是空的，補上 $($script:Data.sourceFilled) —— 從此查得到新版。" }
     elseif ($oldSrc -and -not (Get-ReleaseRepo $oldSrc)) { Warn "update.source 認不得（$oldSrc）—— 更新通知查不到。$ReleaseSourceHint：pwsh .codex/scripts/sdlc.ps1 set update.source=<網址>" }
 
     $bl = [ordered]@{}
@@ -2621,6 +2715,9 @@ function Invoke-Doctor {
     $trust = Get-HookTrust $Target
     $script:Data.hooks = $trust
     $problems += (Show-HookTrust $trust)
+    $heartbeat = Get-HookHeartbeat $Target
+    $script:Data.heartbeat = $heartbeat
+    $problems += (Show-HookHeartbeat $heartbeat)
 
     $envItems = @(Get-EnvironmentReport $Target)
     $script:Data.environment = @($envItems)
@@ -2715,6 +2812,92 @@ function Invoke-Models {
     return $(if ($problems -gt 0) { 2 } else { 0 })
 }
 
+# ---- learn：審核一再抓到的問題，收成一份清單 ----
+#
+# ⑤ 抓到的錯只會讓**這一個**需求多跑一輪修正；下一個需求，implementer 還是可能犯同一個。同一類錯在不同需求裡
+# 被抓第二次，就該往前移：能機械判定的進 guidelines/rules.json（寫檔當下 guideline-gate 就擋），要判斷的進
+# guidelines/*.md 的 MUST（implementer 動手前就讀到）。這裡只做機械的那一半 —— 把每個需求、每一輪的發現讀出來、
+# 同一需求內去重；「哪幾項是同一類、該寫成什麼規則」要讀懂問題才分得出來，交給 skill `review-learning`。
+# **一個字都不寫**：規範是團隊的，寫進去要他點頭。
+#
+# 來源：bdd-docs/{feature-id}/reviews/*.md（dlp-gate 替每一輪留的快照，4.19.0 起）＋ 最新的 review.md。
+# 更早的需求只剩最後一輪 —— PASS 那一輪通常只有 [建議]，已經修掉的 [必修] 看不到。
+function Read-ReviewFindings([string]$file) {
+    $lines = [IO.File]::ReadAllLines($file)
+    $out = @()
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        $m = [regex]::Match($lines[$i], '^\s*\d+\.\s*\[(必修|建議)\]\s*(.+?)\s+——\s+(.+?)\s*$')
+        if (-not $m.Success) { continue }
+        $loc = $m.Groups[2].Value.Trim().Trim('`', '{', '}')
+        $failure = $null
+        if ($i + 1 -lt $lines.Count) {
+            $f = [regex]::Match($lines[$i + 1], '^\s+會怎麼壞[:：]\s*(.+?)\s*$')
+            if ($f.Success) { $failure = $f.Groups[1].Value }
+        }
+        $out += [pscustomobject]@{
+            severity = $m.Groups[1].Value
+            location = $loc
+            file     = ($loc -replace '(:\d+(-\d+)?)+$', '')
+            problem  = $m.Groups[3].Value
+            failure  = $failure
+        }
+    }
+    return $out
+}
+
+function Invoke-Learn {
+    if (-not (Get-ContractVersion $Target)) { Warn "$VersionRel 不存在或解析不了。"; $script:Data.error = 'not-installed'; return 2 }
+    $root = (Resolve-Path $Target).Path
+    $docs = Join-Path $root 'bdd-docs'
+    $features = @(); $all = @(); $snapshots = 0
+    foreach ($d in @(Get-ChildItem $docs -Directory -ErrorAction SilentlyContinue | Where-Object { -not $_.Name.StartsWith('.') } | Sort-Object Name)) {
+        $snaps = @(Get-ChildItem (Join-Path $d.FullName 'reviews') -Filter '*.md' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTimeUtc, Name)
+        $sources = @($snaps | ForEach-Object { $_.FullName })
+        $latest = Join-Path $d.FullName 'review.md'
+        # 最新那份通常就是最後一個快照；內容一樣就不重讀。
+        if ((Test-Path $latest) -and -not ($snaps.Count -and [IO.File]::ReadAllText($latest) -eq [IO.File]::ReadAllText($snaps[-1].FullName))) { $sources += $latest }
+        if (-not $sources.Count) { continue }
+        $snapshots += $snaps.Count
+        $seen = [ordered]@{}
+        foreach ($s in $sources) {
+            foreach ($f in @(Read-ReviewFindings $s)) {
+                $key = "$($f.severity)|$($f.file)|$(($f.problem -replace '\s+', ' ').Trim())"
+                if ($seen.Contains($key)) { $seen[$key].rounds++; continue }
+                $seen[$key] = [ordered]@{ feature = $d.Name; severity = $f.severity; location = $f.location; file = $f.file; problem = $f.problem; failure = $f.failure; rounds = 1 }
+            }
+        }
+        $items = @($seen.Values)
+        $features += [ordered]@{ id = $d.Name; rounds = $sources.Count; snapshots = $snaps.Count; findings = $items.Count }
+        $all += $items
+    }
+
+    $glDir = Join-Path $root 'guidelines'
+    $glFiles = @(Get-ChildItem $glDir -Filter '*.md' -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne 'README.md' } | ForEach-Object { $_.Name } | Sort-Object)
+    $ruleIds = @()
+    $rules = Read-JsonFile (Join-Path $glDir 'rules.json')
+    if ($rules -and $rules.PSObject.Properties['rules']) { $ruleIds = @($rules.rules | ForEach-Object { [string]$_.id } | Where-Object { $_ }) }
+
+    $must = @($all | Where-Object { $_.severity -eq '必修' })
+    $script:Data.learn = [ordered]@{
+        features   = @($features)
+        findings   = @($all)
+        counts     = [ordered]@{ features = $features.Count; snapshots = $snapshots; findings = $all.Count; must = $must.Count }
+        guidelines = [ordered]@{ files = @($glFiles); ruleIds = @($ruleIds) }
+    }
+
+    if (-not $features.Count) {
+        Say 'bdd-docs/ 底下還沒有任何審核紀錄（review.md）—— 跑過幾個需求再來。'
+        return 0
+    }
+    Say "讀了 $($features.Count) 個需求的審核紀錄（$snapshots 份每輪快照）：$($all.Count) 項發現，其中 [必修] $($must.Count) 項。"
+    $noSnap = @($features | Where-Object { $_.snapshots -eq 0 } | ForEach-Object { $_.id })
+    if ($noSnap.Count) { Say "  沒有每輪快照、只看得到最後一輪的：$($noSnap -join '、')（4.19.0 以前跑的；已經修掉的 [必修] 看不到）" }
+    foreach ($f in @($must | Select-Object -First 20)) { Say "  [必修] $($f.feature)　$($f.location) —— $($f.problem)" }
+    if ($must.Count -gt 20) { Say "  ……另外 $($must.Count - 20) 項（-Json 看全部）" }
+    Say '要把一再出現的那幾類寫成規範：在 Codex 裡說「把審核一再抓到的問題整理成規範」—— 它照 skill review-learning 歸類、起草，等你確認才寫進 guidelines/。'
+    return 0
+}
+
 # ---- 派送 ----
 $code = switch ($Command) {
     'install'      { Invoke-Install }
@@ -2727,6 +2910,7 @@ $code = switch ($Command) {
     'tune'         { Invoke-Tune }
     'doctor'       { Invoke-Doctor }
     'models'       { Invoke-Models }
+    'learn'        { Invoke-Learn }
 }
 
 if ($Json) {

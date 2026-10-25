@@ -180,3 +180,24 @@ test('4.14 以前的 doctor 沒有 models 段 → 照舊顯示，不算合約壞
   assert.equal(s.level, 'ok');
   assert.ok(!s.tooltip.some((l) => l.startsWith('model／effort')));
 });
+
+// 4.19.0：doctor 從心跳看出 hooks 沒在跑。只有 silent 上狀態列；running／pending／no-activity 都不是使用者要處理的事，
+// 舊的 doctor 沒有這一段也不能炸。
+test('agent 寫了產出、之後沒有 hook 跑（heartbeat silent）→ 錯誤等級，說得出是哪個檔', () => {
+  const v = statusFromDoctor(doctor((d) => {
+    d.heartbeat = { status: 'silent', lastRun: null, lastOutput: { path: 'bdd-docs/f1/analysis.md', at: '2026-09-13T07:00:00Z' }, since: '2026-09-13T06:00:00Z' };
+    d.problems = 1;
+  }), now);
+  assert.equal(v.level, 'error');
+  assert.match(v.text, /hooks 沒在跑/);
+  assert.ok(v.issues.some((i) => i.detail.includes('bdd-docs/f1/analysis.md') && i.detail.includes('Trust all')), '沒說是哪個檔、去哪裡信任');
+});
+
+test('heartbeat 是 running／pending／no-activity，或舊 doctor 沒有這一段 → 不報', () => {
+  for (const status of ['running', 'pending', 'no-activity', 'no-hooks']) {
+    const v = statusFromDoctor(doctor((d) => { d.heartbeat = { status, lastRun: null, lastOutput: null, since: '2026-09-13T06:00:00Z' }; }), now);
+    assert.equal(v.level, 'ok', `${status} 不該讓狀態列變色`);
+  }
+  const old = statusFromDoctor(doctor((d) => { delete d.heartbeat; }), now);
+  assert.equal(old.level, 'ok');
+});

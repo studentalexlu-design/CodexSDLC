@@ -37,13 +37,28 @@ param(
 # code page 走（zh-TW 是 cp950；並行的 hook 共用同一個 console，偶爾連輸出端也是）。Codex 0.154.0 實測的後果：
 # 一份 743 字、meta 完整的中文 handoff 被解成 1772 字、JSON 解析失敗、抓不到 mode —— **每一次 spawn 都被擋**；
 # 阻斷理由的中文到模型手上是亂碼。只在被重導向時才換：人在終端機跑的時候照 console 的 code page 顯示。
-# 同一段在 handoff-lint／dlp-gate／guideline-gate／build-check／agent-lint／sdlc.ps1 各有一份。
+# 同一段在每一支會被程式呼叫的腳本裡各有一份（清單由 test-hook-payload.ps1 守住）。
 $Utf8NoBom = [Text.UTF8Encoding]::new($false)
 if ([Console]::IsOutputRedirected) { $w = [IO.StreamWriter]::new([Console]::OpenStandardOutput(), $Utf8NoBom); $w.AutoFlush = $true; [Console]::SetOut($w) }
 if ([Console]::IsErrorRedirected)  { $w = [IO.StreamWriter]::new([Console]::OpenStandardError(),  $Utf8NoBom); $w.AutoFlush = $true; [Console]::SetError($w) }
 function Read-StdinUtf8 {
     if ([Console]::IsInputRedirected) { return [IO.StreamReader]::new([Console]::OpenStandardInput(), $Utf8NoBom).ReadToEnd() }
     return [Console]::In.ReadToEnd()
+}
+
+# ---- 心跳：證明 hook 真的有在跑 ----
+# 四支 hook（handoff-lint／dlp-gate／guideline-gate／build-check）各有一份**逐字相同**的副本（test-hook-payload.ps1 守住）。
+# Codex 沒信任 hooks、hooks.json 改過待重審、或叫不起 pwsh 時，這四支一次都不會跑，而且沒有任何提示 ——
+# 看得見那件事的唯一線索是「agent 寫了產出，這裡的檔卻沒跟著變新」。doctor 拿它跟 bdd-docs/ 的產出比（Get-HookHeartbeat）。
+# 只在 hook 在叫（payload 帶 hook_event_name）時寫：手動跑、-Path、-Json 都不算數。
+# 寫不進去就算了 —— 心跳是證據，不是 gate；為了它讓一次寫檔或委派失敗是本末倒置。
+function Write-HookHeartbeat([string]$eventName, [string]$name) {
+    if (-not $eventName) { return }
+    try {
+        $dir = Join-Path (Get-Location).Path 'bdd-docs/.cache/hooks'
+        [void][IO.Directory]::CreateDirectory($dir)
+        [IO.File]::WriteAllText((Join-Path $dir "$name.last"), "$([DateTime]::UtcNow.ToString('o')) $eventName`n", [Text.UTF8Encoding]::new($false))
+    } catch { }
 }
 
 if (-not $Payload) { $Payload = Read-StdinUtf8 }
@@ -59,6 +74,7 @@ try {
     if ($doc -is [pscustomobject] -and $doc.PSObject.Properties['hook_event_name']) { $hookEvent = [string]$doc.hook_event_name }
     if ($doc -is [pscustomobject] -and $doc.PSObject.Properties['tool_name']) { $toolName = [string]$doc.tool_name }
 } catch { }
+Write-HookHeartbeat $hookEvent 'handoff-lint'
 $isSendInput = $toolName -match 'send_input'
 $verb = if ($isSendInput) { 'send_input' } else { 'spawn' }
 

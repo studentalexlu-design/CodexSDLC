@@ -32,6 +32,20 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# ---- 標準 I/O：被程式呼叫時一律 UTF-8 ----
+# 這支自己也是被程式呼叫的：協調者用 UTF-8 讀每個 worker 的 stdout（suite 名稱、結果 JSON）。worker 沿用 console 的
+# code page（zh-TW 是 cp950）寫出去的話，中文 suite 名稱到協調者手上是亂碼 —— 對帳時每一個都「沒被切出來」，
+# 結果 JSON 還常常解析不了（亂碼吃掉了跳脫字元）。4.19.0 在一台 cp950 的機器上實測：458 條裡約 90 條假失敗，
+# 而 pack 會因為它們拒絕出貨。只在被重導向時才換：人在終端機跑的時候照 console 的 code page 顯示。
+# 同一段在每一支會被程式呼叫的腳本裡各有一份（清單由 test-hook-payload.ps1 守住）。
+$Utf8NoBom = [Text.UTF8Encoding]::new($false)
+if ([Console]::IsOutputRedirected) { $w = [IO.StreamWriter]::new([Console]::OpenStandardOutput(), $Utf8NoBom); $w.AutoFlush = $true; [Console]::SetOut($w) }
+if ([Console]::IsErrorRedirected)  { $w = [IO.StreamWriter]::new([Console]::OpenStandardError(),  $Utf8NoBom); $w.AutoFlush = $true; [Console]::SetError($w) }
+function Read-StdinUtf8 {
+    if ([Console]::IsInputRedirected) { return [IO.StreamReader]::new([Console]::OpenStandardInput(), $Utf8NoBom).ReadToEnd() }
+    return [Console]::In.ReadToEnd()
+}
+
 # 一律以 repo root 為工作目錄執行（腳本內含相對路徑預設值）。
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
 

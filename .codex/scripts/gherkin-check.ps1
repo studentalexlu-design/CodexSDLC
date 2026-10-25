@@ -141,7 +141,12 @@ foreach ($f in $Feature) {
             if ($full.StartsWith("$top/", [StringComparison]::OrdinalIgnoreCase)) { $rel = $full.Substring($top.Length + 1) }
         }
         if ($rel) {
-            $old = & git -C $repoTop show "HEAD:$rel" 2>$null
+            # git 寫出來的是 UTF-8，PowerShell 卻拿 console 的 code page 解碼（zh-TW 是 cp950）—— 中文的 scenario 標題
+            # 與 step 解出來是亂碼，跟現在的檔永遠對不上：每一條既有 scenario 都像被刪掉了。解碼期間換成 UTF-8。
+            $prevEnc = $null
+            try { $prevEnc = [Console]::OutputEncoding; [Console]::OutputEncoding = $Utf8NoBom } catch { }
+            try { $old = & git -C $repoTop show "HEAD:$rel" 2>$null }
+            finally { if ($prevEnc) { try { [Console]::OutputEncoding = $prevEnc } catch { } } }
             if ($LASTEXITCODE -eq 0 -and $old) {
                 $before = Read-Gherkin (($old -join "`n"))
                 foreach ($title in $before.scenarios.Keys) {

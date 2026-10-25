@@ -23,6 +23,7 @@ Codex SDLC 工作流（`.codex/`、`.agents/`、`AGENTS.md`）的 VS Code 介面
 | --- | --- |
 | 設定值、選項與說明 | `sdlc.config.json`、`.codex/bdd-workflow/sdlc.config.schema.json` |
 | 未套用、工具檔缺漏、修正輪上限 | `sdlc.ps1 doctor` |
+| hooks 未執行 | `doctor` 比對 hook 心跳與 agent 產出的修改時間，不呼叫 Codex；agent 寫入產出約 150 秒後自動重新檢查 |
 | 可用的 model／effort | `doctor` 的 `models`（取自本機 `codex debug models`；找不到 codex 時退回 schema） |
 | 新版 | `sdlc.ps1 check-update -IfDue`（`update.check = never` 時不連線） |
 | tune 建議 | `sdlc.ps1 tune` 儲存的提議 |
@@ -36,12 +37,12 @@ Codex SDLC 工作流（`.codex/`、`.agents/`、`AGENTS.md`）的 VS Code 介面
 2. **不自己實作 lint／gate 邏輯。** 狀態、違規與合法值一律取自腳本的 `-Json` 與 schema，以避免兩份實作分岔。
 3. **不把工作流設定存進 VS Code settings。** VS Code settings 僅存放本機事項：`pwsh` 路徑、發佈來源、狀態列顯示與存檔掃描。
 
-網路存取僅發生於腳本端，extension 不開啟任何連線。extension 不檢查 Codex 是否信任 hooks，**狀態列的綠勾不包含此項**；請以 `sdlc.ps1 doctor -CheckHookTrust` 確認。
+網路存取僅發生於腳本端，extension 不開啟任何連線。extension 不向 Codex 查詢 hooks 信任狀態，**狀態列的綠勾不代表已信任**，請以 `sdlc.ps1 doctor -CheckHookTrust` 確認；偵測到 hooks 未執行時，狀態列顯示「hooks 沒在跑」。
 
 ## 需求
 
 - PowerShell 7（`pwsh`）。找不到時可選取路徑（寫入 `codexSdlc.pwshPath`）；不支援 Windows PowerShell 5.1。
-- 工作流 4.8.0 以上（狀態列與 Problems）；4.9.0 以上（於面板修改設定）。
+- 工作流 4.8.0 以上（狀態列與 Problems）；4.9.0 以上（於面板修改設定）；4.19.0 以上（偵測 hooks 未執行）。
 - 不在受限模式（未信任的工作區）下啟動。VS Code 工作區信任與 Codex hooks 信任彼此獨立。
 
 ## 安裝與移除
@@ -59,5 +60,6 @@ code --uninstall-extension codex-sdlc.codex-sdlc
 
 - 僅於 Windows ＋ VS Code 實測。
 - 對話框等互動流程無自動化測試；其後端的 `fetch`、`install`、`update`、`set` 已以實際腳本測試。
+- hooks 未執行須待 agent 寫入產出後方能判斷；手動修改產出檔或切換 git 分支可能造成誤報。
 - `bdd-workflow-version.json` 的 `source` 尚未設定，發佈來源檢查目前不會取得結果。
 - 發佈來源的版本較 extension 新時，可能出現「版本不相容」，更新 extension 即可。

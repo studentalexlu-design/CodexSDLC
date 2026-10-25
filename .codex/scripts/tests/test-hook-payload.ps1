@@ -439,11 +439,106 @@ Describe-Suite 'hook 編碼 / payload 與訊息一律 UTF-8' {
         # 行為測試在 console 已是 UTF-8 的機器上抓不到回歸（舊寫法在那裡也會綠），所以這裡直接守段落本身：
         # 少了它，在 zh-TW 的 Windows 上每一次 spawn 都被擋、每一則中文訊息都是亂碼，而維護者的機器上一切正常。
         $want = $null
-        foreach ($s in @('.codex/scripts/handoff-lint.ps1', $DlpGate, $GlGate, $Build, '.codex/scripts/agent-lint.ps1', '.codex/scripts/sdlc.ps1')) {
+        foreach ($s in @('.codex/scripts/handoff-lint.ps1', $DlpGate, $GlGate, $Build, '.codex/scripts/agent-lint.ps1', '.codex/scripts/sdlc.ps1', '.codex/scripts/tests/run-tests.ps1',
+                               '.codex/scripts/repo-index.ps1', '.codex/scripts/sql-scan.ps1', '.codex/scripts/impact-scope.ps1', '.codex/scripts/dlp-residual-scan.ps1', '.codex/scripts/pack.ps1')) {
             $t = [IO.File]::ReadAllText((Join-Path (Get-Location) $s)) -replace "`r`n", "`n"
             $m = [regex]::Match($t, '(?s)\$Utf8NoBom = \[Text\.UTF8Encoding\]::new\(\$false\)\nif \(\[Console\]::IsOutputRedirected\).*?\n\}\n')
             Assert-True $m.Success "$s 沒有「標準 I/O」段落"
             if ($null -eq $want) { $want = $m.Value } else { Assert-Equal $want $m.Value "$s 的「標準 I/O」段落跟其他腳本不一樣" }
         }
+    }
+}
+
+Describe-Suite 'hook 心跳 / 每支 hook 被叫的時候都要留下痕跡（doctor 靠它看出 hooks 沒在跑）' {
+
+    # Codex 沒信任 hooks、或叫不起 pwsh 時，這四支一次都不會跑，而且沒有提示。doctor 唯一看得到的線索是
+    # 「agent 寫了產出，心跳卻沒跟著變新」—— 所以任何一支被叫的時候都要寫，手動跑的時候都不能寫（否則手動跑一次就把證據蓋掉）。
+    $HbDir = 'bdd-docs/.cache/hooks'
+
+    function Get-HbTime([string]$name) {
+        $f = Join-Path (Get-Location) "$HbDir/$name.last"
+        if (-not (Test-Path $f)) { return $null }
+        return [IO.File]::GetLastWriteTimeUtc($f)
+    }
+
+    It-Should '四支 hook 被 Codex 叫的時候都寫心跳' {
+        $d = "bdd-docs/hb-$(New-HpId)"
+        New-HpFile "$d/notes.md" "沒有敏感資料`n"
+        $start = [DateTime]::UtcNow.AddSeconds(-2)
+        try {
+            Remove-Item $HbDir -Recurse -Force -ErrorAction SilentlyContinue
+            $post = New-CodexHookPayload -Command (New-CodexPatch -Add "$d/notes.md")
+            foreach ($s in @($DlpGate, $GlGate, $Build)) { Invoke-Script $s -Stdin $post | Out-Null }
+            Invoke-Script '.codex/scripts/handoff-lint.ps1' -Stdin (New-CodexHookPayload -Event 'PreToolUse' -Tool 'spawn_agent' -ToolInput @{ message = 'x' }) | Out-Null
+            foreach ($n in @('dlp-gate', 'guideline-gate', 'build-check', 'handoff-lint')) {
+                $t = Get-HbTime $n
+                Assert-True ($null -ne $t -and $t -ge $start) "$n 被叫了卻沒寫心跳 —— doctor 會把「有在跑」誤判成「沒在跑」"
+            }
+        } finally { Remove-Item $d, $HbDir -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '手動跑（-Path、沒有 hook_event_name）不寫心跳' {
+        $d = "bdd-docs/hb-$(New-HpId)"
+        New-HpFile "$d/notes.md" "沒有敏感資料`n"
+        try {
+            Remove-Item $HbDir -Recurse -Force -ErrorAction SilentlyContinue
+            Invoke-Script $DlpGate -Params @{ Path = "$d/notes.md" } | Out-Null
+            Invoke-Script $GlGate -Params @{ Path = "$d/notes.md"; Json = $true } | Out-Null
+            Invoke-Script $DlpGate -Stdin (@{ tool_input = @{ command = (New-CodexPatch -Add "$d/notes.md") } } | ConvertTo-Json -Depth 4 -Compress) | Out-Null
+            Assert-True (-not (Test-Path $HbDir) -or -not @(Get-ChildItem $HbDir -File).Count) '手動跑也寫了心跳 —— 維護者手動掃一次，就把「hooks 沒在跑」的證據蓋掉了'
+        } finally { Remove-Item $d, $HbDir -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'Write-HookHeartbeat 在四支腳本裡逐字相同' {
+        $bodies = @{}
+        foreach ($s in @($DlpGate, $GlGate, $Build, '.codex/scripts/handoff-lint.ps1')) {
+            $m = [regex]::Match([IO.File]::ReadAllText((Join-Path (Get-Location) $s)), '(?ms)^function Write-HookHeartbeat.*?^\}')
+            Assert-True $m.Success "$s 找不到 Write-HookHeartbeat"
+            $bodies[$s] = $m.Value -replace "`r`n", "`n"
+        }
+        $want = $bodies[$DlpGate]
+        foreach ($s in @($bodies.Keys)) { Assert-True ($bodies[$s] -eq $want) "$s 的 Write-HookHeartbeat 跟 dlp-gate 的不一樣 —— 心跳寫的位置一分岔，doctor 就讀不到那一支" }
+    }
+}
+
+Describe-Suite 'review 快照 / 每一輪審核都留一份（review.md 每輪整份覆寫，PASS 之後前幾輪的必修就不見了）' {
+
+    function Get-Snaps([string]$d) { return @(Get-ChildItem (Join-Path (Get-Location) "$d/reviews") -Filter '*.md' -File -ErrorAction SilentlyContinue) }
+
+    It-Should '寫了乾淨的 review.md → 留一份快照；內容沒變不重留；改了再留一份' {
+        $d = "bdd-docs/rv-$(New-HpId)"
+        New-HpFile "$d/review.md" "VERDICT: FAIL`n`n## 發現`n1. [必修] src/A.cs:10 —— 斷言是空的`n"
+        try {
+            $payload = New-CodexHookPayload -Command (New-CodexPatch -Add "$d/review.md")
+            Assert-Equal 0 (Invoke-Script $DlpGate -Stdin $payload).exit
+            $s = Get-Snaps $d
+            Assert-Equal 1 $s.Count '第一輪的 review.md 沒有留快照 —— PASS 之後這一輪的必修就再也看不到'
+            Assert-Equal ([IO.File]::ReadAllText((Join-Path (Get-Location) "$d/review.md"))) ([IO.File]::ReadAllText($s[0].FullName)) '快照的內容跟 review.md 不一樣'
+            Invoke-Script $DlpGate -Stdin $payload | Out-Null
+            Assert-Equal 1 (Get-Snaps $d).Count '同一份內容留了兩份 —— 一輪審核常是好幾個 patch，learn 會把同一輪算成好幾輪'
+            New-HpFile "$d/review.md" "VERDICT: PASS`n`n## 發現`n1. [建議] src/A.cs:12 —— 命名`n"
+            Invoke-Script $DlpGate -Stdin (New-CodexHookPayload -Command (New-CodexPatch -Update "$d/review.md")) | Out-Null
+            Assert-Equal 2 (Get-Snaps $d).Count '第二輪覆寫之後沒有再留一份'
+        } finally { Remove-Item $d -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '掃出殘留的 review.md 不留快照（那一份照 runbook 要刪掉）' {
+        $d = "bdd-docs/rv-$(New-HpId)"
+        New-HpFile "$d/review.md" "VERDICT: FAIL`n1. [必修] 客戶 carol@contoso.com 的資料 —— 外洩`n"
+        try {
+            Assert-Equal 2 (Invoke-Script $DlpGate -Stdin (New-CodexHookPayload -Command (New-CodexPatch -Add "$d/review.md"))).exit
+            Assert-Equal 0 (Get-Snaps $d).Count '敏感資料被快照保存下來了 —— 刪掉 review.md 也刪不掉它'
+        } finally { Remove-Item $d -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '別的檔、手動 -Path 掃都不留快照' {
+        $d = "bdd-docs/rv-$(New-HpId)"
+        New-HpFile "$d/review.md" "VERDICT: PASS`n"
+        New-HpFile "$d/spec.md" "# spec`n"
+        try {
+            Invoke-Script $DlpGate -Params @{ Path = "$d/review.md" } | Out-Null
+            Invoke-Script $DlpGate -Stdin (New-CodexHookPayload -Command (New-CodexPatch -Add "$d/spec.md")) | Out-Null
+            Assert-Equal 0 (Get-Snaps $d).Count '不是 hook 寫 review.md 的那一刻也留了快照'
+        } finally { Remove-Item $d -Recurse -Force -ErrorAction SilentlyContinue }
     }
 }
