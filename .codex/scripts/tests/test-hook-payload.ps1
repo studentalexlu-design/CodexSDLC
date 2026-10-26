@@ -516,9 +516,34 @@ Describe-Suite 'review 快照 / 每一輪審核都留一份（review.md 每輪�
             Assert-Equal ([IO.File]::ReadAllText((Join-Path (Get-Location) "$d/review.md"))) ([IO.File]::ReadAllText($s[0].FullName)) '快照的內容跟 review.md 不一樣'
             Invoke-Script $DlpGate -Stdin $payload | Out-Null
             Assert-Equal 1 (Get-Snaps $d).Count '同一份內容留了兩份 —— 一輪審核常是好幾個 patch，learn 會把同一輪算成好幾輪'
-            New-HpFile "$d/review.md" "VERDICT: PASS`n`n## 發現`n1. [建議] src/A.cs:12 —— 命名`n"
+            New-HpFile "$d/review.md" "VERDICT: PASS`n`n## 發現`n1. [建議] src/A.cs:12 —— 命名`n`n## 上一輪必修的交代`n- src/A.cs:10 —— 斷言是空的：已修 —— CancelOrderTests.Rejects 斷言了狀態`n"
             Invoke-Script $DlpGate -Stdin (New-CodexHookPayload -Command (New-CodexPatch -Update "$d/review.md")) | Out-Null
             Assert-Equal 2 (Get-Snaps $d).Count '第二輪覆寫之後沒有再留一份'
+        } finally { Remove-Item $d -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '上一份的 [必修] 在新的 review.md 裡沒交代 → 阻斷、不留快照；交代了或照樣列成必修 → 通過' {
+        # PASS 就是從這裡漏出去的：上一輪的必修這一輪沒再提，分不出是修好了還是忘了看。
+        $d = "bdd-docs/rv-$(New-HpId)"
+        $round1 = "VERDICT: FAIL`n`n## 發現`n1. [必修] src/A.cs:10 —— 斷言是空的`n   會怎麼壞：x`n2. [必修] src/B.cs:5 —— 沒擋已出貨`n"
+        New-HpFile "$d/review.md" $round1
+        try {
+            Invoke-Script $DlpGate -Stdin (New-CodexHookPayload -Command (New-CodexPatch -Add "$d/review.md")) | Out-Null
+            $upd = New-CodexHookPayload -Command (New-CodexPatch -Update "$d/review.md")
+
+            New-HpFile "$d/review.md" "VERDICT: PASS`n`n## 發現`n1. [建議] src/A.cs:12 —— 命名`n`n## 上一輪必修的交代`n- src/A.cs:10 —— 斷言是空的：已修 —— A 測試`n"
+            $r = Invoke-Script $DlpGate -Stdin $upd
+            Assert-Equal 2 $r.exit '上一輪的必修 src/B.cs 無聲消失，PASS 照樣過了'
+            Assert-Match 'src/B\.cs:5' $r.stderr '沒說是哪一項沒交代'
+            Assert-Equal 1 (Get-Snaps $d).Count '沒交代的那一份被留成快照 —— 下一次寫入就拿它當上一份，B 從此脫鉤'
+
+            New-HpFile "$d/review.md" "VERDICT: PASS`n`n## 上一輪必修的交代`n- src/A.cs:10 —— 斷言是空的：已修 —— A 測試`n- src/B.cs:5 —— 沒擋已出貨：接受不修 ——`n"
+            Assert-Equal 2 (Invoke-Script $DlpGate -Stdin $upd).exit '交代沒寫證據或理由也算數了'
+
+            New-HpFile "$d/review.md" "VERDICT: FAIL`n`n## 發現`n1. [必修] src/B.cs:9 —— 還是沒擋已出貨`n`n## 上一輪必修的交代`n- src/A.cs:10 —— 斷言是空的：已修 —— A 測試`n"
+            $r = Invoke-Script $DlpGate -Stdin $upd
+            Assert-Equal 0 $r.exit "同一個檔照樣列成必修（行號變了）應該算有交代；stderr: $($r.stderr)"
+            Assert-Equal 2 (Get-Snaps $d).Count
         } finally { Remove-Item $d -Recurse -Force -ErrorAction SilentlyContinue }
     }
 

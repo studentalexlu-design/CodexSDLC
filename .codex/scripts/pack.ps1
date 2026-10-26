@@ -110,6 +110,22 @@ if (-not $srcUrl) {
     }
 }
 
+# guidelines/README.md 的雜湊清單要跟出貨的那份對得上：update 只換「跟歷來某一版原廠一字不差」的 README，
+# 這一版的 current 沒填對，下一版就認不出這一版裝出去的 README 是原廠的 —— 它會永遠停在這一版，而且沒有症狀。
+$readmeFile = Join-Path $Root 'guidelines/README.md'
+$stockFile  = Join-Path $Root '.codex/bdd-workflow/guidelines-readme-stock.json'
+# 只核對指標頁那一系（內文指向 guidelines-guide.md）：在已安裝的專案裡跑 pack 時，README 是團隊自己的，不該擋。
+$rmText = if (Test-Path $readmeFile) { [IO.File]::ReadAllText($readmeFile, [Text.UTF8Encoding]::new($false)).TrimStart([char]0xFEFF) -replace "`r`n", "`n" } else { '' }
+if ($rmText -match 'guidelines-guide\.md' -and (Test-Path $stockFile)) {
+    $sha = [Security.Cryptography.SHA256]::Create()
+    $rmSha = -join ($sha.ComputeHash([Text.UTF8Encoding]::new($false).GetBytes($rmText)) | ForEach-Object { $_.ToString('x2') })
+    $sha.Dispose()
+    $stock = Get-Content $stockFile -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($rmSha -ne [string]$stock.current) {
+        Fail "guidelines/README.md 改過，但 guidelines-readme-stock.json 的 current 沒跟上 —— 把舊的 current 移進 previous，current 填 $rmSha。"
+    }
+}
+
 # ---- 出貨前驗證 ----
 Push-Location $Root
 try {

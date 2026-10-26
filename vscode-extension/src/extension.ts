@@ -1195,7 +1195,7 @@ class Cockpit implements vscode.Disposable {
           hasAgents
             ? '你已經有一份 AGENTS.md —— **不會覆蓋**，新版寫成 AGENTS.md.new，裝完會開左右對照讓你合併（合併之前整套流程不會啟動）。'
             : '會建立 AGENTS.md —— 它就是 orchestrator 本身。',
-          hasGuidelines ? 'guidelines/ 已經有了，完全不碰。' : 'guidelines/ 會放一份骨架 —— 那份是你的，升級永遠不會覆蓋。',
+          hasGuidelines ? 'guidelines/ 已經有了，不碰（只有你沒改過的舊版原廠 README.md 會換成新版）。' : 'guidelines/ 會放一份骨架 —— 那份是你的，升級不會覆蓋。',
           '會建立 sdlc.config.json。不動 .git、不動你的程式碼。',
         ].join('\n'),
       },

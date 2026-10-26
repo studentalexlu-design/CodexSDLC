@@ -1,6 +1,7 @@
 # dlp-gate.ps1
 # PostToolUse 縱深防禦：對寫入 bdd-docs/** 的 artifact 執行殘留掃描。
 # 另外順手兩件不阻斷的事：寫心跳（Write-HookHeartbeat），以及替掃過、乾淨的 review.md 留一份快照（檔尾）。
+# 留快照之前還驗一件會阻斷的事：上一份 review.md 的每一項 [必修]，新的這份都要有交代（Get-UnaccountedMust）。
 #
 # 短路條件：存在 `bdd-docs/.dlp-disabled` 時整條掃描鏈路跳過。
 # 這是**專案層級**的宣告（v4.0.0 起；v3 是 run 層級，而 v4 沒有 run）。
@@ -13,7 +14,7 @@
 #
 # 另有 -Path／-Json 給手動執行與 VS Code extension 用（Problems 面板）。-Json 的 stdout 就是結果本身。
 #
-# Exit: 0 = 通過或已短路；2 = 偵測到殘留（阻斷）。
+# Exit: 0 = 通過或已短路；2 = 偵測到殘留，或 review.md 有上一份的 [必修] 沒交代（阻斷）。
 
 [CmdletBinding()]
 param(
@@ -191,12 +192,56 @@ foreach ($p in $targets) {
     }
 }
 
+# ---- 上一份的 [必修] 不能無聲消失 ----
+# reviewer 每一輪整份覆寫 review.md。上一輪的某項 [必修] 這一輪沒再出現，分不出是修好了、被接受了，還是忘了看 ——
+# 而 PASS 就是從那裡漏出去的。借 REA 的 closure history：未完成的數量每少一項，都要指名是哪一項、憑什麼。
+# 所以上一份（最新的快照）的每一項 [必修]，新的這份要嘛照樣列成 [必修]（同一個檔），要嘛寫進「## 上一輪必修的交代」：
+#   - {檔:行} —— {問題}：已修 —— {證據}       或       ：接受不修 —— {理由}
+# 對應只看檔（行號與措辭每輪都會變）：同一個檔，上一份有幾項，新的這份「仍是必修」加「有交代」就要有幾項。
+# 解析格式跟 sdlc.ps1 learn 的 Read-ReviewFindings 同一條（reviewer.toml 規定的那一行）。
+function Get-MustItems([string]$text) {
+    $out = @()
+    foreach ($line in ($text -replace "`r`n", "`n") -split "`n") {
+        $m = [regex]::Match($line, '^\s*\d+\.\s*\[必修\]\s*(.+?)\s+——\s+(.+?)\s*$')
+        if (-not $m.Success) { continue }
+        $loc = $m.Groups[1].Value.Trim().Trim('`', '{', '}')
+        $out += [pscustomobject]@{ location = $loc; file = ($loc -replace '(:\d+(-\d+)?)+$', ''); problem = $m.Groups[2].Value }
+    }
+    return $out
+}
+
+function Get-AccountedFiles([string]$text) {
+    $out = @(); $in = $false
+    foreach ($line in ($text -replace "`r`n", "`n") -split "`n") {
+        if ($line -match '^##\s') { $in = $line -match '^##\s*上一輪必修的交代'; continue }
+        if (-not $in) { continue }
+        $m = [regex]::Match($line, '^\s*[-*]\s*(.+?)\s+——\s+.+?[:：]\s*(已修|接受不修)\s*——\s*\S')
+        if ($m.Success) { $out += ($m.Groups[1].Value.Trim().Trim('`', '{', '}') -replace '(:\d+(-\d+)?)+$', '') }
+    }
+    return $out
+}
+
+function Get-UnaccountedMust([string]$prevText, [string]$newText) {
+    $prev = @(Get-MustItems $prevText)
+    if (-not $prev.Count) { return @() }
+    $open = @(Get-MustItems $newText | ForEach-Object { $_.file })
+    $done = @(Get-AccountedFiles $newText)
+    $missing = @()
+    foreach ($g in ($prev | Group-Object file)) {
+        $have = @($open | Where-Object { $_ -eq $g.Name }).Count + @($done | Where-Object { $_ -eq $g.Name }).Count
+        if ($have -lt $g.Count) { $missing += $g.Group }
+    }
+    return $missing
+}
+
 # ---- 每一輪審核留一份快照 ----
 # reviewer 每一輪都整份覆寫 review.md（修正輪的 implementer 只該看最新那份）。代價是 PASS 之後，前幾輪抓到、
 # 已經修掉的 [必修] 在磁碟上一項都不剩 —— 而「同一類錯一再被抓」只看得到那些（sdlc.ps1 learn 讀這些快照）。
 # 放在這支，是因為它是唯一只看 bdd-docs/ 寫入的 hook；另開一條 hook 每個 patch 多付一次 pwsh 啟動，還要重新信任。
 # 掃出殘留的不留：那一份照 runbook 要刪掉，快照會把它保存下來（DLP 被關掉時上面就 exit 了，理由相同）。
 # 跟最新一份快照逐字相同就不留 —— 一輪審核常是好幾個 patch。只在 hook 在叫時做：手動 -Path 掃不算一輪。
+# 上一份的 [必修] 沒交代的也不留：留了，下一次寫入就拿它當「上一份」，沒交代的那幾項從此脫鉤。
+$unaccounted = @()
 if ($hook.event) {
     foreach ($p in $targets) {
         $m = [regex]::Match($p, '^bdd-docs/([^/.][^/]*)/review\.md$')
@@ -206,6 +251,15 @@ if ($hook.event) {
             $dir = Join-Path (Get-Location).Path "bdd-docs/$($m.Groups[1].Value)/reviews"
             $last = @(Get-ChildItem -LiteralPath $dir -Filter '*.md' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTimeUtc, Name | Select-Object -Last 1)
             if ($last.Count -and [IO.File]::ReadAllText($last[0].FullName) -eq $text) { continue }
+            if ($last.Count) {
+                $miss = @(Get-UnaccountedMust ([IO.File]::ReadAllText($last[0].FullName)) $text)
+                if ($miss.Count) {
+                    $unaccounted += $miss
+                    [Console]::Error.WriteLine("[Hook][review] $p：上一份 review.md 的這幾項 [必修] 在新的這份裡沒有交代 —— 沒修好就照樣列成 [必修]；修好了或接受不修，寫進「## 上一輪必修的交代」，一項一行：- {檔:行} —— {問題}：已修 —— {證據：測試名稱或 檔:行}（或：接受不修 —— {理由}）")
+                    foreach ($x in $miss) { [Console]::Error.WriteLine("  - $($x.location) —— $($x.problem)") }
+                    continue
+                }
+            }
             [void][IO.Directory]::CreateDirectory($dir)
             $stamp = [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss')
             $dest = Join-Path $dir "$stamp.md"; $n = 1
@@ -216,5 +270,5 @@ if ($hook.event) {
 }
 
 Write-Result ($findings.Count -eq 0) $false $targets $findings
-if ($findings.Count -gt 0) { exit 2 }
+if ($findings.Count -gt 0 -or $unaccounted.Count -gt 0) { exit 2 }
 exit 0

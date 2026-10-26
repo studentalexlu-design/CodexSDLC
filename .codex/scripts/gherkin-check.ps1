@@ -9,6 +9,15 @@
 #      （同名 scenario）。那個檔是 QA 的工作區，刪掉的 scenario 不會有任何測試變紅。
 #      限制：這套流程不 commit，所以只比得到 HEAD 那一份；HEAD 之後、還沒 commit 的舊改動不在比對範圍內。
 #   3. 不略過：.feature 裡沒有 @ignore／@skip／@wip；給了 -TestResults（TRX 或 JUnit XML）時，skipped 也必須是 0。
+#   給了 -TestResults 時另外兩項（一條驗收條件要「有測試、測試通過、而且是現在這份程式碼跑出來的」才算完成）：
+#   4. 逐條通過：這次迭代的每一條 scenario，在結果檔裡都找得到對應的 test case，而且全部 passed。只看 skipped 總數的話，
+#      某條 scenario 根本沒產生測試（step 沒繫結、檔案沒被編進測試專案）時結果檔照樣乾淨。
+#      對應方式：標題與 test 名稱都只留字母和數字、不分大小寫後，相等或以標題開頭（Outline 的每一列）。Reqnroll 的方法名
+#      （PascalCase）、xUnit 的 DisplayName、MSTest 的 Description、Cucumber JUnit 的 testcase name 都對得上。
+#      **前幾次迭代**的 scenario（.feature 裡有、這次的區塊沒有的）也一樣驗：這次改了共用的 step 或繫結，它們不再產生測試時，
+#      全套照樣是綠的。所以結果檔要是全套測試的，不是只跑這次那幾條的。標了 @manual 的（QA 手動測）不要求有測試，有就要通過。
+#   5. 不過期：結果檔要比這次改過的檔（.feature、git 工作區裡改過或新增的檔；bdd-docs/ 與建置輸出除外）新。
+#      先跑測試、後改程式的舊結果檔，數字再好看也不是現在這份程式碼的結果。
 #
 # spec.md 從 .feature 第一個 `# feature-id: {id}` 找回 bdd-docs/{id}/spec.md（③ 規定 Gherkin 區塊第一行就是它）。
 # 唯讀：不寫任何檔。DLP：只回步驟文字與行號（步驟文字本來就是使用者確認過、要交給 QA 的東西）。
@@ -35,6 +44,7 @@ $StepRe     = '^\s*(Given|When|Then|And|But|\*|假如|假設|假定|當|那麼|�
 $ScenarioRe = '^\s*(Scenario Outline|Scenario Template|Scenario|Example|場景大綱|劇本大綱|場景|劇本)\s*:\s*(.*)$'
 $BackRe     = '^\s*(Background|背景)\s*:'
 $SkipTagRe  = '(?i)(^|\s)@(ignore|ignored|skip|skipped|wip|pending)\b'
+$ManualTagRe = '(?i)(^|\s)@manual\b'   # QA 手動測的 scenario：本來就沒有自動化測試，前幾次迭代的那幾條不要求結果檔裡有
 
 function Norm([string]$s) { return ($s -replace '\s+', ' ').Trim() }
 
@@ -42,7 +52,7 @@ function Norm([string]$s) { return ($s -replace '\s+', ' ').Trim() }
 function Read-Gherkin([string]$text) {
     $bg = [Collections.Generic.List[string]]::new()
     $sc = [ordered]@{}
-    $skipped = @()
+    $skipped = @(); $manual = @()
     $cur = $null; $inBg = $false; $pendingTags = ''
     $inDoc = $false; $skipAll = $false
     foreach ($raw in ($text -replace "`r`n", "`n") -split "`n") {
@@ -58,6 +68,7 @@ function Read-Gherkin([string]$text) {
             $cur = [Collections.Generic.List[string]]::new()
             $sc[$title] = $cur
             if ($skipAll -or $pendingTags -match $SkipTagRe) { $skipped += $title }
+            if ($pendingTags -match $ManualTagRe) { $manual += $title }
             $pendingTags = ''
             continue
         }
@@ -67,7 +78,7 @@ function Read-Gherkin([string]$text) {
             if ($inBg) { $bg.Add((Norm $line)) } elseif ($null -ne $cur) { $cur.Add((Norm $line)) }
         }
     }
-    return [pscustomobject]@{ background = @($bg); scenarios = $sc; skipped = $skipped }
+    return [pscustomobject]@{ background = @($bg); scenarios = $sc; skipped = $skipped; manual = $manual }
 }
 
 # spec.md → 每一次迭代的 Gherkin 區塊（沒有 `## 迭代` 的部分算第 1 次）
@@ -96,10 +107,73 @@ function Get-SkippedFromResults([string]$path) {
     return $n
 }
 
+# 結果檔 → 每個 test case 的 { names = @(可拿來對應標題的名字); outcome = passed／failed／skipped }
+function Get-TestRecords([string]$path) {
+    [xml]$x = [IO.File]::ReadAllText($path)
+    $recs = @()
+    if ($x.TestRun) {   # TRX
+        $defs = @{}
+        foreach ($d in @($x.TestRun.TestDefinitions.UnitTest)) { if ($d) { $defs[[string]$d.id] = $d } }
+        foreach ($u in @($x.TestRun.Results.UnitTestResult)) {
+            if (-not $u) { continue }
+            $names = @([string]$u.testName)
+            $d = $defs[[string]$u.testId]
+            if ($d) { $names += [string]$d.name; if ($d.TestMethod) { $names += [string]$d.TestMethod.name }; if ($d.Description) { $names += [string]$d.Description } }
+            $o = switch -Regex ([string]$u.outcome) { '^Passed$' { 'passed' } '^(Failed|Error|Timeout|Aborted)$' { 'failed' } default { 'skipped' } }
+            $recs += [pscustomobject]@{ names = @($names | Where-Object { $_ }); outcome = $o }
+        }
+        return $recs
+    }
+    foreach ($t in @($x.SelectNodes('//testcase'))) {
+        $o = if ($t.SelectSingleNode('failure|error')) { 'failed' } elseif ($t.SelectSingleNode('skipped')) { 'skipped' } else { 'passed' }
+        $recs += [pscustomobject]@{ names = @([string]$t.GetAttribute('name')); outcome = $o }
+    }
+    return $recs
+}
+
+function NormId([string]$s) { return ($s -replace '[^\p{L}\p{N}]', '').ToLowerInvariant() }
+
+# test 名稱的各種寫法 → 正規化後的候選：全名、去掉參數、去掉 namespace／class（xUnit 的 Namespace.Class.Method）
+function Get-NameKeys($rec) {
+    $keys = @()
+    foreach ($n in $rec.names) {
+        $bare = ($n -replace '\(.*$', '').Trim()
+        $keys += (NormId $n), (NormId $bare), (NormId ($bare -replace '^.*\.', ''))
+    }
+    return @($keys | Where-Object { $_ } | Select-Object -Unique)
+}
+
+# 在 git 工作區裡、比結果檔新的檔。這套流程不 commit，這次的改動全部在工作區裡。
+function Get-NewerSources([string]$repoTop, [string]$featureFull, [string[]]$resultFulls, [string]$docsRoot) {
+    $oldest = ($resultFulls | ForEach-Object { (Get-Item -LiteralPath $_).LastWriteTimeUtc } | Measure-Object -Minimum).Minimum
+    $limit = $oldest.AddSeconds(2)
+    $cands = @($featureFull)
+    if ($repoTop) {
+        $prevEnc = $null
+        try { $prevEnc = [Console]::OutputEncoding; [Console]::OutputEncoding = $Utf8NoBom } catch { }
+        try {
+            $cands += @(& git -C $repoTop -c core.quotepath=false diff --name-only HEAD 2>$null) + @(& git -C $repoTop -c core.quotepath=false ls-files --others --exclude-standard 2>$null) |
+                Where-Object { $_ } | ForEach-Object { Join-Path $repoTop $_ }
+        } finally { if ($prevEnc) { try { [Console]::OutputEncoding = $prevEnc } catch { } } }
+    }
+    $skip = @($resultFulls | ForEach-Object { $_ -replace '\\', '/' })
+    $docs = ($docsRoot -replace '\\', '/').Trim('/')
+    $top = if ($repoTop) { ($repoTop -replace '\\', '/').TrimEnd('/') } else { '' }
+    $newer = @()
+    foreach ($c in ($cands | Select-Object -Unique)) {
+        $p = $c -replace '\\', '/'
+        if ($p -in $skip -or -not (Test-Path -LiteralPath $c -PathType Leaf)) { continue }
+        $rel = if ($top -and $p.StartsWith("$top/", [StringComparison]::OrdinalIgnoreCase)) { $p.Substring($top.Length + 1) } else { [IO.Path]::GetRelativePath((Get-Location).Path, $c) -replace '\\', '/' }
+        if ($rel -like "$docs/*" -or $rel -match '(^|/)(bin|obj|target|build|out|TestResults|coverage|node_modules)/' -or $rel -match '\.(trx|log)$') { continue }
+        if ((Get-Item -LiteralPath $c).LastWriteTimeUtc -gt $limit) { $newer += $rel }
+    }
+    return $newer
+}
+
 $results = @()
 $exitCode = 0
 foreach ($f in $Feature) {
-    $r = [ordered]@{ feature = ($f -replace '\\', '/'); spec = $null; feature_id = $null; iteration = $null; passed = $true; missing_steps = @(); missing_scenarios = @(); removed_scenarios = @(); removed_steps = @(); skipped_scenarios = @(); skipped_tests = $null; error = $null }
+    $r = [ordered]@{ feature = ($f -replace '\\', '/'); spec = $null; feature_id = $null; iteration = $null; passed = $true; missing_steps = @(); missing_scenarios = @(); removed_scenarios = @(); removed_steps = @(); skipped_scenarios = @(); skipped_tests = $null; scenarios_without_test = $null; scenarios_not_passed = $null; prior_scenarios_without_test = $null; prior_scenarios_not_passed = $null; stale_results_newer = $null; error = $null }
     try {
         if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { throw "找不到 $f" }
         $featText = [IO.File]::ReadAllText((Resolve-Path -LiteralPath $f).Path)
@@ -166,10 +240,41 @@ foreach ($f in $Feature) {
         if ($TestResults.Count) {
             $n = 0; foreach ($t in $TestResults) { $n += (Get-SkippedFromResults $t) }
             $r.skipped_tests = $n
+
+            # 4. 逐條通過。以標題開頭的對應會讓「取消訂單」也吃到「取消訂單失敗」的測試 —— 也對得上更長標題的那個 test 不算。
+            $recs = @($TestResults | ForEach-Object { Get-TestRecords $_ } | ForEach-Object { [pscustomobject]@{ keys = (Get-NameKeys $_); outcome = $_.outcome } })
+            # 「較長的標題」要看整份 .feature：這次的「取消訂單」不能吃前幾次「取消訂單並退款」的測試。
+            $titles = @(@($want.scenarios.Keys) + @($have.scenarios.Keys) | Select-Object -Unique |
+                        ForEach-Object { [pscustomobject]@{ title = $_; key = (NormId $_); prior = (-not $want.scenarios.Contains($_)) } })
+            $r.scenarios_without_test = @(); $r.scenarios_not_passed = @()
+            $r.prior_scenarios_without_test = @(); $r.prior_scenarios_not_passed = @()
+            foreach ($t in $titles) {
+                $longer = @($titles | Where-Object { $_.key.Length -gt $t.key.Length -and $_.key.StartsWith($t.key) } | ForEach-Object { $_.key })
+                $hit = @($recs | Where-Object {
+                    $ks = $_.keys
+                    @($ks | Where-Object { $_.StartsWith($t.key) }).Count -and -not @($ks | Where-Object { $k = $_; @($longer | Where-Object { $k.StartsWith($_) }).Count }).Count
+                })
+                if (-not $hit.Count) {
+                    if (-not $t.prior) { $r.scenarios_without_test += $t.title }
+                    elseif ($t.title -notin $have.manual -and $t.title -notin $have.skipped) { $r.prior_scenarios_without_test += $t.title }
+                    continue
+                }
+                $bad = @($hit | Where-Object { $_.outcome -ne 'passed' } | ForEach-Object { $_.outcome })
+                if ($bad.Count) {
+                    $entry = [pscustomobject]@{ scenario = $t.title; outcomes = $bad }
+                    if ($t.prior) { $r.prior_scenarios_not_passed += $entry } else { $r.scenarios_not_passed += $entry }
+                }
+            }
+
+            # 5. 不過期
+            $r.stale_results_newer = @(Get-NewerSources $repoTop (Resolve-Path -LiteralPath $f).Path @($TestResults | ForEach-Object { (Resolve-Path -LiteralPath $_).Path }) $DocsRoot)
         }
 
         $r.passed = -not ($r.missing_steps.Count -or $r.missing_scenarios.Count -or $r.removed_scenarios.Count -or $r.removed_steps.Count -or
-                          $r.skipped_scenarios.Count -or ($r.skipped_tests -gt 0))
+                          $r.skipped_scenarios.Count -or ($r.skipped_tests -gt 0) -or
+                          @($r.scenarios_without_test | Where-Object { $_ }).Count -or @($r.scenarios_not_passed | Where-Object { $_ }).Count -or
+                          @($r.prior_scenarios_without_test | Where-Object { $_ }).Count -or @($r.prior_scenarios_not_passed | Where-Object { $_ }).Count -or
+                          @($r.stale_results_newer | Where-Object { $_ }).Count)   # 沒給 -TestResults 時是 $null，而 @($null).Count 是 1
         if (-not $r.passed -and $exitCode -eq 0) { $exitCode = 2 }
     } catch {
         $r.passed = $false; $r.error = $_.Exception.Message; $exitCode = 1
@@ -182,7 +287,10 @@ if ($Json) {
 } else {
     foreach ($r in $results) {
         if ($r.error) { [Console]::Error.WriteLine("[gherkin-check] $($r.feature)：$($r.error)"); continue }
-        if ($r.passed) { "[gherkin-check] OK — $($r.feature) 對 $($r.spec)（迭代 $($r.iteration)）逐字一致、既有的沒動、沒有略過。"; continue }
+        if ($r.passed) {
+            $extra = if ($null -ne $r.scenarios_without_test) { '、每條 scenario（含前幾次迭代的）都有通過的測試、結果檔不過期' } else { '' }
+            "[gherkin-check] OK — $($r.feature) 對 $($r.spec)（迭代 $($r.iteration)）逐字一致、既有的沒動、沒有略過$extra。"; continue
+        }
         [Console]::Error.WriteLine("[gherkin-check] $($r.feature) 對 $($r.spec)（迭代 $($r.iteration)）：")
         foreach ($s in $r.missing_scenarios) { [Console]::Error.WriteLine("  - spec 的 scenario 不在 .feature 裡（或標題被改了）：$s") }
         foreach ($s in $r.missing_steps)     { [Console]::Error.WriteLine("  - 步驟沒有逐字照抄（$($s.scenario)）：$($s.step)") }
@@ -190,6 +298,11 @@ if ($Json) {
         foreach ($s in $r.removed_steps)     { [Console]::Error.WriteLine("  - 既有 step 的措辭被改了（$($s.scenario)）：$($s.step) —— 會讓 QA 的自動化靜默斷掉；真要改，寫進「風險與待確認」交給 orchestrator 問使用者") }
         foreach ($s in $r.skipped_scenarios) { [Console]::Error.WriteLine("  - scenario 被標成略過：$s —— skipped 不是綠燈") }
         if ($r.skipped_tests -gt 0)          { [Console]::Error.WriteLine("  - 測試結果裡有 $($r.skipped_tests) 個 skipped —— skipped 不是綠燈") }
+        foreach ($s in @($r.scenarios_without_test)) { if ($s) { [Console]::Error.WriteLine("  - 結果檔裡找不到這條 scenario 的測試：$s —— step 沒繫結、.feature 沒編進測試專案，或給錯了結果檔（標題與 test 名稱只比字母和數字）") } }
+        foreach ($s in @($r.scenarios_not_passed))   { if ($s) { [Console]::Error.WriteLine("  - 這條 scenario 的測試沒有全部通過（$($s.outcomes -join '、')）：$($s.scenario)") } }
+        foreach ($s in @($r.prior_scenarios_without_test)) { if ($s) { [Console]::Error.WriteLine("  - 前幾次迭代的 scenario 在結果檔裡找不到測試：$s —— 這次的改動讓它的 step 失去繫結，或給的結果檔只跑了部分測試（要給全套的）；QA 手動測的請標 @manual") } }
+        foreach ($s in @($r.prior_scenarios_not_passed))   { if ($s) { [Console]::Error.WriteLine("  - 前幾次迭代的 scenario 測試沒有全部通過（$($s.outcomes -join '、')）：$($s.scenario) —— 這次的改動弄壞了已經交付的行為") } }
+        if (@($r.stale_results_newer | Where-Object { $_ }).Count) { [Console]::Error.WriteLine("  - 結果檔比這些改過的檔舊，不是現在這份程式碼的結果，重跑測試再檢查：$((@($r.stale_results_newer) | Select-Object -First 5) -join '、')") }
     }
 }
 exit $exitCode

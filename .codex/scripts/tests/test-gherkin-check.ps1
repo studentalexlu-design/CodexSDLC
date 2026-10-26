@@ -63,6 +63,20 @@ function New-GcProject([string]$feature = $GcFeature, [string]$spec = $GcSpec, [
     }
 }
 
+# {test 名稱 = outcome} → 最小的 TRX（有 Results 與 TestDefinitions，跟 dotnet test --logger trx 同構）
+function New-GcTrx([hashtable]$tests, [hashtable]$descriptions = @{}) {
+    $res = ''; $defs = ''; $i = 0
+    $total = $tests.Count; $ne = @($tests.Values | Where-Object { $_ -eq 'NotExecuted' }).Count
+    foreach ($k in $tests.Keys) {
+        $i++; $id = "00000000-0000-0000-0000-{0:D12}" -f $i
+        $e = [Security.SecurityElement]::Escape($k)   # Outline 的名稱帶雙引號
+        $res  += "<UnitTestResult testId=""$id"" testName=""$e"" outcome=""$($tests[$k])"" />"
+        $desc = if ($descriptions[$k]) { "<Description>$($descriptions[$k])</Description>" } else { '' }
+        $defs += "<UnitTest name=""$e"" id=""$id"">$desc<TestMethod className=""Tests.CancelOrderFeature"" name=""$e"" /></UnitTest>"
+    }
+    return "<TestRun xmlns=""http://microsoft.com/schemas/VisualStudio/TeamTest/2010""><Results>$res</Results><TestDefinitions>$defs</TestDefinitions><ResultSummary outcome=""Completed""><Counters total=""$total"" executed=""$($total - $ne)"" passed=""$($total - $ne)"" failed=""0"" notExecuted=""$ne"" inconclusive=""0"" /></ResultSummary></TestRun>"
+}
+
 function Set-GcFeature([string]$text) { [IO.File]::WriteAllText((Join-Path $GcRoot 'tests/Features/CancelOrder.feature'), $text, $GcUtf8) }
 
 function Invoke-Gc([hashtable]$extra = @{}) {
@@ -227,13 +241,13 @@ Describe-Suite 'gherkin-check / 不略過' {
         New-GcProject
         $trx = Join-Path $GcRoot 'r.trx'
         try {
-            [IO.File]::WriteAllText($trx, '<TestRun xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010"><ResultSummary outcome="Completed"><Counters total="3" executed="2" passed="2" failed="0" notExecuted="1" inconclusive="0" /></ResultSummary></TestRun>', $GcUtf8)
+            [IO.File]::WriteAllText($trx, (New-GcTrx @{ '未出貨的訂單可以取消' = 'Passed'; '已出貨的訂單不能取消' = 'Passed'; 'Other' = 'NotExecuted' }), $GcUtf8)
             $r = Invoke-Gc @{ TestResults = $trx }
             Assert-Equal 2 $r.exit
             Assert-Equal 1 $r.json.results[0].skipped_tests
-            [IO.File]::WriteAllText($trx, '<TestRun xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010"><ResultSummary outcome="Completed"><Counters total="3" executed="3" passed="3" failed="0" notExecuted="0" inconclusive="0" /></ResultSummary></TestRun>', $GcUtf8)
+            [IO.File]::WriteAllText($trx, (New-GcTrx @{ '未出貨的訂單可以取消' = 'Passed'; '已出貨的訂單不能取消' = 'Passed'; 'Other' = 'Passed' }), $GcUtf8)
             $r = Invoke-Gc @{ TestResults = $trx }
-            Assert-Equal 0 $r.exit "stdout: $($r.stdout)"
+            Assert-Equal 0 $r.exit "stdout: $($r.stdout) stderr: $($r.stderr)"
         } finally { Remove-Item $GcRoot -Recurse -Force -ErrorAction SilentlyContinue }
     }
 
@@ -241,9 +255,142 @@ Describe-Suite 'gherkin-check / 不略過' {
         New-GcProject
         $xml = Join-Path $GcRoot 'TEST-x.xml'
         try {
-            [IO.File]::WriteAllText($xml, '<testsuite name="x" tests="2" failures="0" errors="0" skipped="1"><testcase name="a"/><testcase name="b"><skipped/></testcase></testsuite>', $GcUtf8)
+            [IO.File]::WriteAllText($xml, '<testsuite name="x" tests="2" failures="0" errors="0" skipped="1"><testcase name="未出貨的訂單可以取消"/><testcase name="已出貨的訂單不能取消"><skipped/></testcase></testsuite>', $GcUtf8)
             $r = Invoke-Gc @{ TestResults = $xml }
             Assert-Equal 2 $r.exit
+            Assert-Equal '已出貨的訂單不能取消' @($r.json.results[0].scenarios_not_passed)[0].scenario
+        } finally { Remove-Item $GcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'scenario 在結果檔裡沒有測試 → 紅（skipped 是 0 也一樣）' {
+        New-GcProject
+        $trx = Join-Path $GcRoot 'r.trx'
+        try {
+            [IO.File]::WriteAllText($trx, (New-GcTrx @{ '未出貨的訂單可以取消' = 'Passed' }), $GcUtf8)
+            $r = Invoke-Gc @{ TestResults = $trx }
+            Assert-Equal 2 $r.exit '有 scenario 沒產生測試卻通過了'
+            Assert-Equal 0 $r.json.results[0].skipped_tests
+            Assert-Equal '已出貨的訂單不能取消' @($r.json.results[0].scenarios_without_test)[0]
+        } finally { Remove-Item $GcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'scenario 的測試 Failed → 紅' {
+        New-GcProject
+        $trx = Join-Path $GcRoot 'r.trx'
+        try {
+            [IO.File]::WriteAllText($trx, (New-GcTrx @{ '未出貨的訂單可以取消' = 'Passed'; '已出貨的訂單不能取消' = 'Failed' }), $GcUtf8)
+            $r = Invoke-Gc @{ TestResults = $trx }
+            Assert-Equal 2 $r.exit
+            Assert-Equal 'failed' @(@($r.json.results[0].scenarios_not_passed)[0].outcomes)[0]
+        } finally { Remove-Item $GcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '對得上 Reqnroll 的方法名、xUnit 的全名、Outline 的每一列、MSTest 的 Description' {
+        $spec = $GcSpec -replace '未出貨的訂單可以取消', 'Unshipped order can be cancelled'
+        New-GcProject ($GcFeature -replace '未出貨的訂單可以取消', 'Unshipped order can be cancelled') -spec $spec
+        $trx = Join-Path $GcRoot 'r.trx'
+        try {
+            [IO.File]::WriteAllText($trx, (New-GcTrx @{ 'Tests.CancelOrderFeature.UnshippedOrderCanBeCancelled' = 'Passed'; '已出貨的訂單不能取消_Variant0' = 'Passed'; '已出貨的訂單不能取消_Variant1' = 'Passed' }), $GcUtf8)
+            $r = Invoke-Gc @{ TestResults = $trx }
+            Assert-Equal 0 $r.exit "stdout: $($r.stdout) stderr: $($r.stderr)"
+            [IO.File]::WriteAllText($trx, (New-GcTrx @{ 'UnshippedOrderCanBeCancelled' = 'Passed'; 'ShippedOrderRejected' = 'Passed' } @{ 'ShippedOrderRejected' = '已出貨的訂單不能取消' }), $GcUtf8)
+            $r = Invoke-Gc @{ TestResults = $trx }
+            Assert-Equal 0 $r.exit "Description 沒對上；stderr: $($r.stderr)"
+        } finally { Remove-Item $GcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '對得上 Reqnroll 2.2.1 實際寫進 TRX 的名稱（MSTest／xUnit／NUnit，全形標點、Outline 參數）' {
+        # 2026-10-26 在 dotnet 10 上實跑三種 runner 抄下來的 testName
+        $spec = $GcSpec -replace '已出貨的訂單不能取消', '已出貨的訂單不能取消（退款另計）'
+        $feat = $GcFeature -replace '已出貨的訂單不能取消', '已出貨的訂單不能取消（退款另計）'
+        $feat = $feat -replace '系統拒絕並顯示「已出貨的訂單不能取消（退款另計）」', '系統拒絕並顯示「已出貨的訂單不能取消」'
+        $spec = $spec -replace '系統拒絕並顯示「已出貨的訂單不能取消（退款另計）」', '系統拒絕並顯示「已出貨的訂單不能取消」'
+        New-GcProject $feat -spec $spec
+        $trx = Join-Path $GcRoot 'r.trx'
+        try {
+            foreach ($names in @(
+                    @('未出貨的訂單可以取消 ("金卡","100",null)', '已出貨的訂單不能取消退款另計'),                                  # MSTest
+                    @('未出貨的訂單可以取消(level: "金卡", points: "100", exampleTags: [])', '已出貨的訂單不能取消（退款另計）'),       # xUnit
+                    @('未出貨的訂單可以取消("金卡","100",null)', '已出貨的訂單不能取消退款另計'))) {                              # NUnit
+                $t = @{}; foreach ($n in $names) { $t[$n] = 'Passed' }
+                [IO.File]::WriteAllText($trx, (New-GcTrx $t), $GcUtf8)
+                $r = Invoke-Gc @{ TestResults = $trx }
+                Assert-Equal 0 $r.exit "對不上 $($names -join ' ／ ')；stderr: $($r.stderr)"
+            }
+        } finally { Remove-Item $GcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '標題是另一條的開頭時，不拿較長那條的測試充數' {
+        # spec 有「取消訂單」與「取消訂單並退款」；結果檔只有後者 → 前者沒有測試
+        $spec = $GcSpec -replace '未出貨的訂單可以取消', '取消訂單' -replace '已出貨的訂單不能取消', '取消訂單並退款'
+        New-GcProject ($GcFeature -replace '未出貨的訂單可以取消', '取消訂單' -replace '已出貨的訂單不能取消', '取消訂單並退款') -spec $spec
+        $trx = Join-Path $GcRoot 'r.trx'
+        try {
+            [IO.File]::WriteAllText($trx, (New-GcTrx @{ '取消訂單並退款' = 'Passed' }), $GcUtf8)
+            $r = Invoke-Gc @{ TestResults = $trx }
+            Assert-Equal 2 $r.exit '較短的標題被較長那條的測試充數了'
+            Assert-Equal '取消訂單' @($r.json.results[0].scenarios_without_test)[0]
+        } finally { Remove-Item $GcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '前幾次迭代的 scenario 沒產生測試或沒通過 → 紅；標 @manual 的不要求測試' {
+        # 這次只有一條；.feature 裡還有前一次交付的「已出貨的訂單不能取消」—— 改了共用的 step 讓它失去繫結時，全套照樣綠。
+        $spec = $GcSpec -replace '(?s)\n  Scenario: 已出貨的訂單不能取消.*?不能取消」\n', "`n"
+        New-GcProject -spec $spec
+        $trx = Join-Path $GcRoot 'r.trx'
+        try {
+            [IO.File]::WriteAllText($trx, (New-GcTrx @{ '未出貨的訂單可以取消' = 'Passed' }), $GcUtf8)
+            $r = Invoke-Gc @{ TestResults = $trx }
+            Assert-Equal 2 $r.exit '前幾次迭代的 scenario 沒有測試卻通過了'
+            Assert-Equal '已出貨的訂單不能取消' @($r.json.results[0].prior_scenarios_without_test)[0]
+            Assert-Equal 0 @($r.json.results[0].scenarios_without_test).Count '前幾次的算進這次的了'
+
+            [IO.File]::WriteAllText($trx, (New-GcTrx @{ '未出貨的訂單可以取消' = 'Passed'; '已出貨的訂單不能取消' = 'Failed' }), $GcUtf8)
+            $r = Invoke-Gc @{ TestResults = $trx }
+            Assert-Equal 2 $r.exit '前幾次迭代的 scenario 測試失敗卻通過了'
+            Assert-Equal '已出貨的訂單不能取消' @($r.json.results[0].prior_scenarios_not_passed)[0].scenario
+
+            Set-GcFeature ($GcFeature -replace '@regression', '@manual')
+            [IO.File]::WriteAllText($trx, (New-GcTrx @{ '未出貨的訂單可以取消' = 'Passed' }), $GcUtf8)
+            $r = Invoke-Gc @{ TestResults = $trx }
+            Assert-Equal 0 $r.exit "@manual 的 scenario 不該要求測試；stderr: $($r.stderr)"
+        } finally { Remove-Item $GcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '這次的短標題不拿前幾次迭代較長標題的測試充數' {
+        $spec = $GcSpec -replace '未出貨的訂單可以取消', '取消訂單' -replace '(?s)\n  Scenario: 已出貨的訂單不能取消.*?不能取消」\n', "`n"
+        New-GcProject ($GcFeature -replace '未出貨的訂單可以取消', '取消訂單' -replace '已出貨的訂單不能取消', '取消訂單並退款') -spec $spec
+        $trx = Join-Path $GcRoot 'r.trx'
+        try {
+            [IO.File]::WriteAllText($trx, (New-GcTrx @{ '取消訂單並退款' = 'Passed' }), $GcUtf8)
+            $r = Invoke-Gc @{ TestResults = $trx }
+            Assert-Equal 2 $r.exit
+            Assert-Equal '取消訂單' @($r.json.results[0].scenarios_without_test)[0]
+        } finally { Remove-Item $GcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '結果檔比改過的檔舊 → 紅（先跑測試、後改程式）' {
+        New-GcProject -Git
+        $trx = Join-Path $GcRoot 'r.trx'
+        try {
+            [IO.File]::WriteAllText($trx, (New-GcTrx @{ '未出貨的訂單可以取消' = 'Passed'; '已出貨的訂單不能取消' = 'Passed' }), $GcUtf8)
+            $src = Join-Path $GcRoot 'src/OrderService.cs'
+            New-Item -ItemType Directory -Path (Split-Path $src) -Force | Out-Null
+            [IO.File]::WriteAllText($src, 'class OrderService {}', $GcUtf8)
+            (Get-Item $src).LastWriteTimeUtc = (Get-Item $trx).LastWriteTimeUtc.AddMinutes(1)
+            # bdd-docs/ 與建置輸出比結果檔新不算
+            foreach ($p in 'bdd-docs/cancel-order/review.md', 'src/bin/Debug/x.dll') {
+                $full = Join-Path $GcRoot $p
+                New-Item -ItemType Directory -Path (Split-Path $full) -Force | Out-Null
+                [IO.File]::WriteAllText($full, 'x', $GcUtf8)
+                (Get-Item $full).LastWriteTimeUtc = (Get-Item $trx).LastWriteTimeUtc.AddMinutes(1)
+            }
+            $r = Invoke-Gc @{ TestResults = $trx }
+            Assert-Equal 2 $r.exit '舊的結果檔通過了'
+            Assert-Equal 'src/OrderService.cs' (@($r.json.results[0].stale_results_newer) -join '|')
+            (Get-Item $trx).LastWriteTimeUtc = (Get-Item $src).LastWriteTimeUtc.AddMinutes(1)
+            $r = Invoke-Gc @{ TestResults = $trx }
+            Assert-Equal 0 $r.exit "重跑之後應該綠；stderr: $($r.stderr)"
         } finally { Remove-Item $GcRoot -Recurse -Force -ErrorAction SilentlyContinue }
     }
 

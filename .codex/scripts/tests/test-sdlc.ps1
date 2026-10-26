@@ -864,6 +864,76 @@ Describe-Suite 'sdlc / guidelines 檢查只讀「專案規範」那一節' {
     }
 }
 
+Describe-Suite 'sdlc / guidelines/README.md：沒改過的舊版原廠才換，改過的一個字不動' {
+
+    # 4.19 以前工作流的說明寫在使用者目錄裡的 guidelines/README.md，升級永遠到不了。
+    # 兩個方向都是靜默的：不換 → 說明永遠停在舊版；換錯 → 團隊自己寫的說明被蓋掉、沒有備份。
+    $OldReadme = "# guidelines/ — 舊版骨架`n`n## 散文那半：檔名就是路由鍵`n"
+    $NewReadme = "# guidelines/ — 指標頁`n"
+    function Get-NormSha([string]$text) {
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try { -join ($sha.ComputeHash($Utf8.GetBytes(($text -replace "`r`n", "`n"))) | ForEach-Object { $_.ToString('x2') }) } finally { $sha.Dispose() }
+    }
+    function New-ReadmeRelease([string]$Name, [string]$Version = '4.6.0') {
+        $rel = New-SdlcRelease $Name -Version $Version
+        New-SdlcFile (Join-Path $rel 'guidelines/README.md') $NewReadme
+        New-SdlcFile (Join-Path $rel 'guidelines/coding.md') '# 骨架'
+        New-SdlcFile (Join-Path $rel '.codex/bdd-workflow/guidelines-readme-stock.json') `
+            (@{ current = (Get-NormSha $NewReadme); previous = @(Get-NormSha $OldReadme) } | ConvertTo-Json)
+        return $rel
+    }
+
+    It-Should 'update：一字未改的舊版原廠 README（CRLF 也算）換成新版，其他工具檔都沒變也照樣換' {
+        $rel = New-ReadmeRelease 'r-rm-up'; $t = New-SdlcTarget 't-rm-up'
+        try {
+            Invoke-Sdlc install @{ Source = $rel; Target = $t } | Out-Null
+            New-SdlcFile (Join-Path $t 'guidelines/README.md') ($OldReadme -replace "`n", "`r`n")
+            $j = Invoke-SdlcJson update @{ Source = $rel; Target = $t; Yes = $true }
+            Assert-Equal 'replaced' $j.data.guidelinesReadme '沒有換 —— 工具檔都沒變時 update 說「已經是最新」就走了'
+            Assert-Equal $NewReadme ([IO.File]::ReadAllText((Join-Path $t 'guidelines/README.md')))
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'update：改過的舊版骨架一個字不動，只提說明搬去哪' {
+        $rel = New-ReadmeRelease 'r-rm-cu'; $t = New-SdlcTarget 't-rm-cu'
+        try {
+            Invoke-Sdlc install @{ Source = $rel; Target = $t } | Out-Null
+            $mine = $OldReadme + "`n我們團隊加的一行`n"
+            New-SdlcFile (Join-Path $t 'guidelines/README.md') $mine
+            $r2 = New-ReadmeRelease 'r2-rm-cu' -Version '4.7.0'
+            $j = Invoke-SdlcJson update @{ Source = $r2; Target = $t; Yes = $true }
+            Assert-Equal $mine ([IO.File]::ReadAllText((Join-Path $t 'guidelines/README.md'))) '使用者改過的 README 被蓋掉了'
+            Assert-Equal 1 @($j.data.guidelines | Where-Object code -eq 'readme-custom').Count
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'install（guidelines/ 已存在）：只換舊版原廠 README，規範檔照樣不碰' {
+        $rel = New-ReadmeRelease 'r-rm-in'; $t = New-SdlcTarget 't-rm-in'
+        New-SdlcFile (Join-Path $t 'guidelines/README.md') $OldReadme
+        New-SdlcFile (Join-Path $t 'guidelines/coding.md') '# 我們團隊自己的'
+        try {
+            $j = Invoke-SdlcJson install @{ Source = $rel; Target = $t }
+            Assert-Equal 'replaced' $j.data.guidelinesReadme
+            Assert-Equal $NewReadme ([IO.File]::ReadAllText((Join-Path $t 'guidelines/README.md')))
+            Assert-Equal '# 我們團隊自己的' ([IO.File]::ReadAllText((Join-Path $t 'guidelines/coding.md')))
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'doctor：舊版原廠 README 報 readme-old（info，不算問題）；已是新版不報' {
+        $rel = New-ReadmeRelease 'r-rm-dr'; $t = New-SdlcTarget 't-rm-dr'
+        try {
+            Invoke-Sdlc install @{ Source = $rel; Target = $t } | Out-Null
+            $j = Invoke-SdlcJson doctor (Get-IsolatedDoctorParams $t)
+            Assert-Equal 0 @($j.data.guidelines | Where-Object { $_.code -like 'readme-*' }).Count
+            New-SdlcFile (Join-Path $t 'guidelines/README.md') $OldReadme
+            $j = Invoke-SdlcJson doctor (Get-IsolatedDoctorParams $t)
+            $f = @($j.data.guidelines | Where-Object code -eq 'readme-old')
+            Assert-Equal 1 $f.Count
+            Assert-Equal 'info' $f[0].level
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
 Describe-Suite 'sdlc / check-update 的頻率與網路' {
 
     # 一個一定回 403 的假 proxy。子行程的 HTTPS_PROXY 指向它，連線企圖就一條不漏地記下來 ——

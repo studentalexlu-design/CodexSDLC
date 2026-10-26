@@ -90,6 +90,8 @@ $BaselineRel = "$StateDir/installed-manifest.json"
 $CacheRel    = "$StateDir/update-cache.json"
 $ProposalRel = "$StateDir/tuning-proposal.json"
 $HeartbeatRel = 'bdd-docs/.cache/hooks'                     # 四支 hook 的 Write-HookHeartbeat 寫的地方
+$GuideReadmeRel = 'guidelines/README.md'
+$GuideStockRel  = '.codex/bdd-workflow/guidelines-readme-stock.json'   # 歷來原廠 README 的雜湊（見 Get-GuidelinesReadmeState）
 
 $TuneBegin   = '# SDLC-TUNING:BEGIN'
 $TuneEnd     = '# SDLC-TUNING:END'
@@ -525,10 +527,19 @@ function Test-Guidelines([string]$target, [string]$source) {
         }
     }
 
+    # README：舊版原廠的只有 doctor 看得到（install／update 已經換掉了）；改過的舊版骨架只提一次它的說明搬去哪 ——
+    # 認法是還留著舊說明的標題。已經寫成團隊自己的 README 不會有那一句，不吵。
+    $rmState = Get-GuidelinesReadmeState $target $source
+    if ($rmState -eq 'stock') {
+        $findings += [pscustomobject]@{ level = 'info'; code = 'readme-old'; text = 'guidelines/README.md 是舊版的原廠說明（你沒改過）—— 下次 update 會換成新版。工作流的說明在 .codex/bdd-workflow/guidelines-guide.md。' }
+    } elseif ($rmState -eq 'custom' -and ([IO.File]::ReadAllText((Join-Path $target $GuideReadmeRel)) -match '檔名就是路由鍵')) {
+        $findings += [pscustomobject]@{ level = 'info'; code = 'readme-custom'; text = 'guidelines/README.md 是你改過的舊版骨架說明，沒有覆蓋。工作流的說明已搬到 .codex/bdd-workflow/guidelines-guide.md（每次 update 會跟著更新）—— 你那份裡的工作流說明會停在舊版，可以刪掉，只留你們團隊自己的。' }
+    }
+
     if (Test-Path (Join-Path $gdir '.gate-disabled')) {
         $findings += [pscustomobject]@{
             level = 'warn'; code = 'gate-disabled'
-            text  = 'guidelines/.gate-disabled 還在 —— 規範的機械層是關的，而且它會活過每一次升級（guidelines/ 永遠不覆蓋）。不需要就刪掉它。'
+            text  = 'guidelines/.gate-disabled 還在 —— 規範的機械層是關的，而且它會活過每一次升級（升級不動 guidelines/ 裡的它）。不需要就刪掉它。'
         }
     }
 
@@ -541,6 +552,43 @@ function Test-Guidelines([string]$target, [string]$source) {
         }
     }
     return $findings
+}
+
+# ---- guidelines/README.md：guidelines/ 裡唯一會被換掉的檔 ----
+#
+# 4.19 以前，工作流的使用說明（檔名即路由鍵、rules.json 格式、從審核歸納規範）寫在 guidelines/README.md ——
+# 使用者的目錄裡。install 只在 guidelines/ 不存在時放骨架，所以說明改了，已安裝的專案永遠看不到。
+# 4.20 起說明搬進 .codex/bdd-workflow/guidelines-guide.md（跟著 update 走），README 縮成一頁指標。
+#
+# 已安裝的那份要不要換：跟歷來任何一版原廠 README 一字不差（換行統一成 LF、去掉 BOM）= 使用者沒動過，
+# 換掉不損失任何東西；否則一個字都不動。不靠基準線 —— guidelines/ 從來不在基準線裡。
+#
+# 回傳 absent／current（已是這一版）／stock（舊版原廠，可換）／custom（改過）／unknown（沒有雜湊清單可比）。
+function Get-NormalizedTextSha([string]$path) {
+    $text = [IO.File]::ReadAllText($path, $Utf8NoBom).TrimStart([char]0xFEFF) -replace "`r`n", "`n"
+    return Get-Sha256Text $text
+}
+
+function Get-GuidelinesReadmeState([string]$target, [string]$stockRoot) {
+    $readme = Join-Path $target $GuideReadmeRel
+    if (-not (Test-Path $readme -PathType Leaf)) { return 'absent' }
+    $stock = Read-JsonFile (Join-Path $stockRoot $GuideStockRel)
+    if (-not $stock) { return 'unknown' }
+    $h = Get-NormalizedTextSha $readme
+    if ($h -eq [string]$stock.current) { return 'current' }
+    if ($h -in @($stock.previous)) { return 'stock' }
+    return 'custom'
+}
+
+# install（guidelines/ 已存在）與 update 共用。回傳 replaced／will-replace（$dryRun：只判斷、不寫）／原狀態。
+function Update-GuidelinesReadme([string]$target, [string]$source, [bool]$dryRun) {
+    $src = Join-Path $source $GuideReadmeRel
+    if (-not (Test-Path $src -PathType Leaf)) { return 'no-source' }
+    $state = Get-GuidelinesReadmeState $target $source
+    if ($state -ne 'stock') { return $state }
+    if ($dryRun) { return 'will-replace' }
+    Copy-Item $src (Join-Path $target $GuideReadmeRel) -Force
+    return 'replaced'
 }
 
 function Get-FindingData($findings) {
@@ -1699,6 +1747,7 @@ function Invoke-Install {
     $script:Data.target  = (Resolve-Path $Target).Path
     $script:Data.version = $srcVer.contract
     $script:Data.guidelinesSkeleton = $false
+    $script:Data.guidelinesReadme   = $null
 
     if ($Adopt) {
         if (-not (Test-Path (Join-Path $Target '.codex'))) { Warn "-Adopt 需要目標已經有 .codex/。"; $script:Data.error = 'nothing-to-adopt'; return 2 }
@@ -1723,13 +1772,17 @@ function Invoke-Install {
             $writes += $rel
         }
 
-        # guidelines/ 是使用者的：不存在才放骨架，已存在就完全不碰（含 submodule 掛載點）。
+        # guidelines/ 是使用者的：不存在才放骨架，已存在就不碰（含 submodule 掛載點）——
+        # 唯一的例外是一字未改的舊版原廠 README（Update-GuidelinesReadme）。
         $gsrc = Join-Path $Source 'guidelines'
         $gdst = Join-Path $Target 'guidelines'
         if ((Test-Path $gsrc) -and -not (Test-Path $gdst)) {
             Copy-Item $gsrc $gdst -Recurse -Force
             $script:Data.guidelinesSkeleton = $true
-            Say 'guidelines/ 放了一份骨架 —— 這份是**你的**，換成你們自己的規範；不需要就整個刪掉，流程照常跑。升級永遠不會覆蓋它。'
+            Say 'guidelines/ 放了一份骨架 —— 這份是**你的**，換成你們自己的規範；不需要就整個刪掉，流程照常跑。升級不會覆蓋它。'
+        } elseif ((Update-GuidelinesReadme $Target $Source $false) -eq 'replaced') {
+            $script:Data.guidelinesReadme = 'replaced'
+            Say "$GuideReadmeRel 是舊版的原廠說明（你沒改過），換成了新版 —— 說明本體搬到 .codex/bdd-workflow/guidelines-guide.md。"
         }
     }
     $script:Data.written    = $writes.Count
@@ -1860,6 +1913,9 @@ function Invoke-Update {
     $script:Data.modified  = @($modified)
     $script:Data.added     = @($added)
     $script:Data.removed   = @($removed)
+    # guidelines/README.md 不在工具清單裡（guidelines/ 是使用者的），另外判斷：一字未改的舊版原廠才換。
+    $readmeSwap = (Update-GuidelinesReadme $Target $Source $true) -eq 'will-replace'
+    $script:Data.guidelinesReadme = if ($readmeSwap) { 'will-replace' } else { $null }
 
     Say "升級：$(if ($tgtVer) { $tgtVer.contract } else { '未知' }) → $($srcVer.contract)"
     Say ''
@@ -1873,6 +1929,7 @@ function Invoke-Update {
     }
     Say "會覆蓋（你沒動過）：$($unchanged.Count) 個"
     Say "新增：$($added.Count) 個"
+    if ($readmeSwap) { Say "另外：$GuideReadmeRel 是舊版的原廠說明（你沒改過），會換成新版的指標頁。" }
     if ($modified.Count -gt 0) {
         Say ''
         Say "** 你改過的檔（$($modified.Count) 個）** —— 會先備份再覆蓋："
@@ -1899,7 +1956,7 @@ function Invoke-Update {
     }
     Say ''
 
-    if ($unchanged.Count -eq 0 -and $modified.Count -eq 0 -and $added.Count -eq 0 -and $removed.Count -eq 0) {
+    if ($unchanged.Count -eq 0 -and $modified.Count -eq 0 -and $added.Count -eq 0 -and $removed.Count -eq 0 -and -not $readmeSwap) {
         $script:Data.result = 'up-to-date'
         Say '已經是最新，沒有檔要動。'
         return 0
@@ -1937,6 +1994,7 @@ function Invoke-Update {
         Copy-Item (Join-Path $Source $rel) $t -Force
     }
     foreach ($rel in $removed) { Remove-Item (Join-Path $Target $rel) -Force -ErrorAction SilentlyContinue }
+    if ($readmeSwap) { $script:Data.guidelinesReadme = Update-GuidelinesReadme $Target $Source $false }
 
     $cfg = Read-JsonFile $cfgPath
     $newAgents = Merge-Config $cfg $Source $srcVer.contract
