@@ -549,6 +549,30 @@ Describe-Suite 'repo-index -StatusOnly / project-map 逐節失效（以前是 sa
         } finally { Remove-Item $RiRoot -Recurse -Force -ErrorAction SilentlyContinue }
     }
 
+    It-Should '來源在 repo 裡找不到（只寫檔名、大小寫不符、對不到檔的萬用字元）→ 那一節過期，missing 列出它' {
+        # git 對不存在的 path 兩行都回空、exit 0 —— 以前這種節永遠是「沒變」，編出來的來源讓它一直被當成證據採信。
+        $root = New-MapRepo
+        $sha = (& git -C $root rev-parse HEAD).Trim()
+        New-RiFile (Join-Path $root 'bdd-docs/project-map.md') ("<!-- git-sha: $sha -->`n# Project map`n`n" +
+            "## 訂單`n來源：``OrderService.cs``、``src/Orders/```n`n" +
+            "## 報表`n來源：``src/reports/ReportService.cs```n`n" +
+            "## 測試骨架`n來源：``src/Nope/*.cs```n`n" +
+            "## 分層`n來源：``src/*/*Service.cs``、``src/Reports/```n")
+        try {
+            $s = @((Invoke-RiStatus $root).project_map.sections)
+            $o = $s | Where-Object title -eq '訂單'
+            Assert-True $o.stale '只寫檔名的來源沒被判過期'
+            Assert-Equal 'OrderService.cs' (@($o.missing) -join '|')
+            $r = $s | Where-Object title -eq '報表'
+            Assert-True $r.stale '大小寫不符沒被判過期（git 的 pathspec 分大小寫，status 永遠是空的）'
+            Assert-Equal 'src/reports/ReportService.cs' (@($r.missing) -join '|')
+            Assert-True ($s | Where-Object title -eq '測試骨架').stale '對不到任何檔的萬用字元沒被判過期'
+            $l = $s | Where-Object title -eq '分層'
+            Assert-True (-not $l.stale) "對得到的萬用字元與目錄被判過期：$(ConvertTo-Json $l -Compress)"
+            Assert-Equal 0 @($l.missing).Count
+        } finally { Remove-Item $RiRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
     It-Should '跨 feature 的 DB 證據與 legacy-schema 一起列出（含節標題與 captured 日期）' {
         $root = New-MapRepo
         New-RiFile (Join-Path $root 'bdd-docs/old-feature/evidence/db-orders.md') "# DB`n`n## 2026-09-01 —— dbo.Orders`n欄位…`n`n## 2026-09-03 —— dbo.OrderItems`n"

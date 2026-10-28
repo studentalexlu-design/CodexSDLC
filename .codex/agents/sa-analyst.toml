@@ -49,13 +49,13 @@ handoff 帶了 `bdd-docs/{feature-id}/spec.md` 的 path → **先讀它**。那�
 
 **哪幾節過期了，由下一節那行 `-StatusOnly` 告訴你**（`project_map`）。它拿地圖檔頭的 `git-sha`，替每一節的「來源」跑過已 commit（`git diff {sha}..HEAD`）與還沒 commit（`git status --porcelain`）兩種變動 —— 這套流程不 commit，上一個需求的改動全在第二種裡：
 
-- `sections[].stale: false` → **那一節直接採信**；`true` → 只重查那一節（`changed` 列了改到的檔）。
+- `sections[].stale: false` → **那一節直接採信**；`true` → 只重查那一節（`changed` 列了改到的檔）。`missing` 列了 repo 裡找不到的來源（拼錯、只寫檔名、大小寫不符、不是 path）—— git 永遠看不到它的變動，所以那一節每次都判過期；重查時把「來源」改成真的 path。
 - `whole_map_unverified: true`（原因在 `reason`：地圖沒有 `git-sha`、不是 git repo、或 git 指令失敗）→ **整份地圖當成待驗證** —— 可以當線索指路，不能當證據下結論。
 - **不要拿 `changed_files` 判斷地圖**：那是相對 `index.json` 的基準線算的，索引一刷新就清空 —— 「刷新了索引、然後逾時、地圖沒寫成」之後它是空的，停在好幾個需求以前的地圖看起來會很新。
 
 依序，**查到夠回答問題就停**：
 
-1. **規格文件** —— repo 裡的 `docs/`、`README`、`*.md`、既有的 `bdd-docs/*/spec.md`。先看有沒有人寫過這塊。規格是 PDF 或掃描檔時用 skill `pdf`。
+1. **規格文件** —— repo 裡的 `docs/`、`README`、`*.md`、既有的 `bdd-docs/*/spec.md`。先看有沒有人寫過這塊。既有 `spec.md` 尾端的「交付」列了當時沒驗到的（只用替身驗過的外部來源、待人工驗證、沒修的必修）—— 這次的做法碰到同一處，寫進那個做法的「風險」。規格是 PDF 或掃描檔時用 skill `pdf`。
 2. **repo** —— 現在的程式怎麼做的。重點是**擴充點**：有沒有現成的介面、策略、設定開關可以掛上去，而不是非動核心不可。**先問索引再開檔**（見下節）—— 擴充點多半在 `impact-scope.ps1` 的候選清單裡就看得到（每個候選帶它的 `bases` 與 DI 註冊），看得到的就直接採用，省下那一次開檔。
 3. **schema** —— migration 檔、ORM model、`*.sql`、DDL。**這些是檔案，直接讀。**
 4. **已落地的 DB 證據** —— handoff 帶了 `bdd-docs/{feature-id}/evidence/db-*.md` 就**先讀它**。**handoff 沒帶也要看跨 feature 的 `bdd-docs/*/evidence/db-*.md`** —— 前幾個需求盤點過的表就躺在別的 feature 目錄裡。清單不必自己搜：`-StatusOnly` 的 `evidence` 列了每個檔與它的節標題（`{日期} —— {物件}`，也就是哪一天查了什麼）。`bdd-docs/artifacts/legacy-schema/` 同理是**跨需求的固定路徑**，`-StatusOnly` 的 `legacy_schema` 列了每個 definition 檔、`-- captured:` 日期與物件名 —— 要逆推 SQL 就先看那裡有沒有現成的。三者都是已經花掉一次使用者批准、一次連線換來的；**裡面有的東西直接拿來用** —— 為一份硬碟上已經有的盤點再買一次批准，是這條流程裡最貴、而且沒有任何地方會記帳的浪費。舊到你懷疑它過期 → 一樣帶著它繼續，把疑慮寫進「風險與待確認」（同 `legacy-schema` 的 `-- captured:` 那條）。

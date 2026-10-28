@@ -96,8 +96,8 @@ const pkg = JSON.parse(fs.readFileSync(path.join(ext, 'package.json'), 'utf8'));
 (0, node_test_1.test)('README 講清楚三件刻意不做的事與「移除專案不等於移除 extension」', () => {
     const readme = fs.readFileSync(path.join(ext, 'README.md'), 'utf8');
     strict_1.default.match(readme, /不推測/);
-    strict_1.default.match(readme, /不自己實作/);
-    strict_1.default.match(readme, /不把工作流設定存進 VS Code settings/);
+    strict_1.default.match(readme, /不(自己|自行)實作/);
+    strict_1.default.match(readme, /不(把|將)工作流設定存(進|入) VS Code settings/);
     strict_1.default.match(readme, /--uninstall-extension codex-sdlc\.codex-sdlc/);
 });
 (0, node_test_1.test)('面板永遠在；還沒裝工作流時它是安裝入口（以前這裡什麼都沒有，使用者無路可走）', () => {

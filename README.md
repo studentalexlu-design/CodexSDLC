@@ -48,16 +48,17 @@
 | --- | --- | --- | --- |
 | ① 需求 | 找出須由使用者決定的缺口 | orchestrator（現況由 `sa-analyst` 盤點） | `spec.md`、`current-state.md` |
 | ② 分析 | 查閱規格、repo、schema，提出 2–4 個做法 | `sa-analyst` | `project-map.md` |
-| ③ 定案 | 選定做法、確認 Gherkin 驗收條件 | 使用者 | `spec.md` |
+| ③ 定案 | 寫好 `spec.md`，確認做法、Gherkin 驗收條件與交付範圍 | 使用者 | `spec.md` |
 | ④ 實作 | test-first 實作至測試通過 | `implementer` | `.feature`、程式碼、測試 |
 | ⑤ 審核 | 於獨立 context 審核；未通過返回 ④ | `reviewer` | `review.md` |
-| ⑥ 交付 | 回報變更、驗證方式與剩餘風險 | orchestrator | — |
+| ⑥ 交付 | 回報變更、驗證方式與剩餘風險 | orchestrator | `spec.md` |
 
 - **詢問時機**：① 有缺口時（每輪至多 5 題，附建議，至多三輪）、③ 定案（必問）、⑥ 涉及既有資料、線上流量或既有 step 措辭時。執行 smoke test、啟動服務或連線外部 DB 前亦先確認。
 - **需求很空時**：① 先由 `sa-analyst` 盤點現況，再起草主流程供修改；每行標明出處（使用者所述、系統現況、假設），僅詢問假設與不一致處。
 - **資料來源不明時**：先將每項資料比對至 repo 中的來源（資料表、client、設定 key），比對不到者一次列出詢問。建議將 API 文件或樣本放入 repo。
 - **驗收條件的完成標準**：`.feature` 中每條 scenario（含先前迭代）在全套測試結果中均有通過的測試，且結果晚於最後一次修改；由 `gherkin-check` 判定。QA 手動測試的 scenario 標 `@manual`。
 - **審核**：上一輪的每項必修，須於新一輪仍列為必修，或於「上一輪必修的交代」註明已修（附證據）或接受不修（附理由）；缺漏時 hook 擋下寫入。
+- **剩餘風險**：僅以替身驗證的外部來源、待人工驗證的 scenario、未修的必修，於交付時與驗證方式一併寫入 `spec.md` 的「交付」一節，供後續迭代、除錯與分析參照。
 - **缺陷無法重現時**：略過 ①，先建立重現症狀的失敗測試，並回查原始需求；行為與原需求一致者改以需求變更處理。
 - 純技術變更可省略 ①；可由單一 commit 還原且無驗收行為的小改動直接完成。② 僅以會編譯、會執行的程式碼為現況。
 - 每個需求請開新對話；中斷時可由既有 `spec.md` 接續。
@@ -66,7 +67,7 @@
 
 | 位置 | 內容 |
 | --- | --- |
-| `bdd-docs/{feature-id}/spec.md` | 需求決議、選定做法、驗收條件 |
+| `bdd-docs/{feature-id}/spec.md` | 需求決議、選定做法、驗收條件、交付時的驗證方式與剩餘風險 |
 | `bdd-docs/{feature-id}/current-state.md` | 系統現況盤點（需求很空或資料來源不明時） |
 | `bdd-docs/{feature-id}/review.md` | 審核結論與發現 |
 | `bdd-docs/{feature-id}/reviews/` | 各輪審核快照（hook 自動留存），供 `sdlc.ps1 learn` 讀取 |

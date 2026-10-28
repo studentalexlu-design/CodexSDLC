@@ -86,7 +86,7 @@ step definitions **為重用而寫**（QA 會沿用）：業務邏輯留在被�
 pwsh -NoProfile -File .codex/scripts/gherkin-check.ps1 -Feature {這次的 .feature} -TestResults {最後一次測試的結果檔}
 ```
 
-它比對上面第 1、3、4 條的機械部分：步驟逐字照抄 `spec.md`（有 `## 迭代 N` 時只比最後一次，要比別次加 `-Iteration N`）、既有 scenario 與 step 措辭沒被刪改（跟 git HEAD 比）、沒有 `@ignore` 之類的略過標籤。帶了 `-TestResults` 還驗：**`.feature` 裡每一條 scenario（含前幾次迭代的）都有測試而且通過、結果檔比你改過的檔新** —— 少一條 scenario 沒產生測試，或結果檔是改程式之前跑的，全套照樣是綠的。所以結果檔要是**全套**（`commands.test`）跑出來的，不是 `test-filter`；QA 手動測、本來就沒有自動化的 scenario 標 `@manual`。結果檔：`dotnet test --logger trx`（在 `TestResults/*.trx`）；Maven 在 `target/surefire-reports/TEST-*.xml`；Gradle 在 `build/test-results/test/*.xml`。紅了照訊息改；既有措辭真的非改不可 → 寫進「風險與待確認」交給 orchestrator。指令（含結果檔路徑）與 exit code 放進「證據」—— reviewer 拿它當 oracle，不再逐字人工比對、也不再重跑測試確認綠燈。
+它比對上面第 1、3、4 條的機械部分：步驟逐字照抄 `spec.md`（有 `## 迭代 N` 時只比最後一次，要比別次加 `-Iteration N`）、既有 scenario 與 step 措辭沒被刪改（跟 git HEAD 比）、沒有 `@ignore` 之類的略過標籤。帶了 `-TestResults` 還驗：**`.feature` 裡每一條 scenario（含前幾次迭代的）都有測試而且通過、結果檔比你改過的檔新** —— 少一條 scenario 沒產生測試，或結果檔是改程式之前跑的，全套照樣是綠的。所以結果檔要是**全套**（`commands.test`）跑出來的，不是 `test-filter`；QA 手動測、本來就沒有自動化的 scenario 標 `@manual`，這次標的逐條寫進「風險與待確認」：`待人工驗證：{scenario 標題}` —— orchestrator 在 ⑥ 列進殘留風險，沒寫的話使用者會以為全綠就是每一條都驗過了。結果檔：`dotnet test --logger trx`（在 `TestResults/*.trx`）；Maven 在 `target/surefire-reports/TEST-*.xml`；Gradle 在 `build/test-results/test/*.xml`。紅了照訊息改；既有措辭真的非改不可 → 寫進「風險與待確認」交給 orchestrator。指令（含結果檔路徑）與 exit code 放進「證據」—— reviewer 拿它當 oracle，不再逐字人工比對、也不再重跑測試確認綠燈。
 
 **`bdd-docs/project-map.md` 存在 → 讀它的「測試骨架」一節（加上面說的「領域詞彙」，只讀這兩節）。** 前幾個需求建立的 step 詞彙在那裡。`spec.md` 的「切片與沿用」只涵蓋**這次**的切片，跨需求的重複沒有別的地方看得到 —— 而同一件事在系統裡有兩種講法，斷的是 QA 的自動化。
 

@@ -67,8 +67,8 @@ test('extension 自己不碰網路（check = never 的保證不能被它繞過�
 test('README 講清楚三件刻意不做的事與「移除專案不等於移除 extension」', () => {
   const readme = fs.readFileSync(path.join(ext, 'README.md'), 'utf8');
   assert.match(readme, /不推測/);
-  assert.match(readme, /不自己實作/);
-  assert.match(readme, /不把工作流設定存進 VS Code settings/);
+  assert.match(readme, /不(自己|自行)實作/);
+  assert.match(readme, /不(把|將)工作流設定存(進|入) VS Code settings/);
   assert.match(readme, /--uninstall-extension codex-sdlc\.codex-sdlc/);
 });
 

@@ -10,6 +10,8 @@
 #   - 地圖檔頭沒有 `<!-- git-sha: … -->`、不是 git repo、或任何一行 git 失敗 → 整份地圖待驗證（只當線索、不當證據）
 #   - 一節的兩行 git 任一行非空 → 那一節要重查；兩行都空 → 那一節直接採信
 #   - 一節沒有「來源：」→ 判斷不了它過期了沒，當成要重查
+#   - 一節有來源在 repo 裡找不到（拼錯、只寫檔名、大小寫不符、根本不是 path）→ 那一節要重查，列在 `missing`：
+#     git 對不存在的 path 兩行都回空、exit 0，不擋的話那一節永遠是「沒變」—— 編出來的來源會讓它被當成證據一直採信。
 
 function Get-MapSources([string]$body) {
     $sources = @()
@@ -20,6 +22,23 @@ function Get-MapSources([string]$body) {
         }
     }
     return @($sources | Sort-Object -Unique)
+}
+
+# 來源在 repo 裡有沒有 git 看得到的東西。大小寫要一字不差：git 的 pathspec 分大小寫，Windows／macOS 的檔案系統不分 ——
+# `src/orders/` 開得到檔，`git status -- src/orders/` 卻永遠是空的。萬用字元交給 git 自己比。
+function Test-MapSource([string]$root, [string]$src) {
+    if ($src -match '[*?\[]') { return [bool](Invoke-GitLines $root @('ls-files', '--cached', '--others', '--exclude-standard', '--', $src)).lines.Count }
+    $cur = $root
+    try {
+        foreach ($seg in ($src.Trim('/') -split '/')) {
+            if ($seg -eq '..') { return $false }
+            if (-not $seg -or $seg -eq '.') { continue }
+            if (-not [IO.Directory]::Exists($cur)) { return $false }
+            if (-not @([IO.Directory]::EnumerateFileSystemEntries($cur, $seg) | Where-Object { [IO.Path]::GetFileName($_) -ceq $seg }).Count) { return $false }
+            $cur = Join-Path $cur $seg
+        }
+    } catch { return $false }
+    return $true
 }
 
 function Invoke-GitLines([string]$root, [string[]]$gitArgs) {
@@ -45,14 +64,15 @@ function Get-MapStatus {
             if ($p -notmatch '^## ') { continue }
             $title = ($p -split "`n", 2)[0].Substring(3).Trim()
             $src = @(Get-MapSources $p)
-            $sec = [ordered]@{ title = $title; sources = $src; stale = $true; changed = @() }
+            $sec = [ordered]@{ title = $title; sources = $src; stale = $true; changed = @(); missing = @() }
             if (-not $src.Count) { $sec.note = 'no-sources' }
             elseif (-not $map.reason) {
                 $committed = Invoke-GitLines $Root (@('diff', '--name-only', "$($map.git_sha)..HEAD", '--') + $src)
                 $pending   = Invoke-GitLines $Root (@('status', '--porcelain', '--untracked-files=all', '--') + $src)
                 if (-not $committed.ok -or -not $pending.ok) { $failed = $true }
                 $changed = @($committed.lines) + @($pending.lines | ForEach-Object { $_.Substring([Math]::Min(3, $_.Length)) })
-                $sec.stale = ($changed.Count -gt 0)
+                $sec.missing = @($src | Where-Object { -not (Test-MapSource $Root $_) })
+                $sec.stale = ($changed.Count -gt 0 -or $sec.missing.Count -gt 0)
                 $sec.changed = @($changed | Sort-Object -Unique | Select-Object -First 5)
             }
             $sections += [pscustomobject]$sec
