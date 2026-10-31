@@ -50,6 +50,7 @@ handoff 帶了 `bdd-docs/{feature-id}/spec.md` 的 path → **先讀它**。那�
 **哪幾節過期了，由下一節那行 `-StatusOnly` 告訴你**（`project_map`）。它拿地圖檔頭的 `git-sha`，替每一節的「來源」跑過已 commit（`git diff {sha}..HEAD`）與還沒 commit（`git status --porcelain`）兩種變動 —— 這套流程不 commit，上一個需求的改動全在第二種裡：
 
 - `sections[].stale: false` → **那一節直接採信**；`true` → 只重查那一節（`changed` 列了改到的檔）。`missing` 列了 repo 裡找不到的來源（拼錯、只寫檔名、大小寫不符、不是 path）—— git 永遠看不到它的變動，所以那一節每次都判過期；重查時把「來源」改成真的 path。
+- `no_sha` 列了檔頭沒有它所屬 repo 的 sha 的來源（前後端分成兩個 repo、工作流裝在外層時，每個 repo 各記一個 sha）—— 那一節判過期，重查後檔頭照下面那條更新。
 - `whole_map_unverified: true`（原因在 `reason`：地圖沒有 `git-sha`、不是 git repo、或 git 指令失敗）→ **整份地圖當成待驗證** —— 可以當線索指路，不能當證據下結論。
 - **不要拿 `changed_files` 判斷地圖**：那是相對 `index.json` 的基準線算的，索引一刷新就清空 —— 「刷新了索引、然後逾時、地圖沒寫成」之後它是空的，停在好幾個需求以前的地圖看起來會很新。
 
@@ -161,7 +162,7 @@ pwsh -NoProfile -File .codex/scripts/impact-scope.ps1 -Keywords '取消,訂單,I
 | 範圍 | 這個 feature | 這個 repo |
 | 過期時 | 被下一次整份覆蓋 | 只更正命中的那一節 |
 
-檔頭第一行寫 `<!-- git-sha: ... -->`，但**只有這次把六節全部驗過（或整份重寫）才更新成當下的 HEAD**；只驗了其中幾節就**沿用舊值**。那個 sha 是下一個你算 diff 的起點 —— 往前推等於宣告「每一節都驗到這裡了」，沒驗到的那幾節就會被靜默採信。沿用舊值最多讓下次多驗幾節，方向是安全的。（`-StatusOnly` 每次都替六節驗過，全驗過本來就該是常態。）
+檔頭第一行寫 `<!-- git-sha: ... -->`，但**只有這次把六節全部驗過（或整份重寫）才更新成當下的 HEAD** —— 照抄 `-StatusOnly` 的 `project_map.head_header`（工作區底下有好幾個 repo 時它每個 repo 列一個 sha，自己只寫一個會讓其他 repo 的節永遠判過期）；只驗了其中幾節就**沿用舊值**。那個 sha 是下一個你算 diff 的起點 —— 往前推等於宣告「每一節都驗到這裡了」，沒驗到的那幾節就會被靜默採信。沿用舊值最多讓下次多驗幾節，方向是安全的。（`-StatusOnly` 每次都替六節驗過，全驗過本來就該是常態。）
 
 只寫下面六類，**每一類一個 `## ` 標題，結尾一行「來源：`path`、`path`」** —— `-StatusOnly` 靠這兩樣分節、找來源；沒有來源的節，下一個你沒辦法判斷它過期了沒：
 
@@ -189,7 +190,7 @@ pwsh -NoProfile -File .codex/scripts/impact-scope.ps1 -Keywords '取消,訂單,I
 
 ### 專案規範會刪掉做法 —— 所以讀在排做法之前
 
-`guidelines/` 存在 → 讀 `api.md`（做法會動到對外 API 時）與 `sql.md`（會動到查詢或 schema 時）。**讀在你開始排做法之前**，不是排完再檢查。
+`guidelines/` 存在 → 讀 `api.md`（做法會動到對外 API 時）、`sql.md`（會動到查詢或 schema 時），涉及前端加讀 `frontend.md`。**讀在你開始排做法之前**，不是排完再檢查。只讀適用且存在的規範檔；缺少可選檔就沿用專案慣例，不因此 blocked。
 
 不讀的代價落在最貴的地方：你排出團隊不能選的做法 → 使用者在 ③ 照著它下**不可逆**的決定 → ④ 做完 → ⑤ 才發現違規。那時 ③ 回不去了，④⑤ 全部白做。
 
@@ -202,6 +203,8 @@ pwsh -NoProfile -File .codex/scripts/impact-scope.ps1 -Keywords '取消,訂單,I
 **違反 MUST 的做法照樣列出來**，把「需要規範豁免」寫在那一行，代價寫進「風險」。有時候正確答案就是去要一次豁免 —— 而被你刪掉的選項，使用者不會知道它存在過。這跟 ① 那條「默默丟掉的缺口不會消失」是同一條。
 
 `guidelines/` 不存在 → 那一行寫「規範：無」**就結束**。地圖是現況（現在怎麼做），規範是規定（該怎麼做）—— 把現況當規範，不合規的舊碼就變成標準。
+
+**涉及前端的分析**：盤點既有元件／設計系統、路由、狀態管理與 API client，對出資料來源、元件責任及載入／空資料／失敗等互動狀態。列明響應式、鍵盤操作與焦點需求是否已定；缺決策就回報需求缺口，不自行選定。技術做法須說明可沿用的測試工具及驗收層（元件或瀏覽器），不要預設框架或另裝一套工具；需啟動服務或瀏覽器的驗證，交由 orchestrator 取得批准。
 
 ### 精度是事實，不是決策 —— 所以它歸你查
 
@@ -224,7 +227,7 @@ pwsh -NoProfile -File .codex/scripts/impact-scope.ps1 -Keywords '取消,訂單,I
 
 ### 專案還沒有 BDD 框架 —— ③ 要看得到 ④ 會多加一個套件
 
-`index-digest.json` 的 `test-toolchain.bdd` 是空的 → **每個做法的「動到」都多列一項**：測試專案，加上 `bdd-fallback` 那個套件（例：`Orders.Tests.csproj`（加 `Reqnroll.NUnit`））。這是 ④ 一定會做的改動 —— 不列出來，使用者在 ③ 批准做法時不知道專案會多一個套件。
+`index-digest.json` 的 `test-toolchain.bdd` 是空的 → **每個做法的「動到」都多列一項**：測試專案，加上 `bdd-fallback` 那個套件（例：`Orders.Tests.csproj`（加 `Reqnroll.NUnit`））。前端看 `node-packages` 裡那個套件自己的 `test-toolchain`：`bdd-fallback` 分瀏覽器層與元件層，列跟這個做法的驗收層對應的那一個（例：`web/package.json`（加 `playwright-bdd`））。這是 ④ 一定會做的改動 —— 不列出來，使用者在 ③ 批准做法時不知道專案會多一個套件。
 
 - **測試專案不只一個** → 寫成「`A.Tests` 或 `B.Tests`（③ 選）」，在「我建議」那節講哪一個、為什麼。放哪個由使用者挑。
 - **一個都沒有** → 寫「新建測試專案」，代價算進「工」—— 那是結構決定，不是順手的事。

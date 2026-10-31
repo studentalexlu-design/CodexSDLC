@@ -1,7 +1,7 @@
 ---
 name: spec-authoring
 version: 1.0.0
-description: ③ 定案時 orchestrator 寫 bdd-docs/{feature-id}/spec.md 的格式。用於：寫 spec.md 的做法與驗收條件、同一塊功能的第二次迭代、bug 修復或沒有行為變更時的驗收寫法
+description: ③ 定案時 orchestrator 寫 bdd-docs/{feature-id}/spec.md 的格式。用於：寫 spec.md 的做法與驗收條件、④ 分次委派時的「切片與沿用」、同一塊功能的第二次迭代、bug 修復或沒有行為變更時的驗收寫法
 ---
 
 # spec.md 怎麼寫
@@ -16,6 +16,13 @@ description: ③ 定案時 orchestrator 寫 bdd-docs/{feature-id}/spec.md 的格
 - **Gherkin 區塊的第一行固定寫 `# feature-id: {feature-id}`**，擺在 `Feature:` 之上 —— 它跟著落進 `.feature`，②″ 靠它 grep 回原需求，`gherkin-check` 靠它找回這份 spec（少了這行它直接報錯）。
 - **Gherkin 區塊底下多寫一行「驗收層」** —— 這幾條 scenario 繫結在哪個介面上（HTTP endpoint／application service／domain method／UI）。② 選定的做法已經決定了它；不寫的話 `implementer` 自己挑，**挑錯層正是假綠燈最常見的來源**。
 - **Scenario 的具體值直接取 ① 談定的實例**（「需求決議」裡的日期、金額、狀態、門檻的邊界值）—— 這一步是謄寫，不是發明。
+
+## ④ 分次委派時：「切片與沿用」
+
+行為數 > 3、分次委派時，`spec.md` 多一節 `## 切片與沿用`，只有兩件事：
+
+- **切法** —— 每片一行：這片是哪個行為、對應 ③ 的哪幾條 scenario。
+- **沿用** —— 前面幾片建立、後續必須沿用的東西：step 詞彙、共用 fixture／helper 的 path、已建立的介面。**每片回來就更新，下一片委派前它必須是最新的** —— 不然下一片會另造一套，step 措辭分岔斷的是 QA 的 repo。進度不寫進去。
 
 ## 兩個例外
 

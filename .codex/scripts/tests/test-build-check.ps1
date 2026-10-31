@@ -155,3 +155,91 @@ Describe-Suite 'build-check / 綠燈去抖' {
         } finally { Remove-Item $stamp -ErrorAction SilentlyContinue }
     }
 }
+
+Describe-Suite 'build-check / Node／TypeScript：存檔後跑型別檢查' {
+
+    # 以前 .ts 一個都不觸發：前端專案寫錯型別，要等到 ④ 跑測試（或根本沒跑）才看得到。
+    # 套件目錄由 package.json 決定，指令照 lib/node-project.ps1（跟 repo-index 同一份）。
+    function New-BcNode([hashtable]$files, [switch]$NoInstall) {
+        $root = "bcn-$([guid]::NewGuid().ToString('N').Substring(0, 8))"
+        foreach ($k in $files.Keys) {
+            $p = Join-Path (Get-Location) "$root/$k"
+            New-Item -ItemType Directory -Path (Split-Path $p -Parent) -Force | Out-Null
+            [IO.File]::WriteAllText($p, $files[$k], [Text.UTF8Encoding]::new($false))
+        }
+        if (-not $NoInstall) { New-Item -ItemType Directory -Path (Join-Path (Get-Location) "$root/web/node_modules") -Force | Out-Null }
+        return $root
+    }
+
+    # 假的 npm：印一行 tsc 形狀的錯誤，後面接十幾行 npm 的「script 失敗」雜訊（只留最後 10 行的話會看不到錯誤），
+    # 記下在哪個目錄被叫，exit code 讀那個目錄的 exitcode.txt。
+    # 不用這台的 npm：test runner 把 codex 所在的目錄拿出 PATH，而用 npm 裝 codex 的機器上 node／npm 就在那個目錄裡 ——
+    # 用真的 npm 的測試在那種機器上會走「工具鏈不可用」那條，什麼都沒測到。
+    function New-BcFakeNpm([string]$bin) {
+        New-Item -ItemType Directory -Path $bin -Force | Out-Null
+        $noise = (1..12 | ForEach-Object { "@echo npm error noise line $_" }) -join "`r`n"
+        $body = "@echo %CD%>> `"%~dp0npm.calls`"`r`n@echo src/a.ts(1,14): error TS2322: Type 'string' is not assignable to type 'number'.`r`n$noise`r`n@set /p CODE=<exitcode.txt`r`n@exit /b %CODE%`r`n"
+        [IO.File]::WriteAllText((Join-Path $bin 'npm.cmd'), $body, [Text.Encoding]::ASCII)
+        return (Join-Path $bin 'npm.calls')
+    }
+    function Get-BcPath([string]$bin) {
+        return (@($bin, (Split-Path ([Environment]::ProcessPath) -Parent), [Environment]::SystemDirectory) | Where-Object { $_ }) -join ';'
+    }
+    $BcPkg = @{ 'web/package.json' = '{ "name": "web", "scripts": { "typecheck": "tsc --noEmit" } }' }
+
+    It-Should '.ts／.tsx／.vue／tsconfig 觸發；測試檔、.d.ts、.js、node_modules 不觸發' {
+        $r0 = New-BcNode $BcPkg
+        try {
+            $patch = New-CodexPatch -Update "$r0/web/src/a.ts", "$r0/web/src/App.tsx", "$r0/web/src/Panel.vue", "$r0/web/tsconfig.json",
+                                            "$r0/web/src/a.test.ts", "$r0/web/src/__tests__/b.ts", "$r0/web/e2e/c.spec.ts", "$r0/web/src/env.d.ts",
+                                            "$r0/web/src/legacy.js", "$r0/web/node_modules/x/index.ts"
+            $r = Invoke-Script $Script -Stdin (New-CodexHookPayload -Command $patch) -Params @{ WhatIfPaths = $true }
+            Assert-Match 'triggering=4' $r.stdout $r.stdout
+            Assert-Match 'test-skipped=3' $r.stdout $r.stdout
+            Assert-Match "NODE $r0/web build='npm run typecheck'" $r.stdout $r.stdout
+        } finally { Remove-Item $r0 -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '型別錯誤 → exit 2，訊息是 tsc 那一行而不是 npm 的雜訊；在套件目錄跑；修好 → 0' {
+        $r0 = New-BcNode ($BcPkg + @{ 'web/exitcode.txt' = '1' })
+        $bin = Join-Path (Get-Location) "$r0-bin"
+        $calls = New-BcFakeNpm $bin
+        try {
+            if (-not $IsWindows) { return }   # 假的 npm 是 .cmd
+            $payload = New-CodexHookPayload -Command (New-CodexPatch -Update "$r0/web/src/a.ts")
+            $r = Invoke-Script $Script -Stdin $payload -Params @{ DebounceSeconds = 0 } -Env @{ PATH = (Get-BcPath $bin) }
+            Assert-Equal 2 $r.exit "型別錯誤沒有擋下：$($r.stdout) $($r.stderr)"
+            Assert-Match 'Type check FAILED .*in .*web' $r.stderr
+            Assert-Match 'error TS2322' $r.stderr '錯誤那一行被 npm 的「script 失敗」雜訊擠掉了'
+            Assert-Match ([regex]::Escape((Join-Path (Get-Location) "$r0\web"))) ([IO.File]::ReadAllText($calls)) '型別檢查不是在套件目錄跑的'
+            [IO.File]::WriteAllText((Join-Path (Get-Location) "$r0/web/exitcode.txt"), '0', [Text.Encoding]::ASCII)
+            $r = Invoke-Script $Script -Stdin $payload -Params @{ DebounceSeconds = 0 } -Env @{ PATH = (Get-BcPath $bin) }
+            Assert-Equal 0 $r.exit $r.stderr
+        } finally { Remove-Item $r0, $bin -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '依賴沒裝（沒有 node_modules）→ 不跑、不阻斷：tsc 根本叫不起來，那不是型別錯誤' {
+        $r0 = New-BcNode ($BcPkg + @{ 'web/exitcode.txt' = '1' }) -NoInstall
+        $bin = Join-Path (Get-Location) "$r0-bin"
+        $calls = New-BcFakeNpm $bin
+        try {
+            if (-not $IsWindows) { return }
+            $r = Invoke-Script $Script -Stdin (New-CodexHookPayload -Command (New-CodexPatch -Update "$r0/web/src/a.ts")) -Params @{ DebounceSeconds = 0 } -Env @{ PATH = (Get-BcPath $bin) }
+            Assert-Equal 0 $r.exit "依賴沒裝卻擋下了每一次寫檔：$($r.stderr)"
+            Assert-True (-not (Test-Path $calls)) '依賴沒裝還是去跑了型別檢查'
+        } finally { Remove-Item $r0, $bin -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '沒有可信的型別檢查（沒有 script、沒有 typescript）→ 不跑、不擋' {
+        $r0 = New-BcNode @{ 'web/package.json' = '{ "name": "web" }' }
+        $bin = Join-Path (Get-Location) "$r0-bin"
+        $calls = New-BcFakeNpm $bin
+        try {
+            $r = Invoke-Script $Script -Stdin (New-CodexHookPayload -Command (New-CodexPatch -Update "$r0/web/src/a.ts")) -Params @{ WhatIfPaths = $true }
+            Assert-Match "NODE $r0/web build=''" $r.stdout $r.stdout
+            $r = Invoke-Script $Script -Stdin (New-CodexHookPayload -Command (New-CodexPatch -Update "$r0/web/src/a.ts")) -Params @{ DebounceSeconds = 0 } -Env @{ PATH = (Get-BcPath $bin) }
+            Assert-Equal 0 $r.exit $r.stderr
+            Assert-True (-not (Test-Path $calls)) '沒有型別檢查指令卻叫了 npm'
+        } finally { Remove-Item $r0, $bin -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}

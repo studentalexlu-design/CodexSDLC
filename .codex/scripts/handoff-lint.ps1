@@ -13,6 +13,7 @@
 #   3a. 交付型 mode（build／fix／code）必須帶 spec.md 路徑 —— 沒有驗收條件就開工是最常見的返工來源
 #   3b. 修正輪（mode: fix）必須帶 round；round 超過上限即阻斷
 #       上限：-MaxReviewRounds ＞ sdlc.config.json 的 review.maxRounds（1–5）＞ 預設 3
+#   3c. 同一個檔的 [必修] 修了兩輪還在 → 阻斷，交回使用者（v4.24.0；帳記在 bdd-docs/{id}/reviews/fix-rounds.json）
 #   4. 禁用 payload：完整 log、長測試輸出、connection string、secret、DLP mapping table
 #   5. 這次 spawn 會不會被 Codex 拒絕：effort 不在 agent 實際用的模型支援之列（v4.15.0；只判得準的才擋）
 #
@@ -238,6 +239,55 @@ if ($modes -contains 'fix') {
     }
 }
 
+# --- 3c. 同一個檔的 [必修] 修了兩輪還在 ---
+# 輪數上限數的是整個迴圈；卡住的往往是其中一項：同一個方向修第三次，多半只是再付一輪 implementer ＋ reviewer。
+# 借 archify 的修正上限（同一個問題經過兩次針對性修正還在 → 停下來回報缺口，不再盲修）：
+#   修過一次還在 → reviewer 在那一項底下寫「上一輪也是必修：…」，implementer 換做法（prompt，見兩份 agent 定義）；
+#   修過兩次還在 → 這裡擋下，交回使用者。他選「再修一輪」→ handoff 加 `stuck-approved: yes` 放行。
+# 輪次的帳：每一次放行的 mode: fix 第 N 輪，記下當時 review.md（第 N 次審核）裡有 [必修] 的檔 → reviews/fix-rounds.json。
+# round 1 重新起算（新的修正迴圈，可能是下一次迭代）。對應只看檔，跟 dlp-gate 的交代檢查同一個粒度 ——
+# 同一個檔、不同的問題也算連續（寬的那一側是多問使用者一次，不會讓卡住的那一項繼續空轉）。
+# 帳讀不到、寫不進去、或輪次跳號 → 連續就斷了，不擋（安全的一側：最多照舊跑到輪數上限）。
+$ledgerPath = $null; $ledgerData = $null
+if ($modes -contains 'fix' -and $null -ne $round -and $round -le $MaxReviewRounds) {
+    try {
+        $fid = if ($prompt -match '(?im)^\s*[-*]?\s*feature-id\s*:\s*([A-Za-z0-9][A-Za-z0-9._-]*)') { $Matches[1] } else { $null }
+        $reviewPath = if ($fid) { "bdd-docs/$fid/review.md" } else { $null }
+        if ($reviewPath -and (Test-Path -LiteralPath $reviewPath -PathType Leaf)) {
+            $reviewText = [IO.File]::ReadAllText((Resolve-Path -LiteralPath $reviewPath).Path) -replace "`r`n", "`n"
+            if ($reviewText -match '(?m)^\s*VERDICT\s*:\s*FAIL\b') {
+                # 解析格式跟 dlp-gate 的 Get-MustItems 同一條（reviewer.toml 規定的那一行）
+                $mustFiles = @([regex]::Matches($reviewText, '(?m)^\s*\d+\.\s*\[必修\]\s*(.+?)\s+——\s+') |
+                    ForEach-Object { $_.Groups[1].Value.Trim().Trim('`', '{', '}') -replace '(:\d+(-\d+)?)+$', '' } | Select-Object -Unique)
+                $ledgerPath = "bdd-docs/$fid/reviews/fix-rounds.json"
+                $rounds = @{}
+                if ($round -gt 1 -and (Test-Path -LiteralPath $ledgerPath -PathType Leaf)) {
+                    $old = Get-Content -LiteralPath $ledgerPath -Raw -Encoding UTF8 | ConvertFrom-Json
+                    foreach ($p in $old.rounds.PSObject.Properties) { if ([int]$p.Name -lt $round) { $rounds[[int]$p.Name] = @($p.Value | ForEach-Object { [string]$_ }) } }
+                }
+                $rounds[$round] = $mustFiles
+                $stuck = @()
+                foreach ($f in $mustFiles) {
+                    $n = 0
+                    for ($k = $round; $k -ge 1 -and $rounds.ContainsKey($k) -and ($f -cin $rounds[$k]); $k--) { $n++ }
+                    if ($n -ge 3) { $stuck += "$f（第 $($round - $n + 1)–$round 次審核都有，修了 $($n - 1) 輪）" }
+                }
+                $approved = $prompt -match '(?im)^\s*[-*]?\s*stuck-approved\s*:\s*yes\b'
+                if ($stuck.Count -and -not $approved) {
+                    $violations += [pscustomobject]@{
+                        rule = 'review-item-stuck'
+                        detail = "同一個檔的 [必修] 修了兩輪還在：$($stuck -join '；')"
+                        fix = '不要再原樣交回 implementer。以 Codex user confirmation 交回使用者裁定：換做法（回 ③ 改做法或驗收條件）／接受不修（寫進交付的殘留風險）／仍要再修一輪 → 他選了再修，handoff 的 meta 加一行 stuck-approved: yes 再送'
+                    }
+                }
+                $ordered = [ordered]@{}
+                foreach ($k in ($rounds.Keys | Sort-Object)) { $ordered["$k"] = @($rounds[$k]) }
+                $ledgerData = [ordered]@{ 'feature-id' = $fid; note = 'handoff-lint 的修正輪帳：第 N 輪放行時 review.md 裡有 [必修] 的檔。可刪（刪了只是不再判「修了兩輪還在」）'; rounds = $ordered }
+            }
+        }
+    } catch { $ledgerPath = $null; $ledgerData = $null }
+}
+
 # --- 4. 禁用 payload ---
 $forbidden = @(
     @{ rule='full-operation-log';      pattern='(?s)##\s*log\.md.{2000,}' }
@@ -333,6 +383,14 @@ if ($violations.Count -gt 0) {
         if ($roundsProblem -and $modes -contains 'fix') { [Console]::Error.WriteLine("  ! $roundsProblem") }
     }
     exit 2
+}
+
+# 修正輪的帳只在放行、而且是 hook 在叫的時候記（手動跑、-Json 都不算一輪）。寫不進去就算了 —— 帳是線索，不是 gate。
+if ($ledgerPath -and $ledgerData -and $hookEvent -and -not $Json) {
+    try {
+        [void][IO.Directory]::CreateDirectory((Split-Path (Join-Path (Get-Location).Path $ledgerPath) -Parent))
+        [IO.File]::WriteAllText((Join-Path (Get-Location).Path $ledgerPath), ($ledgerData | ConvertTo-Json -Depth 4), [Text.UTF8Encoding]::new($false))
+    } catch { }
 }
 
 # --- 放行時要讓 orchestrator 知道的事（一個 additionalContext，不擋）---

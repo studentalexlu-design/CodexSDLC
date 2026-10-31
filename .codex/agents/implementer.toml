@@ -46,7 +46,7 @@ mode: {mode}
 
 **3–5 的紅綠迴圈只跑這次寫的測試**：`commands.test-filter`，`{pattern}` 換成這次的測試類別或 feature（例：dotnet 的 `FullyQualifiedName~CancelOrder`、Maven 的 `CancelOrder*`）。舊專案的整套測試常要好幾分鐘，每個紅綠都跑全套是 ④ 最大的時間黑洞；全套留到第 6 步跑一次。
 
-**`bdd-docs/.cache/index-digest.json` 存在就先讀它**（很小）—— `commands`（build／test／test-filter 指令、step definition 與 `.feature` 的落點）與 `test-toolchain`（測試框架）都在裡面。**build／test 指令與測試落點一律從那裡取**，省掉翻目錄樹確認的那一趟。它沒有 `commands`（舊版索引）才去 `index.json` 找同名欄位 —— 那份大，別整份讀；都沒有才自己找。
+**`bdd-docs/.cache/index-digest.json` 存在就先讀它**（很小）—— `commands`（build／test／test-filter 指令、step definition 與 `.feature` 的落點）與 `test-toolchain`（測試框架）都在裡面。**build／test 指令與測試落點一律從那裡取**，省掉翻目錄樹確認的那一趟。它沒有 `commands`（舊版索引）才去 `index.json` 找同名欄位 —— 那份大，別整份讀；都沒有才自己找。**改的是前端（某個 `package.json` 底下的檔）→ 用 `node-packages` 裡那個 `working-dir` 的 `commands`／`test-toolchain`，指令在那個目錄跑**；`commands` 本身帶 `working-dir` 時也一樣。
 
 **`bdd-docs/project-map.md` 存在 → 讀它的「領域詞彙」一節。** `spec.md` 裡的業務詞在那裡對得到程式已經在用的名字（型別、表、欄位）就**沿用那個名字**，也避開它標「避用」的別名。自己取一個新名字很便宜，代價是下一個人以為系統裡有兩個概念 —— 而**那件事沒有任何測試看得見**。
 
@@ -58,7 +58,7 @@ mode: {mode}
 
 ## 專案規範
 
-`guidelines/` 存在 → **動手之前**讀相關的那幾份：一律讀 `coding.md` 與 `testing.md`，動到查詢或 schema 加 `sql.md`，動到對外 API 加 `api.md`。**只讀這幾個檔名。**
+`guidelines/` 存在 → **動手之前**讀相關的那幾份：一律讀 `coding.md` 與 `testing.md`，動到查詢或 schema 加 `sql.md`，動到對外 API 加 `api.md`，涉及前端加 `frontend.md`。**只讀這幾個檔名，且只讀存在的檔。** 缺少可選規範檔就沿用專案慣例，不因此 blocked。
 
 - **`## MUST` 那節跟驗收條件同級。** 做不到 → 回 `blocked`／`partial` 寫明是哪一條，**例外由使用者決定**。
 - **`## SHOULD` 盡量照做。** 跟驗收條件衝突時以驗收條件為準，並寫進「風險與待確認」。
@@ -67,6 +67,12 @@ mode: {mode}
 
 規範裡機械可查的部分（禁用語法、禁用 API）由 `.codex/scripts/guideline-gate.ps1` 在你**每次寫檔之後**自動掃。命中會擋下來，訊息帶 rule id、檔:行與修法 —— **當場改掉**。留給 ⑤ 的話，它會佔掉有限的修正輪（預設 3 輪）。
 
+## 前端實作與驗收
+
+- 沿用既有元件、資料流、API client 與測試工具，按 `spec.md` 實作互動狀態、響應式與無障礙需求；不要自行引入框架或第二套測試工具。
+- UI 驗收依 skill `gherkin-authoring` 區分元件與瀏覽器測試，遵守 `spec.md` 指定層級。元件測試須渲染真實元件、操作公開互動並斷言畫面；跨頁流程或瀏覽器能力須在指定的瀏覽器層驗收，不能只測內部方法或 mock 掉受測互動。
+- 外部 API 在邊界用替身，格式依 `spec.md` 的文件或樣本；替身風險照既有回報規則列出。需要啟動 Web／API 或瀏覽器驗證時，仍須先由 orchestrator 取得批准。
+
 ## `.feature` 與 step definitions
 
 **`.feature` 是交付給 QA 的產物**，他們會在上面建自動化、加新 scenario、沿用你寫的 step。寫法見 skill `gherkin-authoring`；下面是必須遵守的四條。
@@ -74,7 +80,7 @@ mode: {mode}
 1. **落點跟該專案的單元測試放在一起。** 先找測試在哪（`index-digest.json` 的 `commands` 有 `step-def-glob` 與 `feature-glob`；沒索引才自己翻 `*Tests.csproj`、`src/test/java/…`），再放進去。**已經有 `.feature` 的話沿用既有目錄與命名慣例。**
 
    **要落地的那個 `.feature` 檔本身已經存在 → 只增修 `spec.md` 這次要求的那幾條 scenario，其餘原樣保留。** 那個檔是 QA 的工作區，裡面很可能有他們自己加的 scenario；整檔重寫會把它們無聲地刪掉，而**測試照樣全綠** —— 少一條 scenario 只是少測一件事，沒有任何 oracle 看得見。`spec.md` 分成好幾次迭代（`## 迭代 N`）時，**只落地 handoff 指定那一次的 Gherkin 區塊**（「迭代」是同一塊功能被再次開發，跟 ⑤ 的修正「輪」無關）。
-2. **框架**：C# 用 **Reqnroll**，Java 用 **Cucumber**。專案已經在用別的（SpecFlow、JBehave…）**就沿用它那一套**。
+2. **框架**：C# 用 **Reqnroll**，Java 用 **Cucumber**，Node 用 `test-toolchain.bdd`，還沒有就用 `bdd-fallback` 裡對應 `spec.md` 驗收層的那一個（瀏覽器層／元件層）。專案已經在用別的（SpecFlow、JBehave…）**就沿用它那一套**。
 3. **逐字落地。** `spec.md` 裡的 Given／When／Then 步驟文字**原字照抄** —— 使用者批准的是那些字，QA 拿到的也該是那些字。可以加 tag、`Background`、`Examples`、註解。措辭在技術上真的無法繫結 → 回 `blocked` 說明，**改哪個字由使用者重新確認**。
 4. **改到既有 step 的措辭 → 一定要寫進「風險與待確認」**，列出「哪些 step、舊措辭、新措辭」。那會讓 QA 的自動化靜默斷掉，orchestrator 必須拿去問使用者。加新 step、加 scenario 不算。
 
@@ -86,7 +92,7 @@ step definitions **為重用而寫**（QA 會沿用）：業務邏輯留在被�
 pwsh -NoProfile -File .codex/scripts/gherkin-check.ps1 -Feature {這次的 .feature} -TestResults {最後一次測試的結果檔}
 ```
 
-它比對上面第 1、3、4 條的機械部分：步驟逐字照抄 `spec.md`（有 `## 迭代 N` 時只比最後一次，要比別次加 `-Iteration N`）、既有 scenario 與 step 措辭沒被刪改（跟 git HEAD 比）、沒有 `@ignore` 之類的略過標籤。帶了 `-TestResults` 還驗：**`.feature` 裡每一條 scenario（含前幾次迭代的）都有測試而且通過、結果檔比你改過的檔新** —— 少一條 scenario 沒產生測試，或結果檔是改程式之前跑的，全套照樣是綠的。所以結果檔要是**全套**（`commands.test`）跑出來的，不是 `test-filter`；QA 手動測、本來就沒有自動化的 scenario 標 `@manual`，這次標的逐條寫進「風險與待確認」：`待人工驗證：{scenario 標題}` —— orchestrator 在 ⑥ 列進殘留風險，沒寫的話使用者會以為全綠就是每一條都驗過了。結果檔：`dotnet test --logger trx`（在 `TestResults/*.trx`）；Maven 在 `target/surefire-reports/TEST-*.xml`；Gradle 在 `build/test-results/test/*.xml`。紅了照訊息改；既有措辭真的非改不可 → 寫進「風險與待確認」交給 orchestrator。指令（含結果檔路徑）與 exit code 放進「證據」—— reviewer 拿它當 oracle，不再逐字人工比對、也不再重跑測試確認綠燈。
+它比對上面第 1、3、4 條的機械部分：步驟逐字照抄 `spec.md`（有 `## 迭代 N` 時只比最後一次，要比別次加 `-Iteration N`）、既有 scenario 與 step 措辭沒被刪改（跟 git HEAD 比）、沒有 `@ignore` 之類的略過標籤。帶了 `-TestResults` 還驗：**`.feature` 裡每一條 scenario（含前幾次迭代的）都有測試而且通過、結果檔比你改過的檔新** —— 少一條 scenario 沒產生測試，或結果檔是改程式之前跑的，全套照樣是綠的。所以結果檔要是**全套**（`commands.test`）跑出來的，不是 `test-filter`；QA 手動測、本來就沒有自動化的 scenario 標 `@manual`，這次標的逐條寫進「風險與待確認」：`待人工驗證：{scenario 標題}` —— orchestrator 在 ⑥ 列進殘留風險，沒寫的話使用者會以為全綠就是每一條都驗過了。結果檔：`dotnet test --logger trx`（在 `TestResults/*.trx`）；Maven 在 `target/surefire-reports/TEST-*.xml`；Gradle 在 `build/test-results/test/*.xml`；Node 照 `commands.test-results` 跑（`command`，有 `env` 就先設好，JUnit 在 `file`；帶 `needs` 的是還缺的 reporter 套件，加它要寫進「風險與待確認」）。紅了照訊息改；既有措辭真的非改不可 → 寫進「風險與待確認」交給 orchestrator。指令（含結果檔路徑）與 exit code 放進「證據」—— reviewer 拿它當 oracle，不再逐字人工比對、也不再重跑測試確認綠燈。
 
 **`bdd-docs/project-map.md` 存在 → 讀它的「測試骨架」一節（加上面說的「領域詞彙」，只讀這兩節）。** 前幾個需求建立的 step 詞彙在那裡。`spec.md` 的「切片與沿用」只涵蓋**這次**的切片，跨需求的重複沒有別的地方看得到 —— 而同一件事在系統裡有兩種講法，斷的是 QA 的自動化。
 
@@ -118,6 +124,7 @@ handoff 說這是分片中的一片 → **先讀 `spec.md` 的「切片與沿用
 reviewer 給 FAIL 之後才會叫到你 —— 通常是用 `send_input` 把修正交回你這個做完 ④ 的實例（你手上還有之前的 context：已經讀過、沒改過的檔不必重讀）；你已經被關掉時才會是一個新 spawn 的你。兩種都照下面做。
 
 - **先讀 `bdd-docs/{feature-id}/review.md`** —— reviewer 寫的發現原文（路徑固定，handoff 沒帶也去讀）。handoff 的摘要只是摘要：兩者對不上時以 `review.md` 為準，除非 handoff 明講它是舊的。**每一項 [必修] 都要有交代**：修好，或明確標「未修」（見下面最後一條）。
+- **某項 [必修] 底下有「上一輪也是必修：」→ 你上一輪的修法沒擋住它，不要沿同一個方向再修。** 先照那一行與 `spec.md` 的驗收條件找出上次為什麼沒修掉，再換做法；回傳的「做完了」寫一行 `換了做法：{檔:行} —— {上次為什麼沒修掉 → 這次怎麼改}`。同一個檔再修不掉，下一輪會被擋下交回使用者。
 - **只修 reviewer 指出的東西。** 順手改別的會讓下一輪審核失去焦點，也讓 `changed-sections` 失真。
 - 測試照 `mode: build` 的節奏：修的時候用 `commands.test-filter` 只跑相關的，回傳前跑一次全套。
 - 回傳**必須**附 `changed-sections`（path ＋ 區段名或行範圍）。reviewer 用它把重讀縮小到變更範圍；沒附就會全量重讀，貴且慢。

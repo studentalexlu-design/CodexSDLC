@@ -440,7 +440,7 @@ Describe-Suite 'hook 編碼 / payload 與訊息一律 UTF-8' {
         # 少了它，在 zh-TW 的 Windows 上每一次 spawn 都被擋、每一則中文訊息都是亂碼，而維護者的機器上一切正常。
         $want = $null
         foreach ($s in @('.codex/scripts/handoff-lint.ps1', $DlpGate, $GlGate, $Build, '.codex/scripts/agent-lint.ps1', '.codex/scripts/sdlc.ps1', '.codex/scripts/tests/run-tests.ps1',
-                               '.codex/scripts/repo-index.ps1', '.codex/scripts/sql-scan.ps1', '.codex/scripts/impact-scope.ps1', '.codex/scripts/dlp-residual-scan.ps1', '.codex/scripts/pack.ps1')) {
+                               '.codex/scripts/repo-index.ps1', '.codex/scripts/sql-scan.ps1', '.codex/scripts/impact-scope.ps1', '.codex/scripts/dlp-residual-scan.ps1', '.codex/scripts/pack.ps1', '.codex/scripts/delivery-check.ps1')) {
             $t = [IO.File]::ReadAllText((Join-Path (Get-Location) $s)) -replace "`r`n", "`n"
             $m = [regex]::Match($t, '(?s)\$Utf8NoBom = \[Text\.UTF8Encoding\]::new\(\$false\)\nif \(\[Console\]::IsOutputRedirected\).*?\n\}\n')
             Assert-True $m.Success "$s 沒有「標準 I/O」段落"

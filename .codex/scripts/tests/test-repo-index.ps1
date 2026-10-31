@@ -588,3 +588,302 @@ Describe-Suite 'repo-index -StatusOnly / project-map 逐節失效（以前是 sa
         } finally { Remove-Item $RiRoot -Recurse -Force -ErrorAction SilentlyContinue }
     }
 }
+
+Describe-Suite 'repo-index / Node／TypeScript（package.json 才算專案）' {
+
+    # 以前只認 .sln／.csproj／pom.xml／build.gradle：前端專案的索引永遠是 language=unknown、commands=null，
+    # ④ 的指令全靠 implementer 自己翻、build-check 對它空轉。
+    function New-RiNode([string]$name, [string]$pkg, [hashtable]$files = @{}) {
+        $root = Join-Path $RiRoot $name
+        Remove-Item $root -Recurse -Force -ErrorAction SilentlyContinue
+        New-RiFile (Join-Path $root 'package.json') $pkg
+        foreach ($k in $files.Keys) { New-RiFile (Join-Path $root $k) $files[$k] }
+        return $root
+    }
+
+    It-Should 'Vite＋React：語言、套件管理器、型別檢查取 build 的 tsc 那段、測試框架、兩層的 bdd-fallback' {
+        $root = New-RiNode 'vite' '{ "name": "shop-web", "scripts": { "build": "tsc -b && vite build", "test": "vitest" }, "devDependencies": { "typescript": "5", "vitest": "4", "@testing-library/react": "16", "@playwright/test": "1" } }' @{
+            'package-lock.json' = '{}'; 'tsconfig.json' = '{ "files": [], "references": [{ "path": "./tsconfig.app.json" }] }'; 'src/main.tsx' = 'render()'
+        }
+        try {
+            $i = Invoke-RepoIndex $root
+            Assert-Equal 'typescript' $i.meta.language
+            Assert-Equal 'npm' $i.meta.'build-tool'
+            Assert-Equal 'npx --no -- tsc -b' $i.commands.build '型別檢查要取 build script 的 tsc 那段（不跑後面的打包）'
+            Assert-Equal 'npm test' $i.commands.test
+            Assert-Equal 'npx --no -- vitest run -t {pattern}' $i.commands.'test-filter'
+            Assert-Equal 'vitest' $i.'test-toolchain'.test
+            Assert-Equal '@playwright/test' $i.'test-toolchain'.browser
+            Assert-Match 'playwright-bdd（瀏覽器層）' $i.'test-toolchain'.'bdd-fallback'
+            Assert-Match 'quickpickle（元件層）' $i.'test-toolchain'.'bdd-fallback'
+            Assert-Equal 'playwright-report/junit.xml' $i.commands.'test-results'.file 'JUnit 放進 test-results/ 會被 Playwright 下一次跑時清掉'
+            Assert-Equal 'src/main.tsx' @($i.entrypoints)[0]
+            $d = Get-Content "$root.out/index-digest.json" -Raw | ConvertFrom-Json
+            Assert-Equal '.' @($d.'node-packages')[0].'working-dir' 'digest 沒有 node-packages —— implementer 讀的是 digest'
+        } finally { Remove-Item $RiRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'tsc 指令：solution-style 的 tsconfig 改查 tsconfig.app.json，沒有就不給；沒有 typescript 依賴也不給' {
+        # solution-style（files: [] ＋ references）在 tsc --noEmit 下什麼都不查 —— 永遠綠，比沒有檢查更糟
+        $sol = '{ "files": [], "references": [{ "path": "./tsconfig.app.json" }] }'
+        $root = New-RiNode 'ts-sol' '{ "devDependencies": { "typescript": "5" } }' @{ 'tsconfig.json' = $sol; 'tsconfig.app.json' = '{}'; 'src/a.ts' = '' }
+        try {
+            Assert-Equal 'npx --no -- tsc -p tsconfig.app.json --noEmit' (Invoke-RepoIndex $root).commands.build
+            Remove-Item (Join-Path $root 'tsconfig.app.json')
+            Assert-Equal $null (Invoke-RepoIndex $root).commands.build '只剩 solution-style 的 tsconfig，卻給了一個什麼都不查的 tsc'
+            New-RiFile (Join-Path $root 'tsconfig.json') '{ "compilerOptions": {} }'
+            Assert-Equal 'npx --no -- tsc --noEmit' (Invoke-RepoIndex $root).commands.build
+            New-RiFile (Join-Path $root 'package.json') '{ "devDependencies": {} }'
+            Assert-Equal $null (Invoke-RepoIndex $root).commands.build '沒有 typescript 依賴：tsc 只會失敗，build-check 會擋下每一次寫檔'
+        } finally { Remove-Item $RiRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '專案自己的型別檢查 script 優先；pnpm／yarn／packageManager 各用各的執行方式' {
+        $root = New-RiNode 'pnpm' '{ "scripts": { "type-check": "vue-tsc --build", "test": "vitest run" }, "devDependencies": { "vitest": "4", "vue-tsc": "3" } }' @{ 'pnpm-lock.yaml' = ''; 'src/App.vue' = '<template/>' }
+        try {
+            $c = (Invoke-RepoIndex $root).commands
+            Assert-Equal 'pnpm run type-check' $c.build
+            Assert-Equal 'pnpm test' $c.test
+            Assert-Equal 'pnpm exec vitest run -t {pattern}' $c.'test-filter'
+            New-RiFile (Join-Path $root 'package.json') '{ "packageManager": "yarn@4.5.0", "scripts": { "typecheck": "tsc" }, "devDependencies": { "jest": "30" } }'
+            $c = (Invoke-RepoIndex $root).commands
+            Assert-Equal 'yarn run typecheck' $c.build 'packageManager 欄位要蓋過 lockfile'
+            Assert-Equal 'yarn run jest -t {pattern}' $c.'test-filter'
+            Assert-Equal 'jest-junit' $c.'test-results'.needs 'jest 沒有內建 JUnit reporter，要講出缺 jest-junit'
+        } finally { Remove-Item $RiRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '已經有 BDD 套件 → 不給 bdd-fallback，acceptance 用它' {
+        $root = New-RiNode 'pw-bdd' '{ "devDependencies": { "@playwright/test": "1", "playwright-bdd": "9" } }' @{ 'src/a.js' = '' }
+        try {
+            $i = Invoke-RepoIndex $root
+            Assert-Equal 'playwright-bdd' $i.'test-toolchain'.bdd
+            Assert-True (-not $i.'test-toolchain'.PSObject.Properties['bdd-fallback']) "已有 playwright-bdd 卻還建議 $($i.'test-toolchain'.'bdd-fallback')"
+            Assert-Equal 'npx --no -- bddgen && npx --no -- playwright test' $i.commands.acceptance
+            Assert-Equal 'javascript' $i.meta.language
+        } finally { Remove-Item $RiRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '.NET＋ClientApp：後端照舊是主語言；前端在 node-packages；wwwroot/lib 的 js 不算前端' {
+        $root = Join-Path $RiRoot 'mixed'
+        Remove-Item $root -Recurse -Force -ErrorAction SilentlyContinue
+        New-RiFile (Join-Path $root 'Web/Web.csproj') '<Project Sdk="Microsoft.NET.Sdk.Web"><ItemGroup><PackageReference Include="NUnit" Version="4.0.0" /></ItemGroup></Project>'
+        New-RiFile (Join-Path $root 'Web/Program.cs') 'public class Program { }'
+        New-RiFile (Join-Path $root 'Web/wwwroot/lib/jquery/jquery.js') 'export function jQuery() {}'
+        New-RiFile (Join-Path $root 'Web/ClientApp/package.json') '{ "name": "client", "scripts": { "typecheck": "vue-tsc --noEmit" }, "devDependencies": { "vitest": "4", "xunit-viewer": "1" } }'
+        New-RiFile (Join-Path $root 'Web/ClientApp/pnpm-lock.yaml') ''
+        New-RiFile (Join-Path $root 'Web/ClientApp/src/OrderPanel.vue') '<template><div/></template>'
+        try {
+            $i = Invoke-RepoIndex $root
+            Assert-Equal 'csharp' $i.meta.language '前端讓後端的主語言變了'
+            Assert-Equal 'dotnet build --nologo' $i.commands.build
+            Assert-Equal 'NUnit' $i.'test-toolchain'.test 'npm 的套件名（xunit-viewer）混進了 .NET 的測試框架判定'
+            Assert-Equal 'Reqnroll.NUnit' $i.'test-toolchain'.'bdd-fallback'
+            Assert-Equal 1 $i.meta.'node-file-count' 'wwwroot/lib 底下的第三方 js 被算成這個專案的前端原始碼'
+            $n = @($i.'node-packages')[0]
+            Assert-Equal 'Web/ClientApp' $n.'working-dir'
+            Assert-Equal 'pnpm run typecheck' $n.commands.build
+            Assert-True (@($i.symbols | Where-Object { $_.file -eq 'Web/ClientApp/src/OrderPanel.vue' -and $_.types -contains 'component OrderPanel' }).Count -eq 1) '.vue 元件沒進 symbols'
+        } finally { Remove-Item $RiRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'TS symbols：export 的型別、元件、class 方法與繼承；註解掉的不算；Angular 的 @Injectable 算 DI 註冊' {
+        $root = New-RiNode 'ts-sym' '{ "devDependencies": { "typescript": "5" } }' @{
+            'src/OrderList.tsx'    = "// export function DeadList() {}`nexport interface OrderListProps { id: string }`nexport default function OrderList() { return null; }`nexport const useOrders = () => [];"
+            'src/order.service.ts' = "@Injectable({ providedIn: 'root' })`nexport class OrderService extends BaseService implements IOrders {`n  async cancel(id: string): Promise<void> {`n    if (id) { return; }`n  }`n}"
+            'node_modules/x/index.ts' = 'export class Vendored {}'
+            '.next/server/page.js'   = 'export class Built {}'
+        }
+        try {
+            $i = Invoke-RepoIndex $root
+            $list = @($i.symbols | Where-Object { $_.file -eq 'src/OrderList.tsx' })[0]
+            Assert-True ($list.types -contains 'component OrderList') "元件沒認出來：$($list.types -join ',')"
+            Assert-True ($list.types -contains 'interface OrderListProps')
+            Assert-True ($list.methods -contains 'useOrders')
+            Assert-True (-not ($list.types -match 'DeadList')) '註解掉的元件進了索引'
+            $svc = @($i.symbols | Where-Object { $_.file -eq 'src/order.service.ts' })[0]
+            Assert-Equal 'OrderService : BaseService, IOrders' @($svc.bases)[0]
+            Assert-True ($svc.methods -contains 'cancel') "class 的方法沒抓到：$($svc.methods -join ',')"
+            Assert-True (-not ($svc.methods -contains 'if')) '把 if 當成方法'
+            Assert-Equal '@Injectable' @($i.'di-registrations')[0].kind
+            Assert-True (-not @($i.symbols | Where-Object { $_.file -match 'node_modules|\.next' }).Count) 'node_modules／.next 底下的檔進了索引'
+        } finally { Remove-Item $RiRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'package.json 改了 scripts，索引要失效（指令跟著變）' {
+        $root = New-RiNode 'stale' '{ "scripts": { "typecheck": "tsc" } }' @{ 'src/a.ts' = '' }
+        try {
+            Assert-Equal 'npm run typecheck' (Invoke-RepoIndex $root).commands.build
+            Start-Sleep -Milliseconds 50
+            New-RiFile (Join-Path $root 'package.json') '{ "scripts": { "type-check": "tsc --noEmit -p ." } }'
+            Assert-Equal 'npm run type-check' (Invoke-RepoIndex $root).commands.build '改了 package.json 卻沿用舊索引'
+        } finally { Remove-Item $RiRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+# ---- v4.25.0：前後端分成兩個 repo、工作流裝在外層（workspace/backend、workspace/frontend） ----
+
+Describe-Suite 'repo-index / 後端不在根目錄 → commands 帶 working-dir' {
+
+    # `dotnet build`／`mvn` 只認當下目錄的專案檔：以前指令沒說在哪跑，build-check 在根目錄跑，每個後端改動都被擋下（MSB1003）。
+    It-Should 'workspace/backend 的 solution ＋ workspace/frontend 的 package.json → 後端 working-dir=backend、前端在 node-packages' {
+        $root = Join-Path $RiRoot 'ws'
+        Remove-Item $root -Recurse -Force -ErrorAction SilentlyContinue
+        New-RiFile (Join-Path $root 'backend/Shop.slnx') '<Solution />'
+        New-RiFile (Join-Path $root 'backend/App/App.csproj') '<Project Sdk="Microsoft.NET.Sdk" />'
+        New-RiFile (Join-Path $root 'backend/App/Order.cs') 'public class Order { }'
+        New-RiFile (Join-Path $root 'backend/App.Tests/App.Tests.csproj') '<Project Sdk="Microsoft.NET.Sdk" />'
+        New-RiFile (Join-Path $root 'frontend/package.json') '{ "name": "web", "scripts": { "typecheck": "tsc --noEmit" }, "devDependencies": { "typescript": "5" } }'
+        New-RiFile (Join-Path $root 'frontend/src/main.ts') 'export const x = 1'
+        try {
+            $i = Invoke-RepoIndex $root
+            Assert-Equal 'dotnet' $i.meta.'build-tool'
+            Assert-Equal 'backend' $i.commands.'working-dir' '後端指令沒說要在 backend 跑'
+            Assert-Equal 'frontend' @($i.'node-packages')[0].'working-dir'
+            $d = Get-Content "$root.out/index-digest.json" -Raw | ConvertFrom-Json
+            Assert-Equal 'backend' $d.commands.'working-dir' 'digest（implementer 讀的那一份）沒帶 working-dir'
+        } finally { Remove-Item $RiRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'solution 在根目錄 → 不帶 working-dir（單一 repo 照舊）' {
+        $root = New-RiProject 'root-sln' dotnet
+        New-RiFile (Join-Path $root 'App.sln') ''
+        try {
+            $i = Invoke-RepoIndex $root
+            Assert-True (-not $i.commands.'working-dir') "根目錄的 solution 帶了 working-dir：$($i.commands.'working-dir')"
+        } finally { Remove-Item $RiRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'Maven 在 backend/ 底下 → working-dir=backend，wrapper 也在那裡找' {
+        $root = Join-Path $RiRoot 'ws-mvn'
+        Remove-Item $root -Recurse -Force -ErrorAction SilentlyContinue
+        New-RiFile (Join-Path $root 'backend/pom.xml') '<project><artifactId>app</artifactId></project>'
+        New-RiFile (Join-Path $root 'backend/core/pom.xml') '<project><artifactId>core</artifactId></project>'
+        New-RiFile (Join-Path $root 'backend/core/src/main/java/App.java') 'public class App { }'
+        foreach ($w in $MvnWrapper) { New-RiFile (Join-Path $root "backend/$w") 'wrapper' }
+        try {
+            $i = Invoke-RepoIndex $root
+            Assert-Equal 'backend' $i.commands.'working-dir' '多模組要取最上層那個 pom 的目錄'
+            Assert-Equal './mvnw -q -B compile' $i.commands.build 'backend/ 底下的 wrapper 沒被認出來'
+        } finally { Remove-Item $RiRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '上一版（schema 6）留下的索引不得沿用 —— 它的後端指令沒有 working-dir' {
+        $root = Join-Path $RiRoot 'ws-old'
+        Remove-Item $root -Recurse -Force -ErrorAction SilentlyContinue
+        New-RiFile (Join-Path $root 'backend/Shop.sln') ''
+        New-RiFile (Join-Path $root 'backend/App/App.csproj') '<Project Sdk="Microsoft.NET.Sdk" />'
+        New-RiFile (Join-Path $root 'backend/App/Order.cs') 'public class Order { }'
+        try {
+            $null = Invoke-RepoIndex $root
+            $path = "$root.out/index.json"
+            $old = Get-Content $path -Raw | ConvertFrom-Json
+            $old.meta.'index-schema' = 6
+            $old.commands.PSObject.Properties.Remove('working-dir')
+            $old | ConvertTo-Json -Depth 8 | Set-Content $path -Encoding UTF8
+            Assert-Equal 'backend' (Invoke-RepoIndex $root).commands.'working-dir' '舊索引被沿用了'
+        } finally { Remove-Item $RiRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+Describe-Suite 'build-check / 後端不在根目錄 → 進那個目錄 build' {
+
+    # 假 wrapper 記下自己在哪個目錄被叫（%CD%）。
+    function New-RiCwdWrapper([string]$dir, [int]$exitCode = 0) {
+        [IO.File]::WriteAllText((Join-Path $dir 'mvnw.cmd'), "@echo %CD% >> `"%~dp0mvnw.calls`"`r`n@exit /b $exitCode`r`n", [Text.Encoding]::ASCII)
+        return (Join-Path $dir 'mvnw.calls')
+    }
+    function New-RiWsMaven([string]$name) {
+        $root = Join-Path $RiRoot $name
+        Remove-Item $root -Recurse -Force -ErrorAction SilentlyContinue
+        New-RiFile (Join-Path $root 'backend/pom.xml') '<project><artifactId>app</artifactId></project>'
+        New-RiFile (Join-Path $root 'backend/src/main/java/App.java') 'public class App { }'
+        New-RiFile (Join-Path $root 'backend/.mvn/wrapper/maven-wrapper.properties') 'wrapper'
+        New-RiFile (Join-Path $root 'frontend/package.json') '{ "name": "web" }'
+        return $root
+    }
+
+    It-Should '索引的 commands 帶 working-dir → 在那個目錄跑；失敗時訊息講在哪個目錄' {
+        if (-not $IsWindows) { return }
+        $root = New-RiWsMaven 'bc-ws-index'
+        $calls = New-RiCwdWrapper (Join-Path $root 'backend')
+        New-RiFile (Join-Path $root 'bdd-docs/.cache/index.json') '{ "meta": { "language": "java", "build-tool": "maven" }, "commands": { "build": "./mvnw -q -B compile", "working-dir": "backend" } }'
+        try {
+            $r = Invoke-BuildCheck $root 'backend/src/main/java/App.java'
+            Assert-Equal 0 $r.exit "stderr: $($r.stderr)"
+            Assert-True (Test-Path $calls) "wrapper 沒被叫：$($r.stderr)"
+            Assert-Match ([regex]::Escape((Join-Path $root 'backend'))) (Get-Content $calls -Raw) '不是在 backend 跑的'
+            $null = New-RiCwdWrapper (Join-Path $root 'backend') 1
+            $r = Invoke-BuildCheck $root 'backend/src/main/java/App.java'
+            Assert-Equal 2 $r.exit
+            Assert-Match 'in backend' $r.stderr
+        } finally { Remove-Item $RiRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '沒有索引 → 退化偵測找到 backend/pom.xml，在 backend 跑、用那裡的 wrapper' {
+        if (-not $IsWindows) { return }
+        $root = New-RiWsMaven 'bc-ws-fallback'
+        $calls = New-RiCwdWrapper (Join-Path $root 'backend')
+        try {
+            $r = Invoke-BuildCheck $root 'backend/src/main/java/App.java'
+            Assert-Equal 0 $r.exit "stderr: $($r.stderr)"
+            Assert-True (Test-Path $calls) "backend/ 的 wrapper 沒被叫（在根目錄找 wrapper、找不到就當成沒有 mvn 放行了）：$($r.stderr)"
+            Assert-Match ([regex]::Escape((Join-Path $root 'backend'))) (Get-Content $calls -Raw)
+        } finally { Remove-Item $RiRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+Describe-Suite 'repo-index -StatusOnly / project-map：工作區底下好幾個 repo，各自的 sha' {
+
+    # 根目錄不是 repo；backend、frontend 各自是 repo。地圖兩節各看一邊。
+    function New-WsMap([string]$header) {
+        $root = Join-Path $RiRoot 'ws-map'
+        Remove-Item $root -Recurse -Force -ErrorAction SilentlyContinue
+        New-RiFile (Join-Path $root 'backend/src/Orders/OrderService.cs') 'public class OrderService { }'
+        New-RiFile (Join-Path $root 'frontend/src/orders/CancelButton.tsx') 'export function CancelButton() { return null }'
+        $shas = @{}
+        foreach ($repo in 'backend', 'frontend') {
+            $d = Join-Path $root $repo
+            Invoke-RiGit $d @('init', '-q'); Invoke-RiGit $d @('add', '-A'); Invoke-RiGit $d @('commit', '-q', '-m', 'base')
+            $shas[$repo] = (& git -C $d rev-parse HEAD).Trim()
+        }
+        $h = $header -replace '\{backend\}', $shas.backend -replace '\{frontend\}', $shas.frontend
+        New-RiFile (Join-Path $root 'bdd-docs/project-map.md') "$h`n# Project map`n`n## 訂單 API`n來源：``backend/src/Orders/```n`n## 取消按鈕`n來源：``frontend/src/orders/CancelButton.tsx```n"
+        return [pscustomobject]@{ root = $root; shas = $shas }
+    }
+
+    It-Should '每個 repo 一個 sha：只有改到的那一邊過期；head_header 給出該寫的那一行' {
+        $w = New-WsMap '<!-- git-sha: backend={backend} frontend={frontend} -->'
+        New-RiFile (Join-Path $w.root 'frontend/src/orders/CancelButton.tsx') 'export function CancelButton() { return "x" }'
+        try {
+            $m = (Invoke-RiStatus $w.root).project_map
+            Assert-True (-not $m.whole_map_unverified) "整份被判待驗證（根目錄不是 repo）：$($m.reason)"
+            $s = @($m.sections)
+            Assert-True ($s | Where-Object title -eq '取消按鈕').stale '前端那個 repo 的改動沒被看見'
+            Assert-Equal 'frontend/src/orders/CancelButton.tsx' (@(($s | Where-Object title -eq '取消按鈕').changed) -join '|')
+            Assert-True (-not ($s | Where-Object title -eq '訂單 API').stale) "沒動的後端那一節被判過期：$(ConvertTo-Json ($s | Where-Object title -eq '訂單 API') -Compress)"
+            Assert-Equal "<!-- git-sha: backend=$($w.shas.backend) frontend=$($w.shas.frontend) -->" $m.head_header
+        } finally { Remove-Item $RiRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '檔頭只有一個 sha（單一 repo 的寫法）→ 巢狀 repo 的節判過期、列在 no_sha，不會被靜默採信' {
+        $w = New-WsMap '<!-- git-sha: {backend} -->'
+        try {
+            $s = @((Invoke-RiStatus $w.root).project_map.sections)
+            foreach ($t in '訂單 API', '取消按鈕') {
+                $sec = $s | Where-Object title -eq $t
+                Assert-True $sec.stale "$t 被採信了 —— 拿別的 repo 的 sha 算 diff"
+                Assert-Equal 1 @($sec.no_sha).Count
+            }
+        } finally { Remove-Item $RiRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '單一 repo 的 head_header 照舊只有一個 sha' {
+        $root = New-RiProject 'single-head' dotnet
+        Invoke-RiGit $root @('init', '-q'); Invoke-RiGit $root @('add', '-A'); Invoke-RiGit $root @('commit', '-q', '-m', 'base')
+        try {
+            $sha = (& git -C $root rev-parse HEAD).Trim()
+            Assert-Equal "<!-- git-sha: $sha -->" (Invoke-RiStatus $root).project_map.head_header
+        } finally { Remove-Item $RiRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}

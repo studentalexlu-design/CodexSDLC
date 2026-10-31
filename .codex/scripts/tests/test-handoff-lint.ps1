@@ -517,3 +517,77 @@ Describe-Suite 'handoff-lint / spawn 前先看 effort 跟模型對不對得上�
         } finally { Remove-Item $SpawnRoot -Recurse -Force -ErrorAction SilentlyContinue }
     }
 }
+
+Describe-Suite 'handoff-lint / 同一個檔的必修修了兩輪還在（review-item-stuck）' {
+
+    # 輪數上限數的是整個迴圈；卡住的往往是其中一項。同一個方向修第三次只是再付一輪 implementer ＋ reviewer。
+    # 帳記在 bdd-docs/{id}/reviews/fix-rounds.json，只在 hook 在叫、而且放行時記。
+    $StDir = 'bdd-docs/order-cancel'
+    function Set-StReview([string[]]$files, [string]$verdict = 'FAIL') {
+        New-Item -ItemType Directory -Path $StDir -Force | Out-Null
+        $n = 0
+        $body = ($files | ForEach-Object { $n++; "$n. [必修] $_`:10 —— 已出貨的沒被擋下`n   會怎麼壞：訂單 1002 被取消" }) -join "`n"
+        [IO.File]::WriteAllText((Join-Path (Get-Location) "$StDir/review.md"), "VERDICT: $verdict`n`n## 發現`n$body`n", [Text.UTF8Encoding]::new($false))
+    }
+    function Invoke-StFix([int]$round, [string]$extra = '') {
+        $msg = "## meta`n- feature-id: order-cancel`n- mode: fix`n- round: $round`n$extra`n- spec: bdd-docs/order-cancel/spec.md`n`n## summary`n照 review.md 的必修修。"
+        return Invoke-Script $Script -Stdin (New-CodexHookPayload -Event 'PreToolUse' -Tool 'spawn_agent' -ToolInput @{ message = $msg }) -Params @{ MaxReviewRounds = 5 }
+    }
+    function Get-StLedger { $p = Join-Path (Get-Location) "$StDir/reviews/fix-rounds.json"; if (Test-Path $p) { return (Get-Content $p -Raw -Encoding UTF8 | ConvertFrom-Json) } }
+
+    It-Should '同一個檔三次審核都有必修 → 第 3 輪擋下；使用者同意（stuck-approved: yes）→ 放行' {
+        try {
+            Set-StReview @('src/Orders/CancelService.cs')
+            Assert-Equal 0 (Invoke-StFix 1).exit
+            Assert-Equal 0 (Invoke-StFix 2).exit '修過一次還在就擋 —— 那一輪該換做法，不是停'
+            $r = Invoke-StFix 3
+            Assert-Equal 2 $r.exit '修了兩輪還在卻照樣放行第三輪'
+            Assert-Match 'review-item-stuck' $r.stderr
+            Assert-Match 'CancelService\.cs' $r.stderr
+            Assert-Match '交回使用者' $r.stderr
+            Assert-Equal 0 (Invoke-StFix 3 '- stuck-approved: yes').exit '使用者同意再修一輪還是被擋'
+        } finally { Remove-Item 'bdd-docs' -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '每一輪是不同的檔 → 不擋（卡住的是同一項，不是輪數）' {
+        try {
+            Set-StReview @('src/A.cs'); Assert-Equal 0 (Invoke-StFix 1).exit
+            Set-StReview @('src/B.cs'); Assert-Equal 0 (Invoke-StFix 2).exit
+            Set-StReview @('src/A.cs'); Assert-Equal 0 (Invoke-StFix 3).exit 'A 中間斷過一輪，不算連續'
+        } finally { Remove-Item 'bdd-docs' -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '帳被刪了 → 不擋（安全的一側：照舊跑到輪數上限）' {
+        try {
+            Set-StReview @('src/A.cs')
+            Assert-Equal 0 (Invoke-StFix 1).exit
+            Assert-Equal 0 (Invoke-StFix 2).exit
+            Remove-Item "$StDir/reviews/fix-rounds.json" -Force
+            Assert-Equal 0 (Invoke-StFix 3).exit
+        } finally { Remove-Item 'bdd-docs' -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'round 1 重新起算：上一個修正迴圈的帳不帶進來' {
+        try {
+            Set-StReview @('src/A.cs')
+            Assert-Equal 0 (Invoke-StFix 1).exit
+            Assert-Equal 0 (Invoke-StFix 2).exit
+            Assert-Equal 0 (Invoke-StFix 1).exit   # 下一次迭代的第一個修正輪
+            $l = Get-StLedger
+            Assert-Equal 1 @($l.rounds.PSObject.Properties).Count "上一個迴圈的第 2 輪還在帳裡：$($l.rounds | ConvertTo-Json -Compress)"
+            Assert-Equal 0 (Invoke-StFix 2).exit '新迴圈的第 2 輪被舊帳算成第 3 次'
+        } finally { Remove-Item 'bdd-docs' -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '手動跑（不是 hook 在叫）不記帳；審核 PASS 不記帳' {
+        try {
+            Set-StReview @('src/A.cs')
+            $msg = (Get-FixHandoff 1)
+            Assert-Equal 0 (Invoke-Script $Script -Stdin (New-Payload -Prompt $msg) -Params @{ MaxReviewRounds = 5 }).exit
+            Assert-True (-not (Get-StLedger)) '手動跑一次就記了一輪'
+            Set-StReview @() 'PASS'
+            Assert-Equal 0 (Invoke-StFix 1).exit
+            Assert-True (-not (Get-StLedger)) 'PASS 也記了帳'
+        } finally { Remove-Item 'bdd-docs' -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}

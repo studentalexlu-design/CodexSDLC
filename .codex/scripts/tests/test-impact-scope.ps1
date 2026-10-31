@@ -87,3 +87,60 @@ Describe-Suite 'impact-scope / 候選檔帶著索引裡它的 types、bases、DI
         } finally { Remove-Item $IsRoot -Recurse -Force -ErrorAction SilentlyContinue }
     }
 }
+
+Describe-Suite 'impact-scope / 前端：package.json 底下的 TS／Vue 檔照樣排名' {
+
+    It-Should '.tsx／.vue 的檔名與內容命中照算；wwwroot/lib 的第三方 js、.next 產物、註解裡的不算' {
+        Remove-Item $IsRoot -Recurse -Force -ErrorAction SilentlyContinue
+        New-IsFiles @{
+            'web/package.json'                  = '{ "name": "web" }'
+            'web/src/CancelOrderButton.tsx'     = 'export function CancelOrderButton() { return null; }'
+            'web/src/OrderPanel.vue'            = '<script setup lang="ts">const label = "CancelOrder"</script>'
+            'web/src/old.ts'                    = '// CancelOrder 的舊做法'
+            'web/.next/server/chunk.js'         = 'CancelOrder CancelOrder'
+            'Api/wwwroot/lib/vendor/cancel.js'  = 'function CancelOrder() {}'
+        }
+        try {
+            $r = Invoke-Script $IsScript -Params @{ Root = $IsRoot; Keywords = 'CancelOrder'; IndexPath = (Join-Path $IsRoot 'no-index.json') }
+            Assert-Equal 0 $r.exit "stderr: $($r.stderr)"
+            $files = @(($r.stdout | ConvertFrom-Json).candidates | ForEach-Object { $_.file })
+            Assert-True ($files -contains 'web/src/CancelOrderButton.tsx') "前端元件沒排進來：$($files -join ', ')"
+            Assert-True ($files -contains 'web/src/OrderPanel.vue') ".vue 的內容命中沒算：$($files -join ', ')"
+            Assert-True (-not ($files -contains 'web/src/old.ts')) '只在註解裡提到關鍵字的 .ts 被排進來'
+            Assert-True (-not ($files -match '\.next|wwwroot')) "產物或第三方檔被排進來：$($files -join ', ')"
+            # git repo 走 git grep 先篩：pathspec 漏了 TS／Vue 的話，前端的內容命中在 git repo 裡全部消失（非 git 照樣綠）
+            Push-Location $IsRoot
+            try { git init -q 2>$null } finally { Pop-Location }
+            $r = Invoke-Script $IsScript -Params @{ Root = $IsRoot; Keywords = 'CancelOrder'; IndexPath = (Join-Path $IsRoot 'no-index.json') }
+            $j = $r.stdout | ConvertFrom-Json
+            Assert-Equal 'git-grep' $j.'content-scan'
+            Assert-True (@($j.candidates | ForEach-Object { $_.file }) -contains 'web/src/OrderPanel.vue') 'git repo 裡 .vue 的內容命中不見了（git grep 的 pathspec 沒帶前端副檔名）'
+        } finally { Remove-Item $IsRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+Describe-Suite 'impact-scope / 前後端分成兩個 repo、工作流裝在外層' {
+
+    It-Should '根目錄是 repo、底下還有巢狀 repo → 巢狀 repo 裡的檔照樣找得到，沒關鍵字的照樣篩掉' {
+        # 根目錄的 git grep 不會走進巢狀 repo（對它只是一個未追蹤的目錄）—— 以前後端整個 repo 一個檔都排不進來，而且不報錯。
+        Remove-Item $IsRoot -Recurse -Force -ErrorAction SilentlyContinue
+        New-IsFiles @{
+            'backend/src/CancelService.cs' = 'public class CancelService { void M() { Log("CancelOrder"); } }'
+            'backend/src/Other.cs'         = 'public class Other { }'
+            'tools/Seed.cs'                = 'public class Seed { void M() { Run("CancelOrder"); } }'
+        }
+        foreach ($d in @((Join-Path $IsRoot 'backend'), $IsRoot)) {   # 巢狀的先建，根目錄的 repo 才不會把它的檔收進去
+            git -C $d init -q 2>$null; git -C $d add -A 2>$null
+            git -C $d -c user.email=t@t -c user.name=t -c commit.gpgsign=false commit -q -m base 2>$null
+        }
+        try {
+            $r = Invoke-Script $IsScript -Params @{ Root = $IsRoot; Keywords = 'cancelorder'; IndexPath = (Join-Path $IsRoot 'no-index.json'); TopN = 20 }
+            Assert-Equal 0 $r.exit "stderr: $($r.stderr)"
+            $j = $r.stdout | ConvertFrom-Json
+            Assert-Equal 'git-grep' $j.'content-scan'
+            $files = @($j.candidates | ForEach-Object { $_.file })
+            foreach ($want in 'backend/src/CancelService.cs', 'tools/Seed.cs') { Assert-True ($want -in $files) "$want 沒被找到：$($files -join '、')" }
+            Assert-True ('backend/src/Other.cs' -notin $files) '巢狀 repo 裡沒有關鍵字的檔被排進來了'
+        } finally { Remove-Item $IsRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}

@@ -1,6 +1,7 @@
 # repo-index.ps1
 # 建立／刷新目標專案的確定性索引，讓 agent 讀索引而不是讀原始碼樹。
-# 支援 .NET（C#）與 Java（Maven／Gradle）；語言與建置工具自動偵測。
+# 支援 .NET（C#）、Java（Maven／Gradle）與 Node／TypeScript（package.json）；語言與建置工具自動偵測。
+# Node 跟後端並存時（ASP.NET ＋ SPA）後端照舊是主語言，前端在 `node-packages`（每個 package.json 一份 commands／test-toolchain）。
 #
 # 核心原則：機械性探索（定位檔案、列相依、抓簽章）由腳本做，零 token。
 # LLM 只讀本腳本輸出的 index.json —— 包含 `meta.language`、`test-toolchain`
@@ -48,7 +49,9 @@ function Read-StdinUtf8 {
 }
 
 . (Join-Path $PSScriptRoot 'lib/source-files.ps1')
+. (Join-Path $PSScriptRoot 'lib/workspace-repos.ps1')   # map-status 用：工作區底下每個 repo 各自的 sha
 . (Join-Path $PSScriptRoot 'lib/map-status.ps1')
+. (Join-Path $PSScriptRoot 'lib/node-project.ps1')
 # lib/active-code.ps1（剝註解）只有真的要讀原始碼時才載入 —— -StatusOnly 用不到，而光是載入它就要兩三百毫秒。
 $Root = (Resolve-Path $Root).Path
 $indexPath  = Join-Path $OutDir 'index.json'
@@ -62,7 +65,11 @@ $symCachePath = Join-Path $OutDir 'symbol-cache.json'
 # 4 = 掃描前先剝掉註解與 `#if false`。原始碼沒動的 repo 若沿用 3，註解掉的類別與 DI 註冊會一直留在索引裡。
 # 5 = dotnet 的 test／test-filter／acceptance 拿掉 `--no-build`（沿用 4 的 repo 會一直測到舊的 DLL）；
 #     `.slnx`（.NET 9 起 `dotnet new sln` 的預設）也算 solution；symbols 改成逐檔增量（symbol-cache.json 記同一個 schema）。
-$IndexSchema = 5
+# 6 = 認得 package.json（Node／TypeScript）：`node-packages`、TS／JS 的 symbols 與 entrypoints；
+#     前端的產生目錄（.next、coverage…）不走進去。沿用 5 的話，前端專案的索引永遠是「unknown、沒有指令」。
+# 7 = 後端不在根目錄（workspace/backend、solution 在 src/ 底下）時 `commands` 帶 `working-dir`，wrapper 也在那裡找。
+#     沿用 6 的話，build-check 在根目錄跑 `dotnet build`，每個後端改動都被 MSB1003 擋下。
+$IndexSchema = 7
 
 function Get-Sha256([string]$text) {
     $sha = [System.Security.Cryptography.SHA256]::Create()
@@ -70,8 +77,9 @@ function Get-Sha256([string]$text) {
     finally { $sha.Dispose() }
 }
 
-$excludeDirs = @('bin', 'obj', 'node_modules', 'packages', '.git', '.vs', 'TestResults', 'dist', 'build')
-$excludeRe = '[\\/](bin|obj|node_modules|packages|\.git|\.vs|TestResults|dist|build)[\\/]'   # git diff 的輸出用
+$excludeDirs = @('bin', 'obj', 'node_modules', 'packages', '.git', '.vs', 'TestResults', 'dist', 'build') + $script:NodeGeneratedDirs
+$excludeRe = '[\\/](bin|obj|node_modules|packages|\.git|\.vs|TestResults|dist|build|' +
+             (($script:NodeGeneratedDirs | ForEach-Object { [regex]::Escape($_) }) -join '|') + ')[\\/]'   # git diff 的輸出用
 
 # 整棵樹只走一次；底下每一種檔都從這一份挑（順序跟走訪順序一樣，等同以前的 Get-ChildItem -Recurse -Filter）。
 $workspace = Get-WorkspaceFiles -Root $Root -ExcludeDirs $excludeDirs
@@ -115,22 +123,56 @@ $javaFiles  = @(Get-SourceFiles '*.java')
 $appYaml    = @(Get-SourceFiles 'application*.yml') + @(Get-SourceFiles 'application*.yaml') +
               @(Get-SourceFiles 'application*.properties')
 
+# Node／TypeScript：package.json 才算專案（見 lib/node-project.ps1 檔頭），原始碼只算套件目錄底下的。
+$packageJsons = @(Get-SourceFiles 'package.json')
+$nodeDirs     = @($packageJsons | ForEach-Object { $_.DirectoryName } | Sort-Object)
+$nodeLocks    = @(Get-SourceFiles @('package-lock.json', 'pnpm-lock.yaml', 'yarn.lock', 'bun.lock', 'bun.lockb'))
+$tsconfigs    = @(Get-SourceFiles 'tsconfig*.json')
+function Test-UnderNodeDir([string]$full) {
+    foreach ($d in $nodeDirs) { if ($full.StartsWith($d + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { return $true } }
+    return $false
+}
+$nodeFiles = @(if ($nodeDirs.Count) {
+    $workspace | Where-Object { $_.Name -match $script:NodeSourceRe -and $_.Name -notmatch $script:NodeIgnoredRe -and (Test-UnderNodeDir $_.FullName) }
+})
+# 只有前端、沒有後端時，指令與 test-toolchain 取這一個套件的：根目錄有 package.json 就是它（monorepo 的根 script 多半就是跨 workspace 的那一組），否則取第一個。
+$nodePrimaryDir = if ($nodeDirs -contains $Root.TrimEnd('\', '/')) { $Root.TrimEnd('\', '/') } elseif ($nodeDirs.Count) { $nodeDirs[0] } else { $null }
+
 # ---------- wrapper ----------
 # 專案自帶的 mvnw／gradlew 釘了它要的 Maven／Gradle 版本，有就一定用它：只有 wrapper、沒裝全域 mvn 的機器上，
 # 寫死 `mvn` 的指令 ④ 根本跑不起來；裝了全域的另一版，也可能 build 不過（Gradle 尤其明顯）。
 # 要「腳本＋設定檔」都在才算 —— 只有一支腳本的 wrapper 跑不起來。
 # 指令一律寫 `./mvnw`：pwsh 7 與 Windows PowerShell 5.1 都會解析到 mvnw.cmd（實測），其他平台就是那支 sh 腳本。
 # build-check.ps1 的退化偵測有同一套判定，兩邊由 test-repo-index.ps1 用同一組 fixture 釘住。
+
+# 後端的根目錄：最淺的 pom.xml／settings.gradle／build.gradle／solution（沒有 solution 時，唯一的那個 .csproj）。
+# 不一定是 repo 根目錄 —— 前後端放在同一個 workspace（workspace/backend、workspace/frontend）、或 solution 在 src/ 底下。
+# `dotnet build`／`mvn compile`／`gradle` 只認當下目錄的專案檔，在根目錄跑每次都是 MSB1003／「there is no POM」：
+# build-check 擋下每一個後端改動，implementer 怎麼修都過不了。指令記下要在哪個目錄跑（working-dir），跟 node-packages 一樣。
+$gradleSettings = @(Get-SourceFiles @('settings.gradle', 'settings.gradle.kts'))
+function Get-ShallowestDir($files) {
+    $f = @($files | Sort-Object @{ e = { (ConvertTo-RelPath $_.FullName).Split('/').Count } }, FullName | Select-Object -First 1)
+    if ($f.Count) { return $f[0].DirectoryName }
+    return $Root
+}
+$backendDir =
+    if ($poms.Count) { Get-ShallowestDir $poms }
+    elseif ($gradles.Count) { Get-ShallowestDir (@($gradleSettings) + @($gradles)) }
+    elseif ($slnFiles.Count) { Get-ShallowestDir $slnFiles }
+    elseif ($csprojs.Count -eq 1) { $csprojs[0].DirectoryName }
+    else { $Root }
+$backendRel = ConvertTo-RelPath $backendDir
+
 function Test-Wrapper([string[]]$scripts, [string]$props) {
-    (@($scripts | Where-Object { Test-Path -LiteralPath (Join-Path $Root $_) -PathType Leaf }).Count -gt 0) -and
-        (Test-Path -LiteralPath (Join-Path $Root $props) -PathType Leaf)
+    (@($scripts | Where-Object { Test-Path -LiteralPath (Join-Path $backendDir $_) -PathType Leaf }).Count -gt 0) -and
+        (Test-Path -LiteralPath (Join-Path $backendDir $props) -PathType Leaf)
 }
 $mvn    = if (Test-Wrapper @('mvnw', 'mvnw.cmd') '.mvn/wrapper/maven-wrapper.properties') { './mvnw' } else { 'mvn' }
 $gradle = if (Test-Wrapper @('gradlew', 'gradlew.bat') 'gradle/wrapper/gradle-wrapper.properties') { './gradlew' } else { 'gradle' }
 # 進 structure hash：加上或拿掉 wrapper 時 commands 要跟著變，而那幾個檔不是專案檔。
 $wrapperFiles = @(@('mvnw', 'mvnw.cmd', '.mvn/wrapper/maven-wrapper.properties',
                     'gradlew', 'gradlew.bat', 'gradle/wrapper/gradle-wrapper.properties') |
-                  ForEach-Object { Join-Path $Root $_ } |
+                  ForEach-Object { Join-Path $backendDir $_ } |
                   Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
                   ForEach-Object { Get-Item -LiteralPath $_ })
 
@@ -143,18 +185,24 @@ $language =
     elseif ($csFiles.Count -ge $javaFiles.Count * 4) { 'csharp' }
     elseif ($javaFiles.Count -ge $csFiles.Count * 4) { 'java' }
     else { 'mixed' }
+# 前端不參與上面的判定：後端在的時候它就是主語言，前端的細節在 node-packages。
+if ($language -eq 'unknown' -and $nodeDirs.Count) {
+    $language = if (@($nodeFiles | Where-Object { $_.Name -match $script:NodeTypedRe }).Count -or $tsconfigs.Count) { 'typescript' } else { 'javascript' }
+}
 
 $buildTool =
     if ($poms.Count -gt 0) { 'maven' }
     elseif ($gradles.Count -gt 0) { 'gradle' }
     elseif ($slnFiles.Count -gt 0 -or $csprojs.Count -gt 0) { 'dotnet' }
+    elseif ($nodePrimaryDir) { Get-NodePackageManager $nodePrimaryDir $Root (Read-NodePackageJson $nodePrimaryDir) }
     else { $null }
+$backendTool = $buildTool -in 'maven', 'gradle', 'dotnet'
 
 $srcFiles = @(switch ($language) {
     'java'  { $javaFiles }
     'mixed' { @($csFiles) + @($javaFiles) }
     default { $csFiles }
-})
+}) + $nodeFiles
 
 # ---------- 分域 hash ----------
 # 「相對路徑:大小[:修改時間]」一行一個、照完整路徑排序 —— 跟以前的 ForEach-Object 逐位元相同，只是 foreach 快得多。
@@ -165,7 +213,9 @@ function Get-FileListInput($files, [bool]$withTicks) {
     }
     return ($lines -join "`n")
 }
-$structureHash = Get-Sha256 (Get-FileListInput (@($slnFiles) + @($csprojs) + @($poms) + @($gradles) + $wrapperFiles) $true)
+# package.json 的 scripts／依賴、tsconfig 一改，指令就跟著變；lockfile 只看在不在（它決定套件管理器，內容每次安裝都會動）。
+$structureHash = Get-Sha256 ((Get-FileListInput (@($slnFiles) + @($csprojs) + @($poms) + @($gradles) + @($gradleSettings) + $wrapperFiles + @($packageJsons) + @($tsconfigs)) $true) +
+                             "`n" + (@($nodeLocks | ForEach-Object { ConvertTo-RelPath $_.FullName } | Sort-Object) -join "`n"))
 $configHash    = Get-Sha256 (Get-FileListInput (@($appsettings) + @($appYaml)) $false)
 $symbolHash    = Get-Sha256 (Get-FileListInput $srcFiles $true)
 
@@ -194,7 +244,7 @@ if ($StatusOnly) {
     # 這份輸出要讓 agent 一次呼叫就決定得了下一步，所以規模與工具鏈也一起回 ——
     # 沒有它們，agent 為了知道「這個 repo 多大」還是得自己掃一遍，門檻等於自我否定。
     # 地圖的新鮮度只能用地圖自己的 git-sha 算（不是 changed_files：那是相對 index.json 的基準線，索引一刷新就清空）。
-    $mapStatus = Get-MapStatus -Root $Root -IsGit ([bool]$gitSha)
+    $mapStatus = Get-MapStatus -Root $Root
     [pscustomobject]@{
         index_exists       = [bool]$prev
         index_path         = ($indexPath -replace '\\', '/')
@@ -205,7 +255,8 @@ if ($StatusOnly) {
         language           = $language
         build_tool         = $buildTool
         file_count         = $srcFiles.Count
-        project_count      = (@($csprojs).Count + @($poms).Count + @($gradles).Count)
+        project_count      = (@($csprojs).Count + @($poms).Count + @($gradles).Count + @($packageJsons).Count)
+        node_package_count = @($packageJsons).Count
         changed_file_count = $changedFiles.Count
         changed_files      = @($changedFiles | Select-Object -First 200)
         needs_refresh      = ($stale.Count -gt 0)
@@ -315,6 +366,37 @@ if ($language -eq 'java') {
     }
 }
 
+# ---------- Node 套件（package.json） ----------
+# 放在上面的 test-toolchain 之後：npm 的套件名不能混進 Find-Pkg 的比對（`^junit` 會吃到 junit-report-builder）。
+$nodeInfos = @(foreach ($d in $nodeDirs) { Get-NodeProjectInfo $d $Root })
+$nodeNames = @($nodeInfos | ForEach-Object { $_.name })
+foreach ($n in $nodeInfos) {
+    $projects += [pscustomobject]@{
+        name              = $n.name
+        path              = ConvertTo-RelPath (Join-Path $n.dir 'package.json')
+        'target-framework'= $n.engines
+        'project-refs'    = @($n.deps | Where-Object { $_ -in $nodeNames -and $_ -ne $n.name })
+        'package-refs'    = @($n.deps)
+    }
+}
+# 每個套件一份；指令在那個目錄跑（working-dir）。上限 30 —— 更大的 monorepo 讀者也只看得完前面幾個。
+$nodePackages = @($nodeInfos | Select-Object -First 30 | ForEach-Object {
+    $rel = ConvertTo-RelPath $_.dir
+    [ordered]@{
+        'working-dir'     = $(if ($rel) { $rel } else { '.' })
+        name              = $_.name
+        'package-manager' = $_.pm
+        language          = $_.language
+        commands          = $_.commands
+        'test-toolchain'  = $_.'test-toolchain'
+    }
+})
+# 只有前端：commands／test-toolchain 就是主套件的那份（下游照讀 commands，不用分辨是不是前端）。
+if (-not $backendTool -and $nodePrimaryDir) {
+    $primary = $nodeInfos | Where-Object { $_.dir -eq $nodePrimaryDir } | Select-Object -First 1
+    $testToolchain = [pscustomobject]$primary.'test-toolchain'
+}
+
 # ---------- build / test 命令（下游一律讀這裡，不得自行硬編） ----------
 $commands = switch ($buildTool) {
     'maven'  { [pscustomobject]@{
@@ -339,6 +421,12 @@ $commands = switch ($buildTool) {
                  'step-def-glob'='**/*Steps.cs'; 'feature-glob'='**/*.feature' } }
     default  { $null }
 }
+if ($backendTool -and $commands -and $backendRel) { $commands | Add-Member -NotePropertyName 'working-dir' -NotePropertyValue $backendRel }
+if (-not $backendTool -and $primary) {
+    $commands = [pscustomobject]$primary.commands
+    $rel = ConvertTo-RelPath $primary.dir
+    if ($rel) { $commands | Add-Member -NotePropertyName 'working-dir' -NotePropertyValue $rel }
+}
 
 # ---------- entrypoints ----------
 $entrypoints = @(if ($language -eq 'java') {
@@ -353,6 +441,15 @@ $entrypoints = @(if ($language -eq 'java') {
         $_.Name -match 'Application\.java$'
     } | ForEach-Object { ConvertTo-RelPath $_.FullName })
 })
+# 前端：套件根或 src/ 底下的 main／index／App／router，以及 Next／Nuxt／SvelteKit 這類以檔案路由的頁面。上限 100。
+$entrypoints += @($nodeFiles | Where-Object {
+    $rel = ConvertTo-RelPath $_.FullName
+    $dir = $_.DirectoryName
+    ($_.Name -match '^(main|index|App|app|server|router|routes)\.[^.]+$' -and
+        @($nodeDirs | Where-Object { $dir -eq $_ -or $dir -eq (Join-Path $_ 'src') }).Count) -or
+    $rel -match '(^|/)(app|pages|routes)/(.+/)?(page|layout|route|\+page|\+layout|\+server)\.[^/]+$' -or
+    $rel -match '(^|/)pages/[^/]+\.(tsx|jsx|vue)$'
+} | Select-Object -First 100 | ForEach-Object { ConvertTo-RelPath $_.FullName })
 
 # ---------- config keys（只記 key path，不記 value） ----------
 $configKeys = @()
@@ -396,11 +493,53 @@ if ($prev -and ('symbols' -notin $stale)) {
     $diRegistrations = @($prev.'di-registrations')
 } else {
 
+# TS／JS：export 出去的才算（同 C#／Java 只抓 public）。元件是前端「誰在做這件事」的答案：.vue／.svelte 整檔是一個，
+# .tsx／.jsx 裡 export、大寫開頭的函式或常數也是。class 的成員方法照抓（Angular／Nest 的 service）。
+# DI：Angular／Nest 的類別層 decorator，同 Java 的 @Service —— 掛上去的那個才是擴充點。
+function Get-JsFileSymbols([IO.FileInfo]$f, [string]$rel, [string]$txt, [ref]$sym, $di) {
+    $isComp = $f.Extension -in '.tsx', '.jsx'
+    $types = @(
+        @([regex]::Matches($txt, '(?m)^\s*export\s+(?:default\s+)?(?:declare\s+)?(?:abstract\s+)?(?:const\s+)?(class|interface|enum|type)\s+(\w+)') |
+            ForEach-Object { "$($_.Groups[1].Value) $($_.Groups[2].Value)" })
+        if ($f.Extension -in '.vue', '.svelte') { "component $($f.BaseName)" }
+        if ($isComp) {
+            @([regex]::Matches($txt, '(?m)^\s*export\s+(?:default\s+)?(?:async\s+)?(?:function\s+|(?:const|let)\s+)([A-Z]\w*)') |
+                ForEach-Object { "component $($_.Groups[1].Value)" })
+        }
+    )
+    $types = @($types | Select-Object -Unique)
+    $compNames = @($types | Where-Object { $_ -like 'component *' } | ForEach-Object { ($_ -split '\s+')[-1] })
+    $methods = @(@(
+        @([regex]::Matches($txt, '(?m)^\s*export\s+(?:default\s+)?(?:async\s+)?(?:function\s*\*?\s*|(?:const|let)\s+)(\w+)') | ForEach-Object { $_.Groups[1].Value })
+        if ($txt -match '(?m)^\s*export\s+(?:default\s+)?(?:abstract\s+)?class\b') {
+            @([regex]::Matches($txt, '(?m)^[ \t]+(?:public\s+|static\s+|async\s+|override\s+)*(?!(?:if|for|while|switch|catch|function|return|constructor|else|new|private|protected)\b)(\w+)\s*(?:<[^>()]*>)?\s*\([^()]*\)\s*(?::\s*[^{;=]+)?\{') |
+                ForEach-Object { $_.Groups[1].Value })
+        }
+    ) | Where-Object { $_ -notin $compNames } | Sort-Object -Unique)
+    $bases = @()
+    foreach ($m in [regex]::Matches($txt, '(?m)^\s*export\s+(?:default\s+)?(?:abstract\s+)?(?:class|interface)\s+(\w+)\s*(?:<[^>{]*>)?\s*((?:extends|implements)\b[^{\r\n]+)')) {
+        $list = @(($m.Groups[2].Value -replace '\b(extends|implements)\b', ',') -split ',' | ForEach-Object { Get-ShortName $_ } | Where-Object { $_ })
+        if ($list.Count) { $bases += "$($m.Groups[1].Value) : $($list -join ', ')" }
+    }
+    $primary = @($types | Where-Object { $_ -like 'class *' } | Select-Object -First 1 | ForEach-Object { ($_ -split '\s+')[-1] })
+    foreach ($a in @([regex]::Matches($txt, '(?m)^\s*@(Injectable|Component|Directive|Pipe|NgModule|Controller|Module|Resolver)\s*\(') |
+                     ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)) {
+        $di.Add([ordered]@{ file = $rel; kind = "@$a"; service = $(if ($primary) { $primary[0] } else { $f.BaseName }); impl = $null })
+    }
+    if ($types.Count -or $methods.Count) {
+        $entry = [ordered]@{ file = $rel; types = $types }
+        if ($bases.Count) { $entry.bases = $bases }
+        $entry.methods = @($methods | Select-Object -First 40)
+        $sym.Value = $entry
+    }
+}
+
 # 一個檔的 symbols 與 DI 註冊。結果放進 $sym（[ref]）與 $di，不碰全域陣列 —— 快取存的就是這兩樣。
 function Get-FileSymbols([IO.FileInfo]$f, [string]$rel, [ref]$sym, $di) {
     # 註解掉的類別、DI 註冊與 #if false 裡的方法都不是現況 —— 下面每一條樣式都只看剝過的這一份。
     $txt = Get-ActiveCode (Get-Content $f.FullName -Raw -ErrorAction SilentlyContinue) $f.Extension
     if (-not $txt) { return }
+    if ($f.Name -match $script:NodeSourceRe) { Get-JsFileSymbols $f $rel $txt $sym $di; return }
     $isJava = $f.Extension -eq '.java'
 
     # namespace / package：讓「這個型別住在哪一層」不必開檔就看得出來
@@ -535,6 +674,8 @@ $index = [pscustomobject]@{
         'file-count'        = $srcFiles.Count
         'cs-file-count'     = $csFiles.Count
         'java-file-count'   = $javaFiles.Count
+        'node-file-count'   = $nodeFiles.Count
+        'node-package-count'= $packageJsons.Count
         'project-count'     = $projects.Count
         'refreshed-scopes'  = $stale
         'changed-files'     = @($changedFiles | Select-Object -First 200)
@@ -544,6 +685,7 @@ $index = [pscustomobject]@{
     solutions       = @(@($slnFiles) + @($poms) + @($gradles) | ForEach-Object { ConvertTo-RelPath $_.FullName })
     projects        = $projects
     'test-toolchain'= $testToolchain
+    'node-packages' = $nodePackages
     commands        = $commands
     entrypoints     = $entrypoints
     'config-keys'   = @($configKeys | Select-Object -First 400)
@@ -575,8 +717,9 @@ $json | Set-Content $indexPath -Encoding UTF8
     }
     commands         = $commands
     'test-toolchain' = $testToolchain
+    'node-packages'  = $nodePackages
     solutions        = @(@($slnFiles) + @($poms) + @($gradles) | ForEach-Object { ConvertTo-RelPath $_.FullName })
-} | ConvertTo-Json -Depth 5 | Set-Content $digestPath -Encoding UTF8
+} | ConvertTo-Json -Depth 8 | Set-Content $digestPath -Encoding UTF8
 
 [pscustomobject]@{
     status = 'refreshed'; index_path = $indexPath; digest_path = $digestPath

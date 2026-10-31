@@ -15,7 +15,7 @@
 # （2,000 檔的專案就近 1 MB，模型讀不下）。
 #
 # 內容比對在 git repo 裡先用 `git grep` 篩出有關鍵字的檔，只對那些檔讀全文、剝註解、計分；以前每次都把每個
-# .cs／.java／.sql 讀一遍。非 git 照舊逐檔讀。
+# .cs／.java／.sql 讀一遍。非 git 照舊逐檔讀。工作區底下有好幾個 repo（前後端分開）時每個各 grep 一次。
 #
 # Exit: 0 = 完成；1 = 錯誤。
 
@@ -45,8 +45,10 @@ function Read-StdinUtf8 {
 
 . (Join-Path $PSScriptRoot 'lib/active-code.ps1')
 . (Join-Path $PSScriptRoot 'lib/source-files.ps1')
+. (Join-Path $PSScriptRoot 'lib/node-project.ps1')
+. (Join-Path $PSScriptRoot 'lib/workspace-repos.ps1')
 $Root = (Resolve-Path $Root).Path
-$excludeDirs = @('bin', 'obj', 'node_modules', 'packages', '.git', '.vs', 'TestResults')
+$excludeDirs = @('bin', 'obj', 'node_modules', 'packages', '.git', '.vs', 'TestResults') + $script:NodeGeneratedDirs
 
 function ConvertTo-RelPath([string]$full) {
     if ($full.StartsWith($Root, [StringComparison]::Ordinal)) { return $full.Substring($Root.Length).TrimStart('\', '/').Replace('\', '/') }
@@ -104,34 +106,51 @@ if ($indexUsed -and $index.symbols) {
 
 # ---------- 2. 檔名命中（權重 2） ----------
 # 整棵樹只走一次，排除的目錄不進去（lib/source-files.ps1）。
-$allFiles = @(Select-WorkspaceFiles -Files (Get-WorkspaceFiles -Root $Root -ExcludeDirs $excludeDirs) -Patterns '*.cs', '*.java', '*.csproj', '*.json', '*.sql', '*.xml')
+$workspace = Get-WorkspaceFiles -Root $Root -ExcludeDirs $excludeDirs
+$allFiles = @(Select-WorkspaceFiles -Files $workspace -Patterns '*.cs', '*.java', '*.csproj', '*.json', '*.sql', '*.xml')
+# 前端的原始碼只算 package.json 底下的（同 repo-index）：wwwroot/lib 的 jquery.js 不是這個專案寫的，命中了只是佔掉前幾名。
+$nodeDirs = @($workspace | Where-Object { $_.Name -eq 'package.json' } | ForEach-Object { $_.DirectoryName })
+$jsFiles = @(if ($nodeDirs.Count) {
+    $workspace | Where-Object {
+        $full = $_.FullName
+        $_.Name -match $script:NodeSourceRe -and $_.Name -notmatch $script:NodeIgnoredRe -and
+            @($nodeDirs | Where-Object { $full.StartsWith($_ + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) }).Count
+    }
+})
+$allFiles += $jsFiles
 foreach ($f in $allFiles) {
     if ($f.BaseName -match $termRe) { Add-Score (ConvertTo-RelPath $f.FullName) 2 "filename:$($f.BaseName)" }
 }
 
 # ---------- 3. 內容命中（權重 1） ----------
-$contentFiles = @($allFiles | Where-Object { $_.Extension -in '.cs', '.java', '.sql' })
+$contentFiles = @($allFiles | Where-Object { $_.Extension -in '.cs', '.java', '.sql' }) + $jsFiles
 
 # git repo：先用 git grep 篩出「有任一個關鍵字」的檔，只讀那些。-F 逐詞（避開 PowerShell regex 與 git ERE 的語法差異）、
 # -i 跟 -match 一樣不分大小寫；--untracked 一定要 —— 這套流程不 commit，上一個需求新增的檔全是未追蹤的；
 # --no-exclude-standard 讓被 .gitignore 掉、但不在排除目錄裡的檔照樣算（跟逐檔讀的集合一樣），最後再跟走訪的結果取交集。
 # git grep 讀不到 UTF-16（SSMS 舊版存 .sql 的預設），所以帶 UTF-16 BOM 的 .sql 另外補回來，照舊逐檔讀。
-$grepHits = $null
-$null = & git -C $Root rev-parse --is-inside-work-tree 2>$null
-if ($LASTEXITCODE -eq 0) {
-    $gitArgs = @('-C', $Root, 'grep', '-l', '-i', '-F', '--untracked', '--no-exclude-standard')
+# 工作區底下每個 repo 各 grep 一次（lib/workspace-repos.ps1）：根目錄的 git grep 不會走進巢狀 repo，前後端分成兩個 repo 時
+# 等於什麼都沒搜到 —— 而且不報錯。不在任何一個 grep 成功的 repo 裡的檔，照舊逐檔讀。
+$grepHits = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+$grepped = @()
+$wsRepos = @(Get-WorkspaceRepos $Root)
+foreach ($repo in $wsRepos) {
+    $gitArgs = @('grep', '-l', '-i', '-F', '--untracked', '--no-exclude-standard')
     foreach ($term in $terms) { $gitArgs += @('-e', $term) }
     $gitArgs += @('--', '*.cs', '*.java', '*.sql')
-    $out = & git @gitArgs 2>$null
-    if ($LASTEXITCODE -le 1) {   # 0 = 有命中、1 = 沒有命中；其他是錯誤 → 退回逐檔讀
-        $grepHits = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
-        foreach ($l in @($out)) { if ($l) { [void]$grepHits.Add(($l -replace '\\', '/')) } }
-    }
+    if ($jsFiles.Count) { $gitArgs += @('*.ts', '*.tsx', '*.mts', '*.cts', '*.js', '*.jsx', '*.mjs', '*.cjs', '*.vue', '*.svelte') }
+    $out = Invoke-GitUtf8 $repo.dir $gitArgs
+    if ($out.exit -ne 0 -and $out.exit -ne 1) { continue }   # 0 = 有命中、1 = 沒有命中；其他是錯誤 → 這個 repo 退回逐檔讀
+    $grepped += $repo
+    $prefix = if ($repo.rel) { "$($repo.rel)/" } else { '' }
+    foreach ($l in $out.lines) { [void]$grepHits.Add($prefix + ($l -replace '\\', '/')) }
 }
-if ($null -ne $grepHits) {
+if ($grepped.Count) {
     $contentFiles = @($contentFiles | Where-Object {
         $rel = ConvertTo-RelPath $_.FullName
         if ($grepHits.Contains($rel)) { return $true }
+        $owner = Get-RepoOf $wsRepos $rel
+        if (-not $owner -or $owner.repo.dir -notin $grepped.dir) { return $true }   # 不在任何 repo 裡、或那個 repo 的 grep 失敗：逐檔讀
         if ($_.Extension -ne '.sql' -or $_.Length -lt 2) { return $false }
         $b = [byte[]]::new(2)
         try { $s = [IO.File]::OpenRead($_.FullName); try { [void]$s.Read($b, 0, 2) } finally { $s.Dispose() } } catch { return $false }
@@ -207,7 +226,7 @@ $ranked = @($scores.GetEnumerator() |
     keywords       = $terms
     'index-used'   = $indexUsed
     'index-note'   = if ($indexUsed) { $null } else { 'index 不存在，已退化為直接搜尋（候選檔不帶 types／bases／DI）；建議先跑 repo-index.ps1' }
-    'content-scan' = if ($null -ne $grepHits) { 'git-grep' } else { 'read-all' }
+    'content-scan' = if ($grepped.Count) { 'git-grep' } else { 'read-all' }
     'total-matched'= $scores.Count
     'returned'     = $ranked.Count
     'read-budget'  = "只讀下列 top-$TopN；不得讀清單外檔案，除非追蹤呼叫鏈必要並在回傳中說明"

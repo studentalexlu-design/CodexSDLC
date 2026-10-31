@@ -862,6 +862,20 @@ Describe-Suite 'sdlc / guidelines 檢查只讀「專案規範」那一節' {
             Assert-Match 'sql\.md' $missing[0].text
         } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
     }
+
+    It-Should '缺選用的 frontend.md 只是 info，doctor 不因此紅（純後端專案用不到它）' {
+        $body = "### 專案規範`n`n讀 ``api.md``，涉及前端加 ``frontend.md``。`n"
+        $rel = New-SdlcRelease 'r-go' -AgentBody $body; $t = New-SdlcTarget 't-go'
+        New-SdlcFile (Join-Path $t 'guidelines/api.md') "## MUST`n- x`n"
+        try {
+            $j = Invoke-SdlcJson install @{ Source = $rel; Target = $t }
+            Assert-Equal 0 @($j.data.guidelines | Where-Object code -eq 'missing').Count '缺選用檔被當成 missing —— doctor 會對每個後端專案永遠紅'
+            $opt = @($j.data.guidelines | Where-Object code -eq 'optional-absent')
+            Assert-Equal 1 $opt.Count '缺選用檔連提都沒提 —— 升級上來的人不知道有這份範例'
+            Assert-Equal 'info' $opt[0].level
+            Assert-Match 'frontend\.md' $opt[0].text
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
 }
 
 Describe-Suite 'sdlc / guidelines/README.md：沒改過的舊版原廠才換，改過的一個字不動' {
@@ -1889,6 +1903,32 @@ Describe-Suite 'sdlc / doctor 的環境檢查（只偵測、不安裝）' {
             Assert-Equal '999.0.0' (Get-EnvItem $j 'codex').found
             Assert-Equal 'not-applicable' (Get-EnvItem $j 'build-tool').status
             Assert-Match '空轉' (@($j.output) -join "`n") 'build-check 對這個專案是空轉，doctor 卻沒說'
+            Assert-Equal 0 $j.exit "warnings: $($j.warnings -join ' | ')"
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '前端專案（package.json）：node 與 lockfile 指定的套件管理器；依賴沒裝只提示、不算問題' {
+        # 以前這種專案只得到一句「build-check 空轉」—— 缺 pnpm、沒裝依賴，④ 跑不了測試、型別檢查一律跳過，都沒有任何提示。
+        $bin = Join-Path $SdlcRoot 'bin-node'
+        New-EnvTool $bin 'git'; New-EnvTool $bin 'codex' @('codex-cli 999.0.0'); New-EnvTool $bin 'node'
+        try {
+            $t = New-EnvTarget 't-env-node' @{ 'web/package.json' = '{ "name": "web" }'; 'web/pnpm-lock.yaml' = '' }
+            $j = Invoke-DoctorEnv $t $bin
+            Assert-Equal 'ok' (Get-EnvItem $j 'node').status
+            $pm = Get-EnvItem $j 'node-package-manager'
+            Assert-Equal 'pnpm' $pm.name 'lockfile 是 pnpm 的，doctor 卻查別的套件管理器'
+            Assert-Equal 'missing' $pm.status
+            Assert-Match 'corepack enable' $pm.hint
+            Assert-Equal 'unknown' (Get-EnvItem $j 'node-deps').status
+            Assert-Match 'web.*pnpm install' (Get-EnvItem $j 'node-deps').hint
+            Assert-True (-not (@($j.data.environment) | Where-Object { $_.id -eq 'build-tool' })) '認得 package.json 了，還說 build-check 空轉'
+            Assert-Equal 2 $j.exit '缺 pnpm，doctor 卻是綠的'
+
+            New-EnvTool $bin 'pnpm'
+            New-Item -ItemType Directory -Path (Join-Path $t 'web/node_modules') -Force | Out-Null
+            $j = Invoke-DoctorEnv $t $bin
+            Assert-Equal 'ok' (Get-EnvItem $j 'node-package-manager').status
+            Assert-True (-not (@($j.data.environment) | Where-Object { $_.id -eq 'node-deps' })) '依賴裝好了還在提示'
             Assert-Equal 0 $j.exit "warnings: $($j.warnings -join ' | ')"
         } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
     }

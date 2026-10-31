@@ -1,7 +1,9 @@
 {
     "_note": "guidelines/README.md 歷來的原廠內容（換行統一成 LF、去掉 BOM 之後的 SHA-256）。update 只在使用者那份跟其中一份相同時，才換成這一版的 README —— 一字不差 = 沒改過，換掉不會損失任何東西。current 是這一版出貨的那一份，由 pack.ps1 核對；改了 guidelines/README.md 就把舊的 current 移進 previous、填上新的。",
-    "current": "a1ac357bdfa14ad11990cbc0157f7f558c3e3cc9f932e9c9db7dccc5d3120e01",
+    "current": "0d7a98215fd190537fef097c1e904ef5d9fab17f6e1d75f0e181befd572c83f1",
     "previous": [
+        "f84b0b9987cd5e11fcc6d1ece360d44df38938a30d03485c00c7b81a341d2f8f",
+        "a1ac357bdfa14ad11990cbc0157f7f558c3e3cc9f932e9c9db7dccc5d3120e01",
         "079c581d21dddbc2dc8bac9249c029a11ee32c16d5b61a180b41af23c5747795",
         "d1d8cac438e3d2e12a5fae76ba5a30ad08b55c1dbedb19bfad60e38f547d1246",
         "0012a8ff086a7765710be036e3c13bd54a5ea1cf4af4df50a9e621b74f5717f7",

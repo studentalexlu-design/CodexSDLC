@@ -509,9 +509,21 @@ function Test-Guidelines([string]$target, [string]$source) {
     }
     $wanted = @($wanted | Sort-Object -Unique)
 
+    # 選用檔：只在改動涉及那個領域時才讀，沒有那個領域的專案（純後端之於 frontend.md）根本用不到。
+    # 缺它照 missing 報，doctor 會對每一個後端專案永遠紅 —— 而「不要建空檔」那句又堵死了唯一的關燈方法。
+    # 所以缺選用檔只是 info：讓升級上來的人知道有這份範例可拿，不算問題。
+    $optional = @('frontend.md')
+
     if ($wanted.Count -gt 0) {
         $have = @(Get-ChildItem $gdir -Filter *.md -File | ForEach-Object { $_.Name })
-        $missing = @($wanted | Where-Object { $_ -notin $have })
+        $absentOpt = @($wanted | Where-Object { $_ -in $optional -and $_ -notin $have })
+        if ($absentOpt.Count -gt 0) {
+            $findings += [pscustomobject]@{
+                level = 'info'; code = 'optional-absent'
+                text  = "選用規範檔 $($absentOpt -join '、') 不在 —— 只在改動涉及那個領域時才讀，沒有就照專案慣例做。需要團隊規範時，從發行包的 guidelines/ 複製範例改寫。"
+            }
+        }
+        $missing = @($wanted | Where-Object { $_ -notin $have -and $_ -notin $optional })
         if ($missing.Count -gt 0) {
             $findings += [pscustomobject]@{
                 level = 'warn'; code = 'missing'
@@ -1164,9 +1176,13 @@ function Find-GitOffPath {
 
 # 專案用哪幾種 build 工具。規則同 build-check 的退化偵測（深度 3 內的專案檔），但一層一層走、跳過相依與產物的目錄 ——
 # VS Code 的背景 doctor 每次都會跑這一段，在帶 node_modules 的 repo 裡整棵樹往下列三層太慢。
+#
+# package.json 也算（Node／TypeScript）：第一個找到的那一份所在目錄記在 $script:NodeProjectDir，給下面的 Node 項目用。
 function Get-ProjectKinds([string]$root) {
-    $skip = @('node_modules', 'bin', 'obj', 'packages', '.git', '.vs', 'TestResults', 'dist', 'build', 'target')
+    $skip = @('node_modules', 'bin', 'obj', 'packages', '.git', '.vs', 'TestResults', 'dist', 'build', 'target',
+              '.next', '.nuxt', '.svelte-kit', '.angular', '.output', '.turbo', 'coverage')
     $seen = @{}
+    $script:NodeProjectDir = $null
     $level = @(Get-Item -LiteralPath $root)
     for ($depth = 0; $depth -le 3 -and $level.Count -gt 0; $depth++) {
         $next = @()
@@ -1175,6 +1191,7 @@ function Get-ProjectKinds([string]$root) {
                 if ($f.Extension -in @('.sln', '.csproj')) { $seen.dotnet = $true }
                 elseif ($f.Name -eq 'pom.xml') { $seen.maven = $true }
                 elseif ($f.Name -in @('build.gradle', 'build.gradle.kts')) { $seen.gradle = $true }
+                elseif ($f.Name -eq 'package.json' -and -not $script:NodeProjectDir) { $seen.node = $true; $script:NodeProjectDir = $d.FullName }
             }
             $next += @(Get-ChildItem -LiteralPath $d.FullName -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -notin $skip })
         }
@@ -1183,6 +1200,7 @@ function Get-ProjectKinds([string]$root) {
     $kinds = @()
     if ($seen.dotnet) { $kinds += 'dotnet' }
     if ($seen.maven) { $kinds += 'maven' } elseif ($seen.gradle) { $kinds += 'gradle' }
+    if ($seen.node) { $kinds += 'node' }
     return $kinds
 }
 
@@ -1267,8 +1285,38 @@ function Get-EnvironmentReport([string]$target) {
         else { $items += New-EnvItem $t.id $t.name 'missing' $btBreaks -hint "裝 $($t.name)：$($t.url)（專案改用自帶的 wrapper 的話，就不必裝全域的）" }
     }
 
+    # Node／TypeScript：node 本身＋專案用的套件管理器（lockfile／packageManager 決定，同 lib/node-project.ps1），
+    # 以及依賴裝了沒 —— 沒有 node_modules 時 build-check 的型別檢查一律跳過、④ 跑不了測試，而這兩件事都不會有任何提示。
+    # 依賴沒裝不算問題（unknown）：裝依賴是使用者的動作，doctor 紅著也不會讓它自己裝好。
+    if ($kinds -contains 'node') {
+        $nd = $script:NodeProjectDir
+        $relNd = ([IO.Path]::GetRelativePath($root, $nd)) -replace '\\', '/'
+        $nodeBreaks = '④ 前端的 build／test、build-check 的型別檢查'
+        $node = Find-Tool 'node'
+        $items += $(if ($node) { New-EnvItem 'node' 'Node.js' 'ok' $nodeBreaks -found $node }
+                    else { New-EnvItem 'node' 'Node.js' 'missing' $nodeBreaks -hint '裝 Node.js：https://nodejs.org/（版本看 package.json 的 engines 或 .nvmrc）' })
+        $pm = 'npm'; $pmSrc = $null
+        foreach ($pair in @(@('pnpm-lock.yaml', 'pnpm'), @('yarn.lock', 'yarn'), @('bun.lock', 'bun'), @('bun.lockb', 'bun'), @('package-lock.json', 'npm'))) {
+            foreach ($d in @($nd, $root) | Select-Object -Unique) {
+                if (-not $pmSrc -and (Test-Path -LiteralPath (Join-Path $d $pair[0]) -PathType Leaf)) { $pm = $pair[1]; $pmSrc = $pair[0] }
+            }
+        }
+        $pj = Read-JsonFile (Join-Path $nd 'package.json')
+        if ($pj -and [string]$pj.packageManager -match '^(npm|pnpm|yarn|bun)@') { $pm = $Matches[1]; $pmSrc = 'package.json 的 packageManager' }
+        $pmHint = if ($pm -in 'pnpm', 'yarn') { "裝 $pm：Node 內附的 corepack 跑一次 ``corepack enable`` 就有" } else { "裝 $pm（npm 跟著 Node 一起裝）" }
+        $pmExe = Find-Tool $pm
+        $items += $(if ($pmExe) { New-EnvItem 'node-package-manager' $pm 'ok' '④ 前端的 build／test 指令' -found $pmExe -source $pmSrc }
+                    else { New-EnvItem 'node-package-manager' $pm 'missing' '④ 前端的 build／test 指令' -source $pmSrc -hint $pmHint })
+        $installed = @(@($nd, $root) | Select-Object -Unique | Where-Object {
+            (Test-Path -LiteralPath (Join-Path $_ 'node_modules') -PathType Container) -or (Test-Path -LiteralPath (Join-Path $_ '.pnp.cjs') -PathType Leaf) }).Count
+        if (-not $installed) {
+            $where = if ($relNd -eq '.') { '專案根' } else { $relNd }
+            $items += New-EnvItem 'node-deps' '前端依賴' 'unknown' 'build-check 的型別檢查（沒裝就跳過）、④ 的測試' -hint "還沒裝（沒有 node_modules）—— 在 $where 跑一次 ``$pm install``"
+        }
+    }
+
     if ($kinds.Count -eq 0) {
-        $items += New-EnvItem 'build-tool' 'build／test 工具' 'not-applicable' 'build-check 對這個專案是空轉，index.json 也不會有 build／test 指令' -hint '這套只認得 .NET（.sln／.csproj）與 Java（pom.xml／build.gradle）的專案檔；④ 的 implementer 會自己找指令'
+        $items += New-EnvItem 'build-tool' 'build／test 工具' 'not-applicable' 'build-check 對這個專案是空轉，index.json 也不會有 build／test 指令' -hint '這套只認得 .NET（.sln／.csproj）、Java（pom.xml／build.gradle）與 Node（package.json）的專案檔；④ 的 implementer 會自己找指令'
     }
     return $items
 }

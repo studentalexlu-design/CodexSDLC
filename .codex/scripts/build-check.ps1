@@ -8,8 +8,9 @@
 # 而直接 build 單一 csproj 時 $(SolutionDir) 是空的、solution 的組態對應也不套用 —— 舊專案在那裡誤擋的代價大得多。
 # 省時間的是「不叫」：測試檔不觸發、綠燈去抖。
 #
-# 語言與 build 命令取自 repo-index 的 `commands`；索引不存在時退化為副檔名偵測。
-# 支援 .NET（dotnet）與 Java（maven／gradle）。
+# 語言與 build 命令取自 repo-index 的 `commands`（帶 `working-dir` 時進那個目錄跑）；索引不存在時退化為專案檔偵測，
+# 在最淺的那個專案檔所在的目錄跑 —— 前後端放同一個 workspace（workspace/backend）時後端不在根目錄。
+# 支援 .NET（dotnet）與 Java（maven／gradle）；Node／TypeScript 跑型別檢查（每個 package.json 一個單位，見下面的 Node 段落）。
 #
 # **綠燈時去抖（debounce）。** 本 hook 掛在每一次 apply_patch 上，而一次邏輯變更
 # 通常由數個 patch 組成 —— 每個 patch 都 build 一次是純等待，且 implementer
@@ -18,7 +19,7 @@
 #   build 失敗 → 刪除時間戳，之後每一次變更都重跑，直到恢復綠燈
 # 去抖只作用在「已經綠燈」的情況，紅燈時的回饋速度完全不受影響。
 #
-# Exit: 0 = 無需 build 或 build 成功；2 = build 失敗（阻斷）。
+# Exit: 0 = 無需 build 或 build 成功；2 = build 或型別檢查失敗（阻斷）。
 
 [CmdletBinding()]
 param(
@@ -133,11 +134,16 @@ $paths = $hook.paths
 
 # 語言／建置命令：優先取自索引，退化為副檔名偵測
 $buildCmd = $null
+$buildDir = $null   # 指令在哪個目錄跑（相對工作目錄）；$null = 工作目錄
 $extRe    = '\.(cs|csproj|sln|java)$'
 if (Test-Path $IndexPath) {
     try {
         $idx = Get-Content $IndexPath -Raw | ConvertFrom-Json
-        if ($idx.commands.build) { $buildCmd = $idx.commands.build }
+        # 只有前端的專案，索引的 commands 是前端的（型別檢查）—— 那一份由下面的 Node 段落自己從 package.json 推，這裡不拿。
+        if ($idx.commands.build -and $idx.meta.'build-tool' -in 'dotnet', 'maven', 'gradle') {
+            $buildCmd = $idx.commands.build
+            $buildDir = $idx.commands.'working-dir'   # 後端不在根目錄（workspace/backend、src/ 底下的 solution）時才有
+        }
         switch ($idx.meta.language) {
             'java'   { $extRe = '\.(java|gradle|kts)$|(^|/)pom\.xml$' }
             'csharp' { $extRe = '\.(cs|csproj|sln)$' }
@@ -190,60 +196,149 @@ $candidates = @($paths | Where-Object {
 $testOnly   = @($candidates | Where-Object { Test-IsTestPath $_ })
 $triggering = @($candidates | Where-Object { $_ -notin $testOnly })
 
+# ---- Node／TypeScript：型別檢查，每個套件（package.json）各跑各的 ----
+# 指令從 package.json 直接推（lib/node-project.ps1，跟 repo-index 同一份判定），不讀索引：讀一個 package.json 比讀索引還便宜，
+# 也不會因為索引舊了而跑錯指令。.js 不觸發 —— 它沒有「編譯」這一步，lint 不是這支 hook 的事。
+# 共用檔不在（只複製了這一支）就跳過這一段，後端那段照常 —— 少一個檔不該讓整支 hook 失效。
+$nodeUnits = [ordered]@{}   # 套件目錄 → 觸發的檔
+$nodeTestOnly = @()
+$nodeLib = Join-Path $PSScriptRoot 'lib/node-project.ps1'
+if (Test-Path -LiteralPath $nodeLib) {
+    . $nodeLib
+    $root = (Get-Location).Path
+    foreach ($p in $paths) {
+        $rel = $p -replace '\\', '/'
+        if ($rel -match '(^|/)(bdd-docs|node_modules)/' -or $rel -notmatch "$($script:NodeTypedRe)|(^|/)tsconfig[^/]*\.json$") { continue }
+        if ($rel -match $script:NodeIgnoredRe) { continue }
+        if (Test-NodeTestPath $rel) { $nodeTestOnly += $p; continue }
+        $full = if ([IO.Path]::IsPathRooted($p)) { $p } else { Join-Path $root $p }
+        $dir = Find-NodePackageDir $full $root
+        if (-not $dir) { continue }
+        if (-not $nodeUnits.Contains($dir)) { $nodeUnits[$dir] = @() }
+        $nodeUnits[$dir] += $p
+    }
+}
+
 if ($WhatIfPaths) {
-    "detected=$($paths.Count) triggering=$($triggering.Count) test-skipped=$($testOnly.Count) build='$buildCmd' extRe='$extRe'"
+    $nodeCount = @($nodeUnits.Values | ForEach-Object { $_ }).Count
+    "detected=$($paths.Count) triggering=$($triggering.Count + $nodeCount) test-skipped=$($testOnly.Count + $nodeTestOnly.Count) build='$buildCmd' dir='$buildDir' extRe='$extRe'"
     $triggering | ForEach-Object { "  TRIGGER $_" }
-    $testOnly   | ForEach-Object { "  SKIP-TEST $_" }
+    foreach ($d in $nodeUnits.Keys) {
+        $info = Get-NodeProjectInfo $d (Get-Location).Path
+        foreach ($p in $nodeUnits[$d]) { "  TRIGGER $p" }
+        "  NODE $(([IO.Path]::GetRelativePath((Get-Location).Path, $d)) -replace '\\', '/') build='$($info.commands.build)'"
+    }
+    @($testOnly) + @($nodeTestOnly) | ForEach-Object { "  SKIP-TEST $_" }
     exit 0
 }
 
-if (-not $triggering) { exit 0 }
+if (-not $triggering -and -not $nodeUnits.Count) { exit 0 }
 
 # --- 綠燈去抖 ---
-# 時間戳依工作目錄雜湊命名，避免多個 repo 互相干擾。
+# 時間戳依工作目錄雜湊命名，避免多個 repo 互相干擾；前端每個套件各一個（後綴是套件目錄的雜湊）。
 $stampDir = [IO.Path]::GetTempPath()
 $cwdHash  = [BitConverter]::ToString(
     [Security.Cryptography.MD5]::HashData([Text.Encoding]::UTF8.GetBytes((Get-Location).Path))
 ).Replace('-', '').Substring(0, 12)
 $stamp = Join-Path $stampDir "codex-build-check-$cwdHash.stamp"
-
-if ($DebounceSeconds -gt 0 -and (Test-Path $stamp)) {
-    $age = ((Get-Date) - (Get-Item $stamp).LastWriteTime).TotalSeconds
-    if ($age -lt $DebounceSeconds) { exit 0 }   # 上次 build 綠燈且仍在視窗內
+function Test-StampFresh([string]$s) {
+    if ($DebounceSeconds -le 0 -or -not (Test-Path $s)) { return $false }
+    return (((Get-Date) - (Get-Item $s).LastWriteTime).TotalSeconds -lt $DebounceSeconds)
 }
+
+# 型別檢查的錯誤在最前面，套件管理器的「script 失敗」在最後 —— 只留最後 10 行，看到的會全是 npm 的雜訊。
+function Select-ErrorLines($lines) {
+    $all = @($lines | ForEach-Object { "$_" })
+    $err = @($all | Where-Object { $_ -match '(?i)\berror\b' -and $_ -notmatch '^\s*(npm (error|ERR!)|ELIFECYCLE|error Command failed|\s*ERR_PNPM)' })
+    if ($err.Count) { return @($err | Select-Object -First 10) }
+    return @($all | Select-Object -Last 10)
+}
+
+$nodeFailed = $false
+foreach ($d in $nodeUnits.Keys) {
+    $info = Get-NodeProjectInfo $d (Get-Location).Path
+    $cmd = $info.commands.build
+    if (-not $cmd) { continue }                                         # 沒有可信的型別檢查（純 JS、solution-style tsconfig）
+    if (-not (Test-NodeInstalled $d (Get-Location).Path)) { continue }  # 依賴沒裝：工具鏈不可用，不阻斷
+    $hash = [BitConverter]::ToString([Security.Cryptography.MD5]::HashData([Text.Encoding]::UTF8.GetBytes($d))).Replace('-', '').Substring(0, 8)
+    $nstamp = Join-Path $stampDir "codex-build-check-$cwdHash-$hash.stamp"
+    if (Test-StampFresh $nstamp) { continue }
+    $segments = @($cmd -split '\s*&&\s*')
+    if (-not (Get-Command (($segments[0] -split '\s+')[0]) -ErrorAction SilentlyContinue)) { continue }   # 工具鏈不可用時不阻斷
+    $out = @(); $code = 0
+    Push-Location -LiteralPath $d
+    try {
+        foreach ($seg in $segments) {
+            $parts = $seg -split '\s+'
+            $out += @(& $parts[0] @($parts[1..($parts.Count - 1)]) 2>&1)
+            $code = $LASTEXITCODE
+            if ($code -ne 0) { break }
+        }
+    } finally { Pop-Location }
+    if ($code -ne 0) {
+        Remove-Item $nstamp -ErrorAction SilentlyContinue
+        $relDir = ([IO.Path]::GetRelativePath((Get-Location).Path, $d)) -replace '\\', '/'
+        [Console]::Error.WriteLine("[Hook] Type check FAILED after production code change ($cmd, in $relDir). Fix before proceeding.")
+        Select-ErrorLines $out | ForEach-Object { [Console]::Error.WriteLine($_) }
+        $nodeFailed = $true
+    } elseif ($DebounceSeconds -gt 0) {
+        Set-Content -Path $nstamp -Value (Get-Date -Format o) -NoNewline
+    }
+}
+
+if (-not $triggering) { exit $(if ($nodeFailed) { 2 } else { 0 }) }
+if (Test-StampFresh $stamp) { exit $(if ($nodeFailed) { 2 } else { 0 }) }   # 上次 build 綠燈且仍在視窗內
 
 # 索引沒給命令時，依專案檔存在性推斷。
 # 專案自帶 wrapper 就用它 —— 理由與判定同 repo-index.ps1 的 wrapper 段（「腳本＋設定檔」都在才算），
 # 兩邊由 test-repo-index.ps1 用同一組 fixture 釘住。
-function Test-Wrapper([string[]]$scripts, [string]$props) {
-    (@($scripts | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf }).Count -gt 0) -and (Test-Path -LiteralPath $props -PathType Leaf)
+function Test-Wrapper([string]$dir, [string[]]$scripts, [string]$props) {
+    (@($scripts | Where-Object { Test-Path -LiteralPath (Join-Path $dir $_) -PathType Leaf }).Count -gt 0) -and (Test-Path -LiteralPath (Join-Path $dir $props) -PathType Leaf)
+}
+# 最淺的那一個專案檔所在的目錄 —— 同 repo-index 的「後端的根目錄」：前後端放同一個 workspace（workspace/backend）、
+# solution 在 src/ 底下時，在工作目錄跑 `dotnet build`／`mvn` 每次都是「這裡沒有專案檔」，每個後端改動都被擋下。
+# node_modules 裡的套件會帶自己的 build.gradle（React Native），不算。
+function Find-BuildRoot([string[]]$filters) {
+    $hit = @(foreach ($f in $filters) { Get-ChildItem -Recurse -Depth 3 -File -Filter $f -ErrorAction SilentlyContinue }) |
+        Where-Object { $_.FullName -notmatch '[\\/](node_modules|bin|obj)[\\/]' } |
+        Sort-Object @{ e = { $_.FullName.Split([IO.Path]::DirectorySeparatorChar).Count } }, FullName | Select-Object -First 1
+    if (-not $hit) { return $null }
+    $rel = [IO.Path]::GetRelativePath((Get-Location).Path, $hit.DirectoryName)
+    return $(if ($rel -eq '.') { '.' } else { $rel })
 }
 if (-not $buildCmd) {
-    if (Get-ChildItem -Recurse -Depth 3 -Filter *.sln -ErrorAction SilentlyContinue | Select-Object -First 1) {
+    if ($d = Find-BuildRoot @('*.sln', '*.slnx')) {
         $buildCmd = 'dotnet build --nologo --verbosity quiet'
-    } elseif (Get-ChildItem -Recurse -Depth 3 -Filter pom.xml -ErrorAction SilentlyContinue | Select-Object -First 1) {
-        $mvn = if (Test-Wrapper @('mvnw', 'mvnw.cmd') '.mvn/wrapper/maven-wrapper.properties') { './mvnw' } else { 'mvn' }
+    } elseif ($d = Find-BuildRoot @('pom.xml')) {
+        $mvn = if (Test-Wrapper $d @('mvnw', 'mvnw.cmd') '.mvn/wrapper/maven-wrapper.properties') { './mvnw' } else { 'mvn' }
         $buildCmd = "$mvn -q -B compile"
-    } elseif (Get-ChildItem -Recurse -Depth 3 -Filter build.gradle* -ErrorAction SilentlyContinue | Select-Object -First 1) {
-        $gradle = if (Test-Wrapper @('gradlew', 'gradlew.bat') 'gradle/wrapper/gradle-wrapper.properties') { './gradlew' } else { 'gradle' }
+    } elseif ($d = Find-BuildRoot @('settings.gradle', 'settings.gradle.kts', 'build.gradle', 'build.gradle.kts')) {
+        $gradle = if (Test-Wrapper $d @('gradlew', 'gradlew.bat') 'gradle/wrapper/gradle-wrapper.properties') { './gradlew' } else { 'gradle' }
         $buildCmd = "$gradle -q compileJava"
     } else {
-        exit 0   # 無可辨識的專案，不阻斷
+        exit $(if ($nodeFailed) { 2 } else { 0 })   # 無可辨識的專案，不阻斷
     }
+    if ($d -ne '.') { $buildDir = $d }
 }
 
 $parts = $buildCmd -split '\s+'
 $exe   = $parts[0]
-if (-not (Get-Command $exe -ErrorAction SilentlyContinue)) { exit 0 }   # 工具鏈不可用時不阻斷
-
-$result = & $exe @($parts[1..($parts.Count - 1)]) 2>&1
-if ($LASTEXITCODE -ne 0) {
+$inDir = if ($buildDir) { " in $($buildDir -replace '\\', '/')" } else { '' }
+if ($buildDir -and -not (Test-Path -LiteralPath $buildDir -PathType Container)) { exit $(if ($nodeFailed) { 2 } else { 0 }) }   # 索引舊了、目錄已不在：不阻斷
+if ($buildDir) { Push-Location -LiteralPath $buildDir }
+try {
+    # ./mvnw 相對的是那個目錄 —— 進去之後才找得到
+    if (-not (Get-Command $exe -ErrorAction SilentlyContinue)) { exit $(if ($nodeFailed) { 2 } else { 0 }) }   # 工具鏈不可用時不阻斷
+    $result = & $exe @($parts[1..($parts.Count - 1)]) 2>&1
+    $buildExit = $LASTEXITCODE
+} finally { if ($buildDir) { Pop-Location } }
+if ($buildExit -ne 0) {
     # 紅燈：清掉時間戳，讓下一次變更立即重驗，不受去抖視窗影響。
     Remove-Item $stamp -ErrorAction SilentlyContinue
-    [Console]::Error.WriteLine("[Hook] Build FAILED after production code change ($buildCmd). Fix before proceeding.")
+    [Console]::Error.WriteLine("[Hook] Build FAILED after production code change ($buildCmd$inDir). Fix before proceeding.")
     $result | Select-Object -Last 10 | ForEach-Object { [Console]::Error.WriteLine($_) }
     exit 2
 }
 # 綠燈：記錄時間戳，開啟去抖視窗。
 if ($DebounceSeconds -gt 0) { Set-Content -Path $stamp -Value (Get-Date -Format o) -NoNewline }
-exit 0
+exit $(if ($nodeFailed) { 2 } else { 0 })

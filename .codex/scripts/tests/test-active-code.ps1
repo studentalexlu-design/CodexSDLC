@@ -103,3 +103,16 @@ Describe-Suite 'active-code / SQL 與 XML' {
         Assert-Equal '// keep' (Get-ActiveCode '// keep' '.txt')
     }
 }
+
+Describe-Suite 'active-code / JS／TS：樣板字串裡的 // 不是註解' {
+
+    It-Should '註解拿掉；一般字串、樣板字串裡的 //、/* 不動' {
+        Assert-Equal 'const u = `http://x/${a}`;|const s = ''//keep'';|export class A {}||const r = 1 / 2;' `
+            (Get-AcView "const u = ``http://x/`${a}``; // drop`nconst s = '//keep'; /* b`n */ export class A {}`n// export class Dead {}`nconst r = 1 / 2; // c" '.ts')
+        Assert-Equal 'const g = `/* not a comment */`;' (Get-AcView 'const g = `/* not a comment */`;' '.tsx')
+    }
+
+    It-Should '.vue／.svelte／.mjs 都走同一個 lexer（不認得的副檔名才原樣回傳）' {
+        foreach ($ext in '.vue', '.svelte', '.mjs', '.jsx') { Assert-Equal 'a();' (Get-AcView 'a(); // x' $ext) "$ext 沒剝" }
+    }
+}

@@ -39,6 +39,19 @@ $script:ActiveCodeLexers = @{
 )*))(?<comment>(?<line>//[^\r\n]*)|(?<block>/\*[\s\S]*?(?:\*/|\z)))
 '@, 'IgnorePatternWhitespace')
 
+    # JS／TS（含 .vue／.svelte 整檔）：一般字串、樣板字串（`…` 整段吃掉，不追進 ${} 裡）。
+    # 已知的不精確：regex 常值裡的 `//`、`/*`（如 /\/\//）會被當成註解開頭；SFC 的 HTML 註解 `<!-- -->` 不剝。
+    js = [regex]::new(@'
+\G(?<code>(?>(?:
+    [^/"'`]+
+  | /(?![/*])
+  | `(?:\\.|[^`\\])*`
+  | "(?:\\.|[^"\\\r\n])*"
+  | '(?:\\.|[^'\\\r\n])*'
+  | ["'`]
+)*))(?<comment>(?<line>//[^\r\n]*)|(?<block>/\*[\s\S]*?(?:\*/|\z)))
+'@, 'IgnorePatternWhitespace')
+
     # SQL：'…'（'' 跳脫）、"識別字"、[識別字]；區塊註解可巢狀（平衡群組）
     sql = [regex]::new(@'
 \G(?<code>(?>(?:
@@ -64,6 +77,8 @@ $script:ActiveCodeLexers = @{
 
 $script:ActiveCodeLexerByExt = @{
     '.cs' = 'c'; '.java' = 'c'; '.gradle' = 'c'; '.kts' = 'c'
+    '.ts' = 'js'; '.tsx' = 'js'; '.mts' = 'js'; '.cts' = 'js'; '.js' = 'js'; '.jsx' = 'js'; '.mjs' = 'js'; '.cjs' = 'js'
+    '.vue' = 'js'; '.svelte' = 'js'
     '.sql' = 'sql'
     '.xml' = 'xml'; '.csproj' = 'xml'
 }

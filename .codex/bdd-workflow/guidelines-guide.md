@@ -4,7 +4,7 @@
 
 規範不放在 `AGENTS.md`、`.codex/` 或 `.agents/`：這三處於升級時覆蓋，寫入其中的規範會無聲消失。`guidelines/` 不覆蓋，唯未修改過的原廠 `README.md` 會換成新版。
 
-- 首次 `install` 且專案沒有 `guidelines/` 時，放入範例骨架（`api.md`、`sql.md`、`coding.md`、`testing.md`、`rules.json`），請改寫為團隊規範。
+- 首次 `install` 且專案沒有 `guidelines/` 時，放入範例骨架（`api.md`、`sql.md`、`coding.md`、`testing.md`、`frontend.md`、`rules.json`），請改寫為團隊規範。
 - 每個專案各有一份；跨 repo 共用時，將 `guidelines/` 掛為 git submodule。
 
 ## 兩種規範
@@ -26,9 +26,11 @@
 | `sql.md` | `sa-analyst`、`implementer` | 涉及查詢或 schema 時 |
 | `coding.md` | `implementer` | 每次 `mode: build` |
 | `testing.md` | `implementer` | 撰寫測試前 |
+| `frontend.md` | `sa-analyst`、`implementer` | 涉及前端時（選用：沒有這個檔就照專案慣例） |
 | 以上相關者 | `reviewer` | `mode: code` |
 
 - 不在此表的檔名無人讀取（`agent-lint` 檢查 8 會提出）；`orchestrator` 不讀任何規範。
+- `frontend.md` 是選用檔：沒有前端的專案可以刪掉，`doctor` 不會因為缺它而報錯；其餘檔名缺了會提醒。
 - 每條須列於 `## MUST` 或 `## SHOULD`；未標者視為 SHOULD。違反 MUST 判為必修（`implementer` 無法遵守時回報 `blocked`）；違反 SHOULD 僅為建議，不構成 FAIL。
 - 每檔不超過 150 行；冗長的公司標準僅摘錄 MUST，其餘以連結引用。
 - 寫「不得如何」，不寫現況。現況由 `sa-analyst` 記錄於 `bdd-docs/project-map.md`；兩者混寫會使不合規的既有寫法成為標準。

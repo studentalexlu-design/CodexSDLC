@@ -320,6 +320,33 @@ Describe-Suite 'gherkin-check / 不略過' {
         } finally { Remove-Item $GcRoot -Recurse -Force -ErrorAction SilentlyContinue }
     }
 
+    It-Should '對得上 JS runner 實際寫進 JUnit 的名稱（feature 接在前面：›、>、空白）' {
+        # 2026-10-30 實跑抄下來的 testcase name 形狀（feature「訂單取消」換成這裡的「取消訂單」）
+        New-GcProject
+        $xml = Join-Path $GcRoot 'junit.xml'
+        try {
+            foreach ($case in @(
+                    @{ runner = 'cucumber-js';       names = @('未出貨的訂單可以取消', '已出貨的訂單不能取消') }
+                    @{ runner = 'playwright-bdd';    names = @('取消訂單 › 未出貨的訂單可以取消', '取消訂單 › 已出貨的訂單不能取消 › Example #1') }
+                    @{ runner = 'quickpickle';       names = @('Feature: 取消訂單 > Scenario: 未出貨的訂單可以取消', 'Feature: 取消訂單 > Scenario Outline: 已出貨的訂單不能取消') }
+                    @{ runner = 'vitest-cucumber';   names = @('Feature: 取消訂單 > Scenario: 未出貨的訂單可以取消 > Given 訂單 1001 的狀態是「已付款」', 'Feature: 取消訂單 > Scenario: 已出貨的訂單不能取消 > Then 系統拒絕') }
+                    @{ runner = 'jest-cucumber';     names = @('取消訂單 未出貨的訂單可以取消', '取消訂單 已出貨的訂單不能取消') })) {
+                $cases = ($case.names | ForEach-Object { "<testcase name=""$([Security.SecurityElement]::Escape($_))""/>" }) -join ''
+                [IO.File]::WriteAllText($xml, "<testsuite name=""x"" tests=""2"" failures=""0"" skipped=""0"">$cases</testsuite>", $GcUtf8)
+                $r = Invoke-Gc @{ TestResults = $xml }
+                Assert-Equal 0 $r.exit "$($case.runner) 的名稱對不上：$($r.stdout)"
+            }
+            # vitest-cucumber 每個 step 一筆：其中一個 step 失敗，那條 scenario 就是沒通過
+            [IO.File]::WriteAllText($xml, '<testsuite name="x" tests="3"><testcase name="Feature: 取消訂單 &gt; Scenario: 未出貨的訂單可以取消 &gt; Given a"/><testcase name="Feature: 取消訂單 &gt; Scenario: 未出貨的訂單可以取消 &gt; Then b"><failure/></testcase><testcase name="Feature: 取消訂單 &gt; Scenario: 已出貨的訂單不能取消 &gt; Given c"/></testsuite>', $GcUtf8)
+            $r = Invoke-Gc @{ TestResults = $xml }
+            Assert-Equal 2 $r.exit '有一個 step 失敗，scenario 卻算通過'
+            Assert-Equal '未出貨的訂單可以取消' @($r.json.results[0].scenarios_not_passed)[0].scenario
+            # 只有 feature 名稱、沒有 scenario 的 test 不能拿來充數
+            [IO.File]::WriteAllText($xml, '<testsuite name="x" tests="1"><testcase name="取消訂單"/></testsuite>', $GcUtf8)
+            Assert-Equal 2 (Invoke-Gc @{ TestResults = $xml }).exit '只有 feature 名稱的 test 被當成 scenario 的測試'
+        } finally { Remove-Item $GcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
     It-Should '標題是另一條的開頭時，不拿較長那條的測試充數' {
         # spec 有「取消訂單」與「取消訂單並退款」；結果檔只有後者 → 前者沒有測試
         $spec = $GcSpec -replace '未出貨的訂單可以取消', '取消訂單' -replace '已出貨的訂單不能取消', '取消訂單並退款'
@@ -354,6 +381,21 @@ Describe-Suite 'gherkin-check / 不略過' {
             [IO.File]::WriteAllText($trx, (New-GcTrx @{ '未出貨的訂單可以取消' = 'Passed' }), $GcUtf8)
             $r = Invoke-Gc @{ TestResults = $trx }
             Assert-Equal 0 $r.exit "@manual 的 scenario 不該要求測試；stderr: $($r.stderr)"
+        } finally { Remove-Item $GcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '這次迭代標 @manual 的也不要求測試，而且列在 manual_scenarios（delivery-check 拿它核對交付）' {
+        # 4.23 以前只豁免前幾次迭代的：implementer 照規則把這次 QA 手動測的標 @manual，gherkin-check 卻判它「找不到測試」
+        New-GcProject ($GcFeature -replace '@regression', '@manual')
+        $trx = Join-Path $GcRoot 'r.trx'
+        try {
+            [IO.File]::WriteAllText($trx, (New-GcTrx @{ '未出貨的訂單可以取消' = 'Passed' }), $GcUtf8)
+            $r = Invoke-Gc @{ TestResults = $trx }
+            Assert-Equal 0 $r.exit "這次的 @manual 被要求要有測試；stderr: $($r.stderr)"
+            Assert-Equal '已出貨的訂單不能取消' @($r.json.results[0].manual_scenarios)[0]
+
+            [IO.File]::WriteAllText($trx, (New-GcTrx @{ '未出貨的訂單可以取消' = 'Passed'; '已出貨的訂單不能取消' = 'Failed' }), $GcUtf8)
+            Assert-Equal 2 (Invoke-Gc @{ TestResults = $trx }).exit '@manual 的有測試卻沒通過 —— 有就要通過'
         } finally { Remove-Item $GcRoot -Recurse -Force -ErrorAction SilentlyContinue }
     }
 
@@ -400,6 +442,63 @@ Describe-Suite 'gherkin-check / 不略過' {
             $r = Invoke-Gc
             Assert-Equal 1 $r.exit
             Assert-Match 'feature-id' $r.json.results[0].error
+        } finally { Remove-Item $GcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+Describe-Suite 'gherkin-check / 前後端分成兩個 repo、工作流裝在外層（workspace/backend、workspace/frontend）' {
+
+    # 根目錄不是 repo；.feature 在 frontend 那個 repo 裡，後端的改動在 backend 那個 repo 裡。
+    # 以前兩項都在工作目錄問 git：「既有的不動」整項跳過、「不過期」看不到後端的改動 —— 兩種都不報錯，照樣綠。
+    function New-GcWorkspace([string]$headFeature) {
+        Remove-Item $GcRoot -Recurse -Force -ErrorAction SilentlyContinue
+        $files = @{
+            'bdd-docs/cancel-order/spec.md'               = $GcSpec
+            'frontend/tests/Features/CancelOrder.feature' = $headFeature
+            'frontend/package.json'                       = '{ "name": "web" }'
+            'backend/src/OrderService.cs'                 = 'class OrderService {}'
+        }
+        foreach ($k in $files.Keys) {
+            $full = Join-Path $GcRoot $k
+            New-Item -ItemType Directory -Path (Split-Path $full) -Force | Out-Null
+            [IO.File]::WriteAllText($full, $files[$k], $GcUtf8)
+        }
+        foreach ($repo in 'frontend', 'backend') {
+            $d = Join-Path $GcRoot $repo
+            git -C $d init -q 2>$null; git -C $d add -A 2>$null
+            git -C $d -c user.email=t@t -c user.name=t -c commit.gpgsign=false commit -q -m base 2>$null
+        }
+    }
+    function Invoke-GcWs([hashtable]$extra = @{}) {
+        $extra.Feature = 'frontend/tests/Features/CancelOrder.feature'
+        return (Invoke-Gc $extra)
+    }
+
+    It-Should '巢狀 repo 裡的 .feature 刪掉一條既有 scenario → 紅' {
+        $withQa = $GcFeature + "`n`n  Scenario: QA 加的：取消後庫存回補`n    Given 訂單 1001 的狀態是「已付款」`n    When 客戶取消訂單 1001`n    Then 商品 A 的庫存加回 1`n"
+        New-GcWorkspace $withQa
+        [IO.File]::WriteAllText((Join-Path $GcRoot 'frontend/tests/Features/CancelOrder.feature'), $GcFeature, $GcUtf8)
+        try {
+            $r = Invoke-GcWs
+            Assert-Equal 2 $r.exit "既有 scenario 被刪卻通過了（在工作目錄問 git，這一項整個跳過）：$($r.stdout)"
+            Assert-Equal 'QA 加的：取消後庫存回補' @($r.json.results[0].removed_scenarios)[0]
+        } finally { Remove-Item $GcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '另一個 repo（後端）的檔比結果檔新 → 紅，列出相對工作區的路徑' {
+        New-GcWorkspace $GcFeature
+        $trx = Join-Path $GcRoot 'r.trx'
+        try {
+            [IO.File]::WriteAllText($trx, (New-GcTrx @{ '未出貨的訂單可以取消' = 'Passed'; '已出貨的訂單不能取消' = 'Passed' }), $GcUtf8)
+            $src = Join-Path $GcRoot 'backend/src/OrderService.cs'
+            [IO.File]::WriteAllText($src, 'class OrderService { void Cancel() {} }', $GcUtf8)
+            (Get-Item $src).LastWriteTimeUtc = (Get-Item $trx).LastWriteTimeUtc.AddMinutes(1)
+            $r = Invoke-GcWs @{ TestResults = $trx }
+            Assert-Equal 2 $r.exit "後端改過之後的舊結果檔通過了：$($r.stdout)"
+            Assert-Equal 'backend/src/OrderService.cs' (@($r.json.results[0].stale_results_newer) -join '|')
+            (Get-Item $trx).LastWriteTimeUtc = (Get-Item $src).LastWriteTimeUtc.AddMinutes(1)
+            $r = Invoke-GcWs @{ TestResults = $trx }
+            Assert-Equal 0 $r.exit "重跑之後應該綠；stdout: $($r.stdout)"
         } finally { Remove-Item $GcRoot -Recurse -Force -ErrorAction SilentlyContinue }
     }
 }

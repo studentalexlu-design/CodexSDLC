@@ -13,10 +13,11 @@
 #   4. 逐條通過：這次迭代的每一條 scenario，在結果檔裡都找得到對應的 test case，而且全部 passed。只看 skipped 總數的話，
 #      某條 scenario 根本沒產生測試（step 沒繫結、檔案沒被編進測試專案）時結果檔照樣乾淨。
 #      對應方式：標題與 test 名稱都只留字母和數字、不分大小寫後，相等或以標題開頭（Outline 的每一列）。Reqnroll 的方法名
-#      （PascalCase）、xUnit 的 DisplayName、MSTest 的 Description、Cucumber JUnit 的 testcase name 都對得上。
+#      （PascalCase）、xUnit 的 DisplayName、MSTest 的 Description、Cucumber JUnit 的 testcase name 都對得上；
+#      JS 的 runner 把 feature 接在前面（playwright-bdd、vitest、jest-cucumber），另外切掉再比（見 Get-NameKeys）。
 #      **前幾次迭代**的 scenario（.feature 裡有、這次的區塊沒有的）也一樣驗：這次改了共用的 step 或繫結，它們不再產生測試時，
 #      全套照樣是綠的。所以結果檔要是全套測試的，不是只跑這次那幾條的。標了 @manual 的（QA 手動測）不要求有測試，有就要通過。
-#   5. 不過期：結果檔要比這次改過的檔（.feature、git 工作區裡改過或新增的檔；bdd-docs/ 與建置輸出除外）新。
+#   5. 不過期：結果檔要比這次改過的檔（.feature、工作區底下每個 git repo 裡改過或新增的檔；bdd-docs/ 與建置輸出除外）新。
 #      先跑測試、後改程式的舊結果檔，數字再好看也不是現在這份程式碼的結果。
 #
 # spec.md 從 .feature 第一個 `# feature-id: {id}` 找回 bdd-docs/{id}/spec.md（③ 規定 Gherkin 區塊第一行就是它）。
@@ -45,6 +46,9 @@ $ScenarioRe = '^\s*(Scenario Outline|Scenario Template|Scenario|Example|場景�
 $BackRe     = '^\s*(Background|背景)\s*:'
 $SkipTagRe  = '(?i)(^|\s)@(ignore|ignored|skip|skipped|wip|pending)\b'
 $ManualTagRe = '(?i)(^|\s)@manual\b'   # QA 手動測的 scenario：本來就沒有自動化測試，前幾次迭代的那幾條不要求結果檔裡有
+
+. (Join-Path $PSScriptRoot 'lib/workspace-repos.ps1')
+$WsRepos = $null   # 給了 -TestResults（第 5 項要用）才找
 
 function Norm([string]$s) { return ($s -replace '\s+', ' ').Trim() }
 
@@ -134,37 +138,51 @@ function Get-TestRecords([string]$path) {
 function NormId([string]$s) { return ($s -replace '[^\p{L}\p{N}]', '').ToLowerInvariant() }
 
 # test 名稱的各種寫法 → 正規化後的候選：全名、去掉參數、去掉 namespace／class（xUnit 的 Namespace.Class.Method）
-function Get-NameKeys($rec) {
+#
+# JS 的 runner 把 feature（describe）接在 scenario 前面，以開頭比對永遠對不上。2026-10 實測各家 JUnit 的 testcase name：
+#   cucumber-js           取消已付款的訂單／依金額退款 - #1.1              （原本就對得上）
+#   playwright-bdd        訂單取消 › 取消已付款的訂單／訂單取消 › 依金額退款 › Example #1
+#   quickpickle           Feature: 訂單取消 > Scenario: 取消已付款的訂單
+#   @amiceli/vitest-cucumber  Feature: 訂單取消 > Scenario: 取消已付款的訂單 > Given 一筆已付款的訂單（每個 step 一筆）
+#   jest-cucumber         訂單取消 取消已付款的訂單                          （空白接起來，只能靠 feature 標題切）
+# 所以再加：照 › ／ > 切段、去掉每段開頭的 Gherkin 關鍵字，從第二段起的每個尾巴；以及去掉 feature 標題之後剩下的那段。
+function Get-NameKeys($rec, [string]$featureKey = '') {
     $keys = @()
     foreach ($n in $rec.names) {
         $bare = ($n -replace '\(.*$', '').Trim()
         $keys += (NormId $n), (NormId $bare), (NormId ($bare -replace '^.*\.', ''))
+        $segs = @($n -split '\s+[›>]\s+' | ForEach-Object { $_ -replace '^\s*(Feature|Rule|Scenario Outline|Scenario Template|Scenario|Example|功能|規則|場景大綱|劇本大綱|場景|劇本|例子)\s*:\s*', '' })
+        for ($i = 1; $i -lt $segs.Count; $i++) { $keys += NormId ($segs[$i..($segs.Count - 1)] -join ' ') }
+        if ($featureKey) {
+            foreach ($k in @((NormId $n), (NormId ($segs -join ' ')))) {
+                if ($k.Length -gt $featureKey.Length -and $k.StartsWith($featureKey)) { $keys += $k.Substring($featureKey.Length) }
+            }
+        }
     }
     return @($keys | Where-Object { $_ } | Select-Object -Unique)
 }
 
 # 在 git 工作區裡、比結果檔新的檔。這套流程不 commit，這次的改動全部在工作區裡。
-function Get-NewerSources([string]$repoTop, [string]$featureFull, [string[]]$resultFulls, [string]$docsRoot) {
+# 工作區底下每個 repo 都看（lib/workspace-repos.ps1）：前後端分成兩個 repo 時，只問根目錄的話後端的改動一個都看不到。
+function Get-NewerSources($repos, [string]$featureFull, [string[]]$resultFulls, [string]$docsRoot) {
     $oldest = ($resultFulls | ForEach-Object { (Get-Item -LiteralPath $_).LastWriteTimeUtc } | Measure-Object -Minimum).Minimum
     $limit = $oldest.AddSeconds(2)
     $cands = @($featureFull)
-    if ($repoTop) {
-        $prevEnc = $null
-        try { $prevEnc = [Console]::OutputEncoding; [Console]::OutputEncoding = $Utf8NoBom } catch { }
-        try {
-            $cands += @(& git -C $repoTop -c core.quotepath=false diff --name-only HEAD 2>$null) + @(& git -C $repoTop -c core.quotepath=false ls-files --others --exclude-standard 2>$null) |
-                Where-Object { $_ } | ForEach-Object { Join-Path $repoTop $_ }
-        } finally { if ($prevEnc) { try { [Console]::OutputEncoding = $prevEnc } catch { } } }
+    foreach ($repo in @($repos)) {
+        # diff --name-only 的輸出相對 repo 頂層、ls-files 的相對 -C 那一層 —— 兩個都在頂層跑，才接得回完整路徑。
+        $top = @((Invoke-GitUtf8 $repo.dir @('rev-parse', '--show-toplevel')).lines) | Select-Object -First 1
+        if (-not $top) { continue }
+        $cands += @((Invoke-GitUtf8 $top @('diff', '--name-only', 'HEAD')).lines) + @((Invoke-GitUtf8 $top @('ls-files', '--others', '--exclude-standard')).lines) |
+            ForEach-Object { Join-Path $top $_ }
     }
     $skip = @($resultFulls | ForEach-Object { $_ -replace '\\', '/' })
     $docs = ($docsRoot -replace '\\', '/').Trim('/')
-    $top = if ($repoTop) { ($repoTop -replace '\\', '/').TrimEnd('/') } else { '' }
     $newer = @()
     foreach ($c in ($cands | Select-Object -Unique)) {
         $p = $c -replace '\\', '/'
         if ($p -in $skip -or -not (Test-Path -LiteralPath $c -PathType Leaf)) { continue }
-        $rel = if ($top -and $p.StartsWith("$top/", [StringComparison]::OrdinalIgnoreCase)) { $p.Substring($top.Length + 1) } else { [IO.Path]::GetRelativePath((Get-Location).Path, $c) -replace '\\', '/' }
-        if ($rel -like "$docs/*" -or $rel -match '(^|/)(bin|obj|target|build|out|TestResults|coverage|node_modules)/' -or $rel -match '\.(trx|log)$') { continue }
+        $rel = [IO.Path]::GetRelativePath((Get-Location).Path, $c) -replace '\\', '/'
+        if ($rel -like "$docs/*" -or $rel -match '(^|/)(bin|obj|target|build|out|dist|TestResults|coverage|node_modules|test-results|playwright-report|\.features-gen|\.next|\.nuxt|\.svelte-kit)/' -or $rel -match '\.(trx|log)$') { continue }
         if ((Get-Item -LiteralPath $c).LastWriteTimeUtc -gt $limit) { $newer += $rel }
     }
     return $newer
@@ -173,7 +191,7 @@ function Get-NewerSources([string]$repoTop, [string]$featureFull, [string[]]$res
 $results = @()
 $exitCode = 0
 foreach ($f in $Feature) {
-    $r = [ordered]@{ feature = ($f -replace '\\', '/'); spec = $null; feature_id = $null; iteration = $null; passed = $true; missing_steps = @(); missing_scenarios = @(); removed_scenarios = @(); removed_steps = @(); skipped_scenarios = @(); skipped_tests = $null; scenarios_without_test = $null; scenarios_not_passed = $null; prior_scenarios_without_test = $null; prior_scenarios_not_passed = $null; stale_results_newer = $null; error = $null }
+    $r = [ordered]@{ feature = ($f -replace '\\', '/'); spec = $null; feature_id = $null; iteration = $null; passed = $true; missing_steps = @(); missing_scenarios = @(); removed_scenarios = @(); removed_steps = @(); skipped_scenarios = @(); manual_scenarios = @(); skipped_tests = $null; scenarios_without_test = $null; scenarios_not_passed = $null; prior_scenarios_without_test = $null; prior_scenarios_not_passed = $null; stale_results_newer = $null; error = $null }
     try {
         if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { throw "找不到 $f" }
         $featText = [IO.File]::ReadAllText((Resolve-Path -LiteralPath $f).Path)
@@ -191,6 +209,7 @@ foreach ($f in $Feature) {
 
         $want = Read-Gherkin $blocks[$iter]
         $have = Read-Gherkin $featText
+        $r.manual_scenarios = @($have.manual)   # delivery-check 拿它核對「待人工驗證」有沒有寫進交付
 
         # 1. 逐字
         foreach ($title in $want.scenarios.Keys) {
@@ -208,9 +227,11 @@ foreach ($f in $Feature) {
 
         # 2. 既有的不動（跟 git HEAD 比；這次迭代明講要改的同名 scenario 除外）
         $rel = $null
-        $repoTop = (& git rev-parse --show-toplevel 2>$null)
+        # 在 .feature 所在的目錄問 git，不是在工作目錄：前後端分成兩個 repo、工作流裝在外層時，工作目錄不是那個 repo
+        # （不是 repo 的話這一項整個跳過；是外層 repo 的話 HEAD 裡根本沒有巢狀 repo 的檔）—— 兩種都不報錯。
+        $full = (Resolve-Path -LiteralPath $f).Path -replace '\\', '/'
+        $repoTop = (& git -C (Split-Path -Parent $full) rev-parse --show-toplevel 2>$null)
         if ($LASTEXITCODE -eq 0 -and $repoTop) {
-            $full = (Resolve-Path -LiteralPath $f).Path -replace '\\', '/'
             $top = ($repoTop -replace '\\', '/').TrimEnd('/')
             if ($full.StartsWith("$top/", [StringComparison]::OrdinalIgnoreCase)) { $rel = $full.Substring($top.Length + 1) }
         }
@@ -242,7 +263,8 @@ foreach ($f in $Feature) {
             $r.skipped_tests = $n
 
             # 4. 逐條通過。以標題開頭的對應會讓「取消訂單」也吃到「取消訂單失敗」的測試 —— 也對得上更長標題的那個 test 不算。
-            $recs = @($TestResults | ForEach-Object { Get-TestRecords $_ } | ForEach-Object { [pscustomobject]@{ keys = (Get-NameKeys $_); outcome = $_.outcome } })
+            $featKey = NormId ([regex]::Match($featText, '(?m)^\s*(?:Feature|功能)\s*:\s*(.+?)\s*$').Groups[1].Value)
+            $recs = @($TestResults | ForEach-Object { Get-TestRecords $_ } | ForEach-Object { [pscustomobject]@{ keys = (Get-NameKeys $_ $featKey); outcome = $_.outcome } })
             # 「較長的標題」要看整份 .feature：這次的「取消訂單」不能吃前幾次「取消訂單並退款」的測試。
             $titles = @(@($want.scenarios.Keys) + @($have.scenarios.Keys) | Select-Object -Unique |
                         ForEach-Object { [pscustomobject]@{ title = $_; key = (NormId $_); prior = (-not $want.scenarios.Contains($_)) } })
@@ -255,8 +277,10 @@ foreach ($f in $Feature) {
                     @($ks | Where-Object { $_.StartsWith($t.key) }).Count -and -not @($ks | Where-Object { $k = $_; @($longer | Where-Object { $k.StartsWith($_) }).Count }).Count
                 })
                 if (-not $hit.Count) {
+                    # @manual 不分這次或前幾次都不要求測試（implementer 會把這次標的回報成「待人工驗證」，delivery-check 核對它寫進了交付）
+                    if ($t.title -in $have.manual) { continue }
                     if (-not $t.prior) { $r.scenarios_without_test += $t.title }
-                    elseif ($t.title -notin $have.manual -and $t.title -notin $have.skipped) { $r.prior_scenarios_without_test += $t.title }
+                    elseif ($t.title -notin $have.skipped) { $r.prior_scenarios_without_test += $t.title }
                     continue
                 }
                 $bad = @($hit | Where-Object { $_.outcome -ne 'passed' } | ForEach-Object { $_.outcome })
@@ -267,7 +291,8 @@ foreach ($f in $Feature) {
             }
 
             # 5. 不過期
-            $r.stale_results_newer = @(Get-NewerSources $repoTop (Resolve-Path -LiteralPath $f).Path @($TestResults | ForEach-Object { (Resolve-Path -LiteralPath $_).Path }) $DocsRoot)
+            if ($null -eq $WsRepos) { $WsRepos = @(Get-WorkspaceRepos (Get-Location).Path) }
+            $r.stale_results_newer = @(Get-NewerSources $WsRepos (Resolve-Path -LiteralPath $f).Path @($TestResults | ForEach-Object { (Resolve-Path -LiteralPath $_).Path }) $DocsRoot)
         }
 
         $r.passed = -not ($r.missing_steps.Count -or $r.missing_scenarios.Count -or $r.removed_scenarios.Count -or $r.removed_steps.Count -or

@@ -1,4 +1,4 @@
-# Codex Instructions — SDLC Workflow (v4.23.0)
+# Codex Instructions — SDLC Workflow (v4.25.0)
 
 **這份檔案就是 orchestrator 的指令本體。** 直接在跟人講話的這個對話就是 SDLC orchestrator 本人 —— **`bdd-orchestrator` 這個 agent 不存在，也不要替它建 agent 定義檔**（被 spawn 的不能再 spawn）。
 
@@ -66,16 +66,7 @@ AGENT-CORE 那條「缺 `mode`／`feature-id`／`path` 就回 `blocked`」規範
 
 ### 一個分支：症狀清楚、原因不明
 
-使用者報的是 bug，而且重現步驟講不出來（偶發、只在某環境、只有某筆資料會壞）→ **① 跳過**，**② 換掉**，④⑤⑥ 不變：
-
-- **②′ 建迴路** —— 委派 `implementer`（`mode: build`），**唯一交付是一個會紅的測試**，紅在他報的那個症狀上。它照 skill `bug-diagnosis` 做，回來只給測試 path、指令與 exit code。
-- **②″ 回查原需求** —— 迴路紅了之後、進 ③ 之前，**你自己查，不問使用者**：從紅測試的 path 出發，`grep -rn 'feature-id:' --include=*.feature` 找出是哪份需求做的，**只讀**那份 `spec.md` 的 Gherkin 區塊、「驗收層」那一行與「交付」各節。**一次 grep 沒中就停手**，寫進「風險與待確認」直接進 ③ —— **絕不為它多問一輪**。
-- **③ 定案** —— 那個紅測試就是驗收條件（**它轉綠 ＝ 完成**）。確認點問的是**「它紅的，是不是你講的那件事」**。②″ 查到原 spec 的話**同一次順帶問**：原 scenario 的期望值跟他現在報的症狀一不一樣？**一樣 ＝ 當初就是這樣定的，不是 bug** —— 那是需求變更，回 ① 走迭代，④⑤ 整段省掉。
-- **④ 修** —— 同一份 `spec.md` 再委派一次 `implementer`。
-
-**②′ 之前不得把原 spec 交給 `implementer`** —— 它會去驗證那份 spec，而不是建迴路。
-
-**②′ 回 `blocked` 說建不出迴路** → 照一般的 `blocked` 問使用者（缺哪筆資料、要哪個環境）。**④ 找到原因後發現有好幾種修法** → 那時才跑一次正常的 ②。
+使用者報的是 bug，而且重現步驟講不出來（偶發、只在某環境、只有某筆資料會壞）→ **① 跳過，② 換成「先建一個會紅的測試」**，④⑤⑥ 不變。**進這個分支先讀 skill `bug-branch`**（每一步委派什麼、何時算需求變更）。**那個測試紅之前不得把原 spec 交給 `implementer`** —— 它會去驗證那份 spec，而不是建迴路。
 
 **「正確行為應該是什麼」本身沒定**（四捨五入怎麼算、跨時區算哪一天、重試幾次）→ 那是需求缺口，**照 ① 走**。
 
@@ -133,22 +124,19 @@ AGENT-CORE 那條「缺 `mode`／`feature-id`／`path` 就回 `blocked`」規範
 
 附 `spec.md` 的 path。它 test-first 寫、跑到綠。
 
-行為數 > 3 → 分次委派，一次一個**可獨立驗收**的行為。判準：**這個切片能不能自己寫出「完成的樣子」並自己驗收？** 不能就不是行為、是技術層。
-
-**分次委派時，`spec.md` 要多一節「切片與沿用」**，只有兩件事：
-
-- **切法** —— 每片一行：這片是哪個行為、對應 ③ 的哪幾條 scenario。
-- **沿用** —— 前面幾片建立、後續必須沿用的東西：step 詞彙、共用 fixture／helper 的 path、已建立的介面。**每片回來就更新，下一片委派前它必須是最新的** —— 不然下一片會另造一套，step 措辭分岔斷的是 QA 的 repo。進度不寫進去。
+行為數 > 3 → 分次委派，一次一個**可獨立驗收**的行為（判準：這片能不能自己寫出「完成的樣子」並自己驗收）。分次時 `spec.md` 多一節「切片與沿用」（寫法見 skill `spec-authoring`）—— **每片回來就更新，下一片委派前它必須是最新的**，不然下一片會另造一套 step 措辭。
 
 ### ⑤ 審核（委派 `reviewer`）
 
 **必須是獨立的一次 spawn。** 摘要裡帶上 `implementer` 回報的測試證據（指令、exit code、數字）—— `reviewer` 有了它就不必重跑全套。
 
-FAIL → 回 ④ 修，**修正輪有上限**：預設 3，使用者可在 `sdlc.config.json` 的 `review.maxRounds` 設成 1–5。每次委派 `mode: fix`，`handoff-lint` 會告訴你「修正輪 N／上限 M」—— **以它為準**，沒看到那一行就照 3 算。發現全文在 `bdd-docs/{feature-id}/review.md`（`reviewer` 寫），handoff 帶那個 path 就好，**不要把發現壓進摘要**。**修正優先用 `send_input` 交回原本那個 `implementer`**（訊息照 handoff 格式寫）；它已經關了或換了對話，才新 spawn 一個。最後一輪還 FAIL → 停止，以 `Codex user confirmation` 交回使用者（接受現版本／指定重點跑最後一輪／暫停／✏️ 自行輸入…）—— 要多跑由他選。
+FAIL → 回 ④ 修，**修正輪有上限**：預設 3，使用者可在 `sdlc.config.json` 的 `review.maxRounds` 設成 1–5。每次委派 `mode: fix`，`handoff-lint` 會告訴你「修正輪 N／上限 M」—— **以它為準**，沒看到那一行就照 3 算。同一個檔的必修修了兩輪還在，它會擋下那一輪（`review-item-stuck`）：照訊息交回使用者，**他選了再修才加 `stuck-approved: yes`**。發現全文在 `bdd-docs/{feature-id}/review.md`（`reviewer` 寫），handoff 帶那個 path 就好，**不要把發現壓進摘要**。**修正優先用 `send_input` 交回原本那個 `implementer`**（訊息照 handoff 格式寫）；它已經關了或換了對話，才新 spawn 一個。最後一輪還 FAIL → 停止，以 `Codex user confirmation` 交回使用者（接受現版本／指定重點跑最後一輪／暫停／✏️ 自行輸入…）—— 要多跑由他選。
 
 ### ⑥ 交付
 
 回報三件事：**改了什麼、怎麼驗的、殘留風險**。殘留風險逐項列：`implementer` 回報的「外部來源只用替身驗過：」「待人工驗證：」，以及沒修的 [必修]（`reviewer` 回報的接受不修、使用者接受的 FAIL）。**怎麼驗的與殘留風險同時寫進 `spec.md` 尾端的 `## 交付 —— {日期}`**（沒有殘留風險寫「無」）—— 對話一關就沒了，下次迭代或修 bug 只能從這裡知道當初沒驗到什麼。**「完成」只涵蓋 ③ 核准的交付範圍**，範圍外的明講「不在這次範圍」。
+
+**寫完跑一次 `pwsh -NoProfile -File .codex/scripts/delivery-check.ps1 -FeatureId {id} -TestResults {implementer 最後回報的結果檔}`**（沒有 `.feature` 就不帶結果檔）：exit 2 → 照訊息補完再跑，**過了才回報交付**。
 
 **只有下列兩種情況必須停下來等使用者回覆**，其餘直接交付：
 
@@ -190,7 +178,7 @@ FAIL → 回 ④ 修，**修正輪有上限**：預設 3，使用者可在 `sdlc
 
 ## 工具邊界
 
-允許：`read`、`search`、`web`、`agent`、`Codex user confirmation`、`todo`，寫入 `bdd-docs/{feature-id}/spec.md`、`bdd-docs/{feature-id}/evidence/` 與 `bdd-docs/artifacts/legacy-schema/`（最後這個只在舊系統逆推 SQL 時），以及跑 `.codex/scripts/` 下的唯讀腳本（`impact-scope.ps1`、`dlp-residual-scan.ps1`、`sql-scan.ps1`）。唯讀地讀任何檔都可以。
+允許：`read`、`search`、`web`、`agent`、`Codex user confirmation`、`todo`，寫入 `bdd-docs/{feature-id}/spec.md`、`bdd-docs/{feature-id}/evidence/` 與 `bdd-docs/artifacts/legacy-schema/`（最後這個只在舊系統逆推 SQL 時），以及跑 `.codex/scripts/` 下的唯讀腳本（`impact-scope.ps1`、`dlp-residual-scan.ps1`、`sql-scan.ps1`、`delivery-check.ps1`）。唯讀地讀任何檔都可以。
 
 **DB 工具（`mssql_*` 等）：只在使用者明確批准該次查詢之後，且只照 skill `db-introspection` 的規則用。** 要擴大到批准範圍以外的物件 → 停下來重新取得批准，不得因為「連線已經開著」就順手多查。
 
@@ -228,7 +216,7 @@ Handoff 每次只傳：`feature-id`、`mode`、`spec.md` path、上游決策摘�
 
 - **需求模糊 → 先分清是「決策未定」還是「事實不明」。** 決策未定問使用者（那是 ①），事實不明委派 `sa-analyst`（那是 ②；需求很空、來源不明時是 ① 的 `survey`）。**分錯就白跑一趟。**
 - 來源或即將落地的內容含個資／金流／憑證 → `runbooks/dlp-masking.md`。**不抬高流程強度，只做脫敏。**
-- 症狀清楚、原因不明（偶發、只在某環境、重現步驟講不出來）→ 走「症狀清楚、原因不明」那個分支，skill `bug-diagnosis`。**第一步是建一個會紅的迴路。**
+- 症狀清楚、原因不明（偶發、只在某環境、重現步驟講不出來）→ 走「症狀清楚、原因不明」那個分支（skill `bug-branch`）。**第一步是建一個會紅的迴路。**
 - 測試不穩、疑似假綠燈 → skill `test-reliability`。
 - 變更邊界、public contract、migration 風險 → skill `safe-change`。
 - 影響範圍不明 → skill `impact-analysis`，或直接委派 `sa-analyst`。
@@ -245,7 +233,7 @@ Handoff 每次只傳：`feature-id`、`mode`、`spec.md` path、上游決策摘�
 
 - 子代理定義在 `.codex/agents/`（orchestrator 不在裡面 —— 就是本檔），skills 在 `.agents/skills/`，執行期產物在 `bdd-docs/`。
 - **使用者的設定 `sdlc.config.json` 與狀態檔 `bdd-docs/.sdlc/` 你都不讀** —— 只在使用者主動提起時跑 `.codex/scripts/sdlc.ps1`。
-- **團隊規範 `guidelines/` 你也不讀**：散文那半由 `sa-analyst`／`implementer`／`reviewer` 依固定檔名讀（`api.md`、`sql.md`、`coding.md`、`testing.md`），機械那半 `rules.json` 由 `guideline-gate.ps1` 執行。
+- **團隊規範 `guidelines/` 你也不讀**：散文那半由 `sa-analyst`／`implementer`／`reviewer` 依固定檔名讀（`api.md`、`sql.md`、`coding.md`、`testing.md`，涉及前端加 `frontend.md`）；只讀適用且存在的檔，缺可選規範沿用專案慣例。機械那半 `rules.json` 由 `guideline-gate.ps1` 執行。
 
 ## 機械強制層
 
