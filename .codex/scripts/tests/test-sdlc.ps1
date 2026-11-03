@@ -2545,3 +2545,156 @@ Describe-Suite 'sdlc / learn：把每個需求、每一輪的審核發現收成�
         } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
     }
 }
+
+# ---- v4.26.0：組織政策只允許管理員部署的 hooks（requirements.toml 的 allow_managed_hooks_only） ----
+# 那種環境專案的 hooks.json 一律被略過、不會出現「Hooks need review」—— 以前 doctor 叫人去按一個不存在的按鈕，
+# 而工作流沒有任何一條路讓 hooks 跑起來。
+
+Describe-Suite 'sdlc managed-hooks / 給管理員的部署包' {
+
+    It-Should '腳本目錄（四支 hook、殘留掃描、lib、VERSION）＋ requirements 片段：hooks.json 的每一條都在、指令帶 -Managed 與絕對路徑' {
+        $out = Join-Path $SdlcRoot 'mh'
+        try {
+            $j = Invoke-SdlcJson 'managed-hooks' @{ OutDir = $out; ManagedDir = 'D:\corp\hooks'; UnixManagedDir = '/opt/corp/hooks' }
+            Assert-Equal 0 $j.exit "warnings: $($j.warnings -join ' | ')"
+            $pkg = Join-Path $out 'codex-sdlc'
+            foreach ($f in 'handoff-lint.ps1', 'dlp-gate.ps1', 'guideline-gate.ps1', 'build-check.ps1', 'dlp-residual-scan.ps1', 'lib/node-project.ps1', 'lib/workspace-repos.ps1') {
+                Assert-True (Test-Path (Join-Path $pkg $f)) "部署包少了 $f"
+            }
+            $ver = (Get-Content '.codex/bdd-workflow/bdd-workflow-version.json' -Raw | ConvertFrom-Json).'contract-version'
+            Assert-Equal $ver ([IO.File]::ReadAllText((Join-Path $pkg 'VERSION')).Trim()) 'VERSION 跟這一版對不上 —— doctor 比版本靠它'
+            $toml = [IO.File]::ReadAllText((Join-Path $out 'requirements-hooks.toml'))
+            $hooksJson = Get-Content '.codex/hooks.json' -Raw | ConvertFrom-Json
+            $want = 0; foreach ($ev in $hooksJson.hooks.PSObject.Properties) { foreach ($g in @($ev.Value)) { $want += @($g.hooks).Count } }
+            Assert-Equal $want ([regex]::Matches($toml, '(?m)^command_windows = ').Count) 'hooks.json 的 hook 沒有全部進片段'
+            Assert-Equal $want ([regex]::Matches($toml, [regex]::Escape("& 'D:\corp\hooks\codex-sdlc\") + '[\w-]+\.ps1'' -Managed; exit \$LASTEXITCODE').Count) 'Windows 指令沒帶 -Managed、沒用給的目錄，或少了 exit code 傳遞'
+            Assert-Equal $want ([regex]::Matches($toml, [regex]::Escape("-File '/opt/corp/hooks/codex-sdlc/") + '[\w-]+\.ps1'' -Managed').Count)
+            Assert-True ($toml -notmatch '(?m)^\[hooks\]') '[hooks] 表在 TOML 裡只能有一個 —— 管理員的檔多半已經有，片段裡要是註解'
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '照 Codex 的包法（pwsh -Command "<command_windows>"）跑部署包：裝了工作流的專案照樣擋，沒裝的放行' {
+        if (-not $IsWindows) { return }
+        $out = Join-Path $SdlcRoot 'enterprise'
+        try {
+            $j = Invoke-SdlcJson 'managed-hooks' @{ OutDir = $out; ManagedDir = $out }
+            Assert-Equal 0 $j.exit
+            $toml = [IO.File]::ReadAllText((Join-Path $out 'requirements-hooks.toml'))
+            $cmd = [regex]::Match($toml, "(?m)^command_windows = '''(.*dlp-gate\.ps1.*)'''$").Groups[1].Value
+            Assert-True ([bool]$cmd) '片段裡找不到 dlp-gate 的指令'
+            $proj = Join-Path $SdlcRoot 'proj'; $other = Join-Path $SdlcRoot 'other'
+            foreach ($d in $proj, $other) { New-SdlcFile (Join-Path $d 'bdd-docs/f/spec.md') "連線：Server=db01;Initial Catalog=Orders;User Id=sa;`n" }
+            New-SdlcFile (Join-Path $proj '.codex/bdd-workflow/bdd-workflow-version.json') '{ "contract-version": "4.26.0" }'
+            $results = @{}
+            foreach ($d in $proj, $other) {
+                Push-Location $d
+                try {
+                    $payload = New-CodexHookPayload -Command (New-CodexPatch -Update 'bdd-docs/f/spec.md')
+                    $null = $payload | pwsh -NoProfile -Command $cmd 2>&1
+                    $results[$d] = $LASTEXITCODE
+                } finally { Pop-Location }
+            }
+            Assert-Equal 2 $results[$proj] '部署包（腳本不在專案裡）在裝了工作流的專案沒擋下殘留 —— 多半是它在專案裡找自己的檔'
+            Assert-Equal 0 $results[$other] '沒裝工作流的 repo 被擋了 —— managed hooks 對這台機器的每個 session 都會叫'
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '沒給 -OutDir → exit 2，不寫任何東西' {
+        $j = Invoke-SdlcJson 'managed-hooks'
+        Assert-Equal 2 $j.exit
+        Assert-Match 'OutDir' ($j.warnings -join ' ')
+    }
+}
+
+Describe-Suite 'sdlc doctor / 只允許管理員部署的 hooks（allow_managed_hooks_only）' {
+
+    # 假的 codex：同 doctor -CheckHookTrust 那一組，另外會列出 managed 的 hooks（FAKE_MANAGED_DIR／FAKE_MANAGED_NAMES）。
+    $MpFakeBody = @'
+while ($null -ne ($line = [Console]::In.ReadLine())) {
+    $msg = $line | ConvertFrom-Json
+    if (-not $msg.PSObject.Properties['id']) { continue }
+    if ($msg.id -eq 1) { [Console]::Out.WriteLine('{"id":1,"result":{"userAgent":"fake"}}'); continue }
+    if ($msg.id -ne 2) { continue }
+    $cwd = @($msg.params.cwds)[0]
+    $hooks = @()
+    if ($env:FAKE_MANAGED_DIR) {
+        foreach ($n in ($env:FAKE_MANAGED_NAMES -split ',')) {
+            $c = '$env:PSExecutionPolicyPreference=''Bypass''; & ''' + $env:FAKE_MANAGED_DIR + '\' + $n + '.ps1'' -Managed; exit $LASTEXITCODE'
+            $hooks += [ordered]@{ key = "managed:$n"; eventName = 'postToolUse'; command = $c; sourcePath = 'C:\ProgramData\OpenAI\Codex\requirements.toml'; source = 'requirements'; isManaged = $true; enabled = $true; trustStatus = 'managed' }
+        }
+    }
+    [Console]::Out.WriteLine(([ordered]@{ id = 2; result = [ordered]@{ data = @([ordered]@{ cwd = $cwd; hooks = $hooks; warnings = @(); errors = @() }) } } | ConvertTo-Json -Depth 8 -Compress))
+}
+'@
+    function New-FakeCodex([string]$dir) {
+        New-SdlcFile (Join-Path $dir 'fake-codex.ps1') $MpFakeBody
+        $cmd = Join-Path $dir 'codex.cmd'
+        [IO.File]::WriteAllText($cmd, "@pwsh -NoProfile -ExecutionPolicy Bypass -File `"%~dp0fake-codex.ps1`" %*`r`n", [Text.Encoding]::ASCII)
+        return $cmd
+    }
+
+    # 系統那份 requirements.toml 在 %ProgramData%\OpenAI\Codex\ —— 測試把 ProgramData 指到暫存目錄。
+    function New-PolicyHome([string]$toml) {
+        $pd = Join-Path $SdlcRoot 'programdata'
+        New-SdlcFile (Join-Path $pd 'OpenAI\Codex\requirements.toml') $toml
+        return $pd
+    }
+    function Invoke-PolicyDoctor([string]$toml, [hashtable]$extraEnv = @{}, [switch]$Check) {
+        $rel = New-SdlcRelease 'r-mp' -Version '4.26.0' -WithHooks; $t = New-SdlcTarget 't-mp'
+        Invoke-Sdlc install @{ Source = $rel; Target = $t } | Out-Null
+        $p = Get-IsolatedDoctorParams $t
+        $env = @{ ProgramData = (New-PolicyHome $toml) }
+        foreach ($k in $extraEnv.Keys) { $env[$k] = $extraEnv[$k] }
+        if ($Check) { $p.CodexPath = New-FakeCodex (Join-Path $SdlcRoot 'fake'); $p.CheckHookTrust = $true }
+        return (Invoke-SdlcJson doctor $p -Env $env)
+    }
+
+    It-Should '政策只允許 managed、又沒登記這套 → 不叫人去按信任，說是政策、指向 managed-hooks；不必叫起 codex 也看得出來' {
+        try {
+            $j = Invoke-PolicyDoctor "allow_managed_hooks_only = true`n[features]`nhooks = true`n"
+            Assert-Equal 2 $j.exit '政策擋掉了整個強制層，doctor 卻是綠的'
+            $w = $j.warnings -join ' | '
+            Assert-Match 'allow_managed_hooks_only' $w
+            Assert-Match 'managed-hooks' $w
+            Assert-Match 'delivery-check' $w '沒講部署之前還剩哪一道'
+            Assert-True ($j.data.hooks.policy.managedOnly) 'data 沒帶政策（extension 讀 data）'
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '政策登記了這套的四支 → 不算問題' {
+        $reg = @('handoff-lint', 'dlp-gate', 'guideline-gate', 'build-check') | ForEach-Object { "command_windows = '''& 'C:\h\codex-sdlc\$_.ps1' -Managed; exit `$LASTEXITCODE'''" }
+        try {
+            $j = Invoke-PolicyDoctor ("allow_managed_hooks_only = true`n" + ($reg -join "`n"))
+            Assert-Equal 0 $j.exit "warnings: $($j.warnings -join ' | ')"
+            Assert-Equal 4 @($j.data.hooks.policy.ours).Count
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '-CheckHookTrust：Codex 列出 managed 的四支 → managed，不算問題；版本對不上、少一支 → 紅' {
+        $dir = Join-Path $SdlcRoot 'enterprise\codex-sdlc'
+        try {
+            New-SdlcFile (Join-Path $dir 'VERSION') "4.26.0`n"
+            $j = Invoke-PolicyDoctor "allow_managed_hooks_only = true`n" @{ FAKE_TRUST = 'none'; FAKE_MANAGED_DIR = $dir; FAKE_MANAGED_NAMES = 'handoff-lint,dlp-gate,guideline-gate,build-check' } -Check
+            Assert-Equal 'managed' $j.data.hooks.status
+            Assert-Equal 0 $j.exit "warnings: $($j.warnings -join ' | ')"
+
+            New-SdlcFile (Join-Path $dir 'VERSION') "4.24.0`n"
+            $j = Invoke-PolicyDoctor "allow_managed_hooks_only = true`n" @{ FAKE_TRUST = 'none'; FAKE_MANAGED_DIR = $dir; FAKE_MANAGED_NAMES = 'handoff-lint,dlp-gate,guideline-gate,build-check' } -Check
+            Assert-Equal 2 $j.exit '管理員部署的是舊版，doctor 卻是綠的'
+            Assert-Match '4\.24\.0' ($j.warnings -join ' ')
+
+            New-SdlcFile (Join-Path $dir 'VERSION') "4.26.0`n"
+            $j = Invoke-PolicyDoctor "allow_managed_hooks_only = true`n" @{ FAKE_TRUST = 'none'; FAKE_MANAGED_DIR = $dir; FAKE_MANAGED_NAMES = 'handoff-lint,dlp-gate' } -Check
+            Assert-Equal 2 $j.exit
+            Assert-Match 'guideline-gate' ($j.warnings -join ' ')
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '-CheckHookTrust：一條都沒列、政策檔說只允許 managed → managed-only（不是「還沒信任」）' {
+        try {
+            $j = Invoke-PolicyDoctor "allow_managed_hooks_only = true`n" @{ FAKE_TRUST = 'none' } -Check
+            Assert-Equal 'managed-only' $j.data.hooks.status
+            Assert-True (-not ((@($j.warnings) -match 'Trust all and continue').Count)) '叫人去按一個不存在的按鈕'
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}

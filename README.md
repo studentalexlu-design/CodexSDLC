@@ -23,6 +23,7 @@
    - 手動複製安裝者，改用 `install -Adopt`。
    - 前後端為兩個 repo 時，可裝於共同上層目錄（`workspace/backend`、`workspace/frontend`），**`codex` 須於該層啟動**。
 2. **信任 hooks（必要）**：於專案目錄啟動 `codex`，在「Hooks need review」選擇 **Trust all and continue**。未信任時強制層全數失效且無提示；移動目錄或 `hooks.json` 變更後須重新信任。
+   - 組織政策僅允許管理員部署的 hooks（`allow_managed_hooks_only`）時不會出現此畫面：請管理員部署 `sdlc.ps1 managed-hooks -OutDir <資料夾>` 產生的腳本與 `requirements.toml` 片段。部署前，`delivery-check` 於交付前補跑殘留掃描與規範檢查。
 3. **檢查**：`pwsh .codex/scripts/sdlc.ps1 doctor`；確認 hooks 信任狀態加 `-CheckHookTrust`。
 4. **使用**：於專案中啟動 Codex，直接描述需求。每個需求請開新對話。
 
@@ -112,6 +113,7 @@ pwsh <新版目錄>/.codex/scripts/sdlc.ps1 update -Target <專案路徑>   # -P
 | 現象 | 處理 |
 | --- | --- |
 | 違規內容未被阻擋，或顯示「hooks 沒在跑」 | 信任 hooks；執行 `doctor -CheckHookTrust` |
+| 未出現「Hooks need review」、`doctor` 回報 `allow_managed_hooks_only` | 組織政策所致；由管理員部署 `managed-hooks` 的產出 |
 | `gherkin-check`：找不到 scenario 的測試 | 確認 step 已繫結、結果檔為全套測試；手動測試者標 `@manual` |
 | `gherkin-check`：結果檔比改過的檔舊 | 重跑測試 |
 | 委派被擋：`review-loop-exceeded`／`review-item-stuck` | 由使用者決定後續 |

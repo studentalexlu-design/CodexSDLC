@@ -31,7 +31,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('install', 'update', 'check-update', 'apply', 'set', 'tune', 'doctor', 'whatsnew', 'fetch', 'models', 'learn')]
+    [ValidateSet('install', 'update', 'check-update', 'apply', 'set', 'tune', 'doctor', 'whatsnew', 'fetch', 'models', 'learn', 'managed-hooks')]
     [string]$Command = 'doctor',
 
     [string]$Source,                       # 發佈物根目錄；預設 = 本腳本所在的工作流根
@@ -53,6 +53,9 @@ param(
     [switch]$NoRemote,                     # fetch 用：只認本機那一份，一條連線都不開
     [string]$CodexPath,                    # doctor -CheckHookTrust 用：codex 執行檔（預設找 PATH）
     [switch]$CheckHookTrust,               # doctor 用：另外叫起 codex 問 hooks 的信任狀態（預設不問，見 Get-HookTrust）
+    [string]$OutDir,                       # managed-hooks 用：部署包寫到哪個資料夾
+    [string]$ManagedDir = 'C:\enterprise\hooks',   # managed-hooks 用：requirements.toml 的 windows_managed_dir
+    [string]$UnixManagedDir = '/enterprise/hooks', # managed-hooks 用：requirements.toml 的 managed_dir（macOS／Linux）
     [string]$EditorHome,                   # 找已安裝 extension 的家目錄（預設 = 使用者家目錄；測試用）
     [switch]$Yes,                          # 非互動確認
     [switch]$Json,
@@ -687,21 +690,38 @@ function Invoke-CodexHooksList([string]$codex, [string]$cwd, [int]$timeoutMs = 1
     }
 }
 
+# ---- 組織政策：只允許管理員部署的 hooks ----
+# requirements.toml 的 allow_managed_hooks_only = true 時，Codex 一律略過專案的 hooks.json —— 不會出現「Hooks need review」，
+# 也就沒有東西可以按信任。修法不在使用者手上：管理員把 sdlc.ps1 managed-hooks 產生的那一份登記成 managed hooks。
+# 只讀得到系統那一份（%ProgramData%\OpenAI\Codex\requirements.toml、/etc/codex/requirements.toml）；雲端與 MDM 下發的看不到。
+$HookScriptNames = @('handoff-lint', 'dlp-gate', 'guideline-gate', 'build-check')
+function Get-ManagedHooksPolicy {
+    $path = if ($IsWindows -or $env:OS -eq 'Windows_NT') { if ($env:ProgramData) { Join-Path $env:ProgramData 'OpenAI\Codex\requirements.toml' } } else { '/etc/codex/requirements.toml' }
+    $p = [ordered]@{ path = $path; readable = $false; managedOnly = $false; ours = @() }
+    if (-not $path -or -not (Test-Path -LiteralPath $path -PathType Leaf)) { return $p }
+    try { $text = [IO.File]::ReadAllText($path) } catch { return $p }
+    $p.readable = $true
+    $p.managedOnly = $text -match '(?m)^\s*allow_managed_hooks_only\s*=\s*true\b'
+    $p.ours = @([regex]::Matches($text, '(?i)(handoff-lint|dlp-gate|guideline-gate|build-check)\.ps1[''"]?\s+-Managed') | ForEach-Object { $_.Groups[1].Value.ToLowerInvariant() } | Sort-Object -Unique)
+    return $p
+}
+
 function Get-HookTrust([string]$target) {
+    $policy = Get-ManagedHooksPolicy
     $hooksFile = Join-Path $target $HooksRel
-    if (-not (Test-Path $hooksFile)) { return [ordered]@{ status = 'no-hooks'; codex = $null } }
+    if (-not (Test-Path $hooksFile)) { return [ordered]@{ status = 'no-hooks'; codex = $null; policy = $policy } }
     # **預設不問。** 問它要另外叫起一個 `codex app-server` 子行程（最久 15 秒），而它回答的問題
     # 不是 doctor 修得了的 —— 修法永遠是同一句「去 codex 裡信任」。要查就明講 -CheckHookTrust，
     # doctor 的收尾會告訴你這個參數在哪。
     # **檔在不在照查** —— hooks.json 不見是工具檔缺了，不是信任問題，而那一條有得修（補回工具檔）。
-    if (-not $CheckHookTrust) { return [ordered]@{ status = 'skipped'; codex = $null } }
+    if (-not $CheckHookTrust) { return [ordered]@{ status = 'skipped'; codex = $null; policy = $policy } }
     $codex = Resolve-Codex
-    if (-not $codex) { return [ordered]@{ status = 'unknown'; reason = 'codex-not-found'; codex = $null } }
+    if (-not $codex) { return [ordered]@{ status = 'unknown'; reason = 'codex-not-found'; codex = $null; policy = $policy } }
 
     $root = (Resolve-Path $target).Path
     $msg = Invoke-CodexHooksList $codex $root
     if (-not $msg -or -not $msg.result) {
-        return [ordered]@{ status = 'unknown'; reason = $(if ($msg -and $msg.error) { 'query-failed' } else { 'no-response' }); codex = $codex }
+        return [ordered]@{ status = 'unknown'; reason = $(if ($msg -and $msg.error) { 'query-failed' } else { 'no-response' }); codex = $codex; policy = $policy }
     }
 
     $want = ((Resolve-Path $hooksFile).Path -replace '\\', '/').ToLowerInvariant()
@@ -714,11 +734,30 @@ function Get-HookTrust([string]$target) {
         modified  = @($mine | Where-Object trustStatus -eq 'modified').Count
         disabled  = @($mine | Where-Object { $_.enabled -eq $false }).Count
     }
-    # hooks.json 在、Codex 卻一條都沒列出來 = 專案本身沒被信任（專案層的 config 與 hooks 整個停用）。
-    $status = if ($mine.Count -eq 0) { 'project-untrusted' }
+    # 管理員部署的那一份（sdlc.ps1 managed-hooks）：Codex 標成 managed，政策直接信任，不必按。
+    $hookRe = '(?i)(handoff-lint|dlp-gate|guideline-gate|build-check)\.ps1'
+    $managed = @($msg.result.data | ForEach-Object { @($_.hooks) } |
+                 Where-Object { $_ -and ($_.isManaged -eq $true -or $_.trustStatus -eq 'managed') -and [string]$_.command -match $hookRe })
+    if ($managed.Count) {
+        $names = @($managed | ForEach-Object { [regex]::Match([string]$_.command, $hookRe).Groups[1].Value.ToLowerInvariant() } | Sort-Object -Unique)
+        $dm = [regex]::Match([string]$managed[0].command, "(?i)['`"]?([^'`"]+?)[\\/]$($hookRe.Substring(4))")
+        $dir = if ($dm.Success) { $dm.Groups[1].Value.Trim() } else { $null }
+        $verFile = if ($dir) { Join-Path $dir 'VERSION' } else { $null }
+        $ver = if ($verFile -and (Test-Path -LiteralPath $verFile -PathType Leaf)) { ([IO.File]::ReadAllText($verFile)).Trim() } else { $null }
+        return [ordered]@{ status = 'managed'; codex = $codex; counts = $counts; policy = $policy
+                           managed = [ordered]@{ dir = $dir; version = $ver; present = $names; missing = @($HookScriptNames | Where-Object { $_ -notin $names }) } }
+    }
+    # hooks.json 在、Codex 卻一條都沒列出來 = 專案本身沒被信任（專案層的 config 與 hooks 整個停用）——
+    # 或組織政策只允許 managed hooks：看得到政策檔就直接講是政策，不叫人去按一個不存在的按鈕。
+    $status = if ($mine.Count -eq 0) { if ($policy.managedOnly) { 'managed-only' } else { 'project-untrusted' } }
               elseif ($counts.trusted -eq $counts.total) { 'trusted' }
               else { 'untrusted' }
-    return [ordered]@{ status = $status; codex = $codex; counts = $counts }
+    return [ordered]@{ status = $status; codex = $codex; counts = $counts; policy = $policy }
+}
+
+function Show-ManagedOnlyPolicy($policy) {
+    $have = if ($policy.ours.Count) { "它只登記了 $($policy.ours -join '、')。" } else { '它沒有登記這套工作流的 hooks。' }
+    Warn "組織政策只允許管理員部署的 hooks（$($policy.path) 的 allow_managed_hooks_only）—— 專案的 hooks.json 一律被略過，不會出現「Hooks need review」，也沒有東西可以按。$have 請管理員部署：pwsh .codex/scripts/sdlc.ps1 managed-hooks -OutDir <資料夾> 產生腳本與 requirements 片段。在那之前寫檔與委派沒有人當下擋；⑥ 的 delivery-check 會在交付前補跑殘留掃描與規範的 block 規則。"
 }
 
 function Show-HookTrust($trust) {
@@ -737,12 +776,30 @@ function Show-HookTrust($trust) {
             return 1
         }
         'project-untrusted' {
-            Warn 'Codex 還沒信任這個專案 —— 專案層的 .codex/config.toml 與 hooks 整個停用，機械強制層一條都不會跑。在專案裡開 codex，信任這個資料夾，接著在「Hooks need review」選 Trust all and continue。'
+            Warn 'Codex 還沒信任這個專案 —— 專案層的 .codex/config.toml 與 hooks 整個停用，機械強制層一條都不會跑。在專案裡開 codex，信任這個資料夾，接著在「Hooks need review」選 Trust all and continue。資料夾已經信任、卻從來沒出現過「Hooks need review」的話，多半是組織政策只允許管理員部署的 hooks（雲端下發的政策這裡看不到）—— 見 sdlc.ps1 managed-hooks。'
             return 1
+        }
+        'managed-only' { Show-ManagedOnlyPolicy $trust.policy; return 1 }
+        'managed' {
+            $m = $trust.managed
+            $v = Get-ContractVersion $Target
+            if ($m.missing.Count) {
+                Warn "Codex hooks 由管理員部署（managed，$($m.dir)），但少了 $($m.missing -join '、') —— 那幾道沒有人擋。請管理員照 sdlc.ps1 managed-hooks 產生的 requirements 片段補上。"
+                return 1
+            }
+            if ($m.version -and $v -and (Compare-Semver ($m.version -replace '^(\d+\.\d+).*', '$1.0') ([string]$v.contract -replace '^(\d+\.\d+).*', '$1.0')) -ne 0) {
+                Warn "Codex hooks 由管理員部署（managed，$($m.dir)），版本是 $($m.version)，這個專案是 $($v.contract) —— hook 與工作流的規則可能對不上。請管理員用這個專案那一版的 sdlc.ps1 managed-hooks 重新部署。"
+                return 1
+            }
+            Say "Codex hooks：由管理員部署（managed，$($m.dir)$(if ($m.version) { "，$($m.version)" })），政策直接信任，不必按 —— 機械強制層會跑。"
+            return 0
         }
         # 預設沒查。不算問題，但**一定要說一句** —— 不說的話，「doctor 全綠」會被讀成
         # 「強制層在跑」，而那正是這套工作流最貴的一個誤會（沒信任的 hook 一條都不跑，也不提示）。
         'skipped' {
+            # 政策檔讀得到就照講 —— 不必叫起 codex，而「去按信任」在這種環境是錯的修法。
+            if ($trust.policy.managedOnly -and $trust.policy.ours.Count -lt $HookScriptNames.Count) { Show-ManagedOnlyPolicy $trust.policy; return 1 }
+            if ($trust.policy.managedOnly) { Say "組織政策只允許管理員部署的 hooks（$($trust.policy.path)），而它登記了這套工作流的四支 —— 不必按信任。要確認 Codex 真的載入了：doctor -CheckHookTrust。"; return 0 }
             Say 'Codex hooks 的信任狀態：這次沒查（要查：doctor -CheckHookTrust，它會另外叫起一次 codex）。沒信任的 hook 一條都不會跑，而且不會提示。'
             return 0
         }
@@ -3005,6 +3062,75 @@ function Invoke-Learn {
 }
 
 # ---- 派送 ----
+# ---- managed-hooks：給管理員的部署包 ----
+# 組織政策只允許管理員部署的 hooks（requirements.toml 的 allow_managed_hooks_only）時，專案的 hooks.json 一律被略過。
+# 這裡產出管理員要的兩樣：腳本目錄（派送到 windows_managed_dir／managed_dir 底下；Codex 不替你派送）與
+# requirements.toml 的 [[hooks.*]] 片段。事件、matcher、timeout、statusMessage 一律從 hooks.json 抄 —— 不在這裡再寫一份。
+# 指令帶 -Managed：managed hooks 對這台機器的每一個 Codex session 都會叫，沒裝工作流的 repo 由腳本自己放行。
+# TOML 的字串一律用 ''' 字面字串：Windows 的指令同時有單引號、反斜線與 $，basic string 要逐字跳脫，寫錯就整份政策檔讀不起來。
+function Invoke-ManagedHooks {
+    if (-not $OutDir) { Warn 'managed-hooks 要給 -OutDir（部署包寫到哪個資料夾）。'; return 2 }
+    $hooksPath = Join-Path $Source $HooksRel
+    $hooks = Read-JsonFile $hooksPath
+    if (-not $hooks -or -not $hooks.hooks) { Warn "讀不到 $hooksPath。"; return 2 }
+    $v = Get-ContractVersion $Source
+    $pkg = Join-Path $OutDir 'codex-sdlc'
+    [void][IO.Directory]::CreateDirectory((Join-Path $pkg 'lib'))
+    $scriptsDir = Join-Path $Source '.codex/scripts'
+    $copied = @()
+    foreach ($n in @($HookScriptNames) + @('dlp-residual-scan')) {
+        Copy-Item -LiteralPath (Join-Path $scriptsDir "$n.ps1") -Destination (Join-Path $pkg "$n.ps1") -Force
+        $copied += "$n.ps1"
+    }
+    foreach ($f in @(Get-ChildItem -LiteralPath (Join-Path $scriptsDir 'lib') -Filter '*.ps1' -File)) {
+        Copy-Item -LiteralPath $f.FullName -Destination (Join-Path $pkg "lib/$($f.Name)") -Force
+        $copied += "lib/$($f.Name)"
+    }
+    [IO.File]::WriteAllText((Join-Path $pkg 'VERSION'), "$($v.contract)`n", $Utf8NoBom)
+
+    $win = $ManagedDir.TrimEnd('\', '/'); $unix = $UnixManagedDir.TrimEnd('/')
+    $lines = [Collections.Generic.List[string]]::new()
+    $lines.Add("# Codex SDLC $($v.contract) 的 managed hooks —— 併入 requirements.toml（Windows：%ProgramData%\OpenAI\Codex\requirements.toml）。")
+    $lines.Add("# 先把 codex-sdlc\ 整個目錄派送到 $win\codex-sdlc\（macOS／Linux：$unix/codex-sdlc/）；Codex 不會替你派送。")
+    $lines.Add('# 沒裝這套工作流的 repo，腳本自己放行（指令帶 -Managed）。專案自己的 hooks.json 若也在跑，每支會跑兩次 —— 只在政策擋掉專案 hooks 時才部署這一份。')
+    $lines.Add('#')
+    $lines.Add('# 下面三項你們的 requirements.toml 多半已經有；沒有才加（[hooks] 表在 TOML 裡只能出現一次）：')
+    $lines.Add('#   allow_managed_hooks_only = true')
+    $lines.Add('#   [features]')
+    $lines.Add('#   hooks = true')
+    $lines.Add('#   [hooks]')
+    $lines.Add("#   windows_managed_dir = '$win'")
+    $lines.Add("#   managed_dir = '$unix'")
+    $count = 0
+    foreach ($ev in $hooks.hooks.PSObject.Properties) {
+        foreach ($group in @($ev.Value)) {
+            foreach ($h in @($group.hooks)) {
+                $m = [regex]::Match([string]$h.commandWindows, '(?i)\.codex/scripts/([\w-]+)\.ps1')
+                if (-not $m.Success) { Warn "hooks.json 的 $($ev.Name) 有一條認不出腳本：$($h.commandWindows)"; return 2 }
+                $name = $m.Groups[1].Value
+                $lines.Add('')
+                $lines.Add("[[hooks.$($ev.Name)]]")
+                if ($group.matcher) { $lines.Add("matcher = '''$($group.matcher)'''") }
+                $lines.Add("[[hooks.$($ev.Name).hooks]]")
+                $lines.Add('type = "command"')
+                $lines.Add("command = '''pwsh -NoProfile -ExecutionPolicy Bypass -File '$unix/codex-sdlc/$name.ps1' -Managed'''")
+                $lines.Add("command_windows = '''`$env:PSExecutionPolicyPreference='Bypass'; & '$win\codex-sdlc\$name.ps1' -Managed; exit `$LASTEXITCODE'''")
+                if ($h.timeout) { $lines.Add("timeout = $([int]$h.timeout)") }
+                if ($h.statusMessage) { $lines.Add("statusMessage = '''$($h.statusMessage)'''") }
+                $count++
+            }
+        }
+    }
+    $toml = Join-Path $OutDir 'requirements-hooks.toml'
+    [IO.File]::WriteAllText($toml, (($lines -join "`n") + "`n"), $Utf8NoBom)
+    $script:Data.managedHooks = [ordered]@{ version = [string]$v.contract; package = $pkg; requirements = $toml; hooks = $count; files = $copied; windowsDir = $win; unixDir = $unix }
+    Say "managed hooks 部署包（$($v.contract)，$count 條 hook）："
+    Say "  腳本：$pkg —— 派送到 $win\codex-sdlc\（macOS／Linux：$unix/codex-sdlc/）"
+    Say "  requirements 片段：$toml —— 併入 requirements.toml（檔頭註解說明哪幾項可能已經有）"
+    Say '部署後在任一個專案跑 doctor -CheckHookTrust 確認 Codex 載入了；專案升級時用新版重產、重新派送（doctor 會比對版本）。'
+    return 0
+}
+
 $code = switch ($Command) {
     'install'      { Invoke-Install }
     'update'       { Invoke-Update }
@@ -3017,6 +3143,7 @@ $code = switch ($Command) {
     'doctor'       { Invoke-Doctor }
     'models'       { Invoke-Models }
     'learn'        { Invoke-Learn }
+    'managed-hooks' { Invoke-ManagedHooks }
 }
 
 if ($Json) {

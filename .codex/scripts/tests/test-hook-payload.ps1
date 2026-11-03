@@ -567,3 +567,59 @@ Describe-Suite 'review 快照 / 每一輪審核都留一份（review.md 每輪�
         } finally { Remove-Item $d -Recurse -Force -ErrorAction SilentlyContinue }
     }
 }
+
+Describe-Suite 'managed hooks / 沒裝工作流的 repo 一律放行（管理員部署的 hooks，這台機器每個 Codex session 都會叫）' {
+
+    $HpManagedHooks = @('.codex/scripts/handoff-lint.ps1', $DlpGate, $GlGate, $Build)
+
+    It-Should '-Managed 的守門在四支腳本裡逐字相同' {
+        $bodies = @{}
+        foreach ($s in $HpManagedHooks) {
+            $m = [regex]::Match([IO.File]::ReadAllText((Join-Path (Get-Location) $s)), '(?ms)^# ---- managed hooks：.*?^\}')
+            Assert-True $m.Success "$s 找不到 managed 守門"
+            $bodies[$s] = $m.Value -replace "`r`n", "`n"
+        }
+        $want = $bodies[$DlpGate]
+        foreach ($s in @($bodies.Keys)) { Assert-True ($bodies[$s] -eq $want) "$s 的 managed 守門跟 dlp-gate 的不一樣" }
+    }
+
+    It-Should '沒裝工作流的 repo：帶 -Managed 四支都 exit 0、什麼都不做；不帶的話照常跑（對照組）' {
+        # 用心跳當「有沒有真的跑」的證據：四支一跑就寫 bdd-docs/.cache/hooks/{名稱}.last。
+        $root = Join-Path ([IO.Path]::GetTempPath()) "codex-managed-$(New-HpId)"
+        New-Item -ItemType Directory -Path (Join-Path $root 'src') -Force | Out-Null
+        [IO.File]::WriteAllText((Join-Path $root 'src/App.cs'), 'class App {}')
+        $scripts = $HpManagedHooks | ForEach-Object { (Resolve-Path $_).Path }
+        $hb = Join-Path $root 'bdd-docs/.cache/hooks'
+        Push-Location $root
+        try {
+            $write = New-CodexHookPayload -Command (New-CodexPatch -Update 'src/App.cs')
+            $spawn = New-CodexHookPayload -Event 'PreToolUse' -Tool 'spawn_agent' -ToolInput @{ prompt = "mode: build`n- task: x" }
+            foreach ($s in $scripts) {
+                $payload = if ($s -like '*handoff-lint*') { $spawn } else { $write }
+                $r = Invoke-Script $s -Stdin $payload -Params @{ Managed = $true }
+                Assert-Equal 0 $r.exit "$([IO.Path]::GetFileName($s)) 在沒裝工作流的 repo 沒放行：$($r.stderr)"
+                Assert-True (-not $r.stdout.Trim()) "$([IO.Path]::GetFileName($s)) 有輸出：$($r.stdout)"
+            }
+            Assert-True (-not (Test-Path $hb)) "帶 -Managed 卻跑了：$(@(Get-ChildItem $hb -ErrorAction SilentlyContinue | ForEach-Object Name) -join '、')"
+            foreach ($s in $scripts) {
+                $payload = if ($s -like '*handoff-lint*') { $spawn } else { $write }
+                $null = Invoke-Script $s -Stdin $payload
+            }
+            Assert-Equal 4 @(Get-ChildItem $hb -File -ErrorAction SilentlyContinue).Count '對照組：不帶 -Managed 時四支都該跑（寫心跳）—— 不然上面的「沒跑」證明不了什麼'
+        } finally { Pop-Location; Remove-Item $root -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '裝了工作流的 repo：帶 -Managed 照樣擋（守門只放行沒裝的）' {
+        $root = Join-Path ([IO.Path]::GetTempPath()) "codex-managed-$(New-HpId)"
+        New-Item -ItemType Directory -Path (Join-Path $root '.codex/bdd-workflow') -Force | Out-Null
+        [IO.File]::WriteAllText((Join-Path $root '.codex/bdd-workflow/bdd-workflow-version.json'), '{ "contract-version": "4.26.0" }')
+        $hl = (Resolve-Path '.codex/scripts/handoff-lint.ps1').Path
+        Push-Location $root
+        try {
+            # mode: build 沒有 spec → missing-spec-ref（跟 test-handoff-lint 的那一條同一種）
+            $spawn = New-CodexHookPayload -Event 'PreToolUse' -Tool 'spawn_agent' -ToolInput @{ prompt = "mode: build`n- task: x" }
+            $r = Invoke-Script $hl -Stdin $spawn -Params @{ Managed = $true }
+            Assert-Equal 2 $r.exit "裝了工作流的 repo 被放行了：$($r.stdout)"
+        } finally { Pop-Location; Remove-Item $root -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}

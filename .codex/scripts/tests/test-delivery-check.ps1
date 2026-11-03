@@ -347,3 +347,69 @@ Describe-Suite 'delivery-check / 前後端分成兩個 repo、工作流裝在外
         } finally { Remove-Item $DcRoot -Recurse -Force -ErrorAction SilentlyContinue }
     }
 }
+
+Describe-Suite 'delivery-check / 寫檔時那兩道 gate 交付前再跑一次（hooks 跑不起來時這是最後一道）' {
+
+    # 公司政策只允許管理員部署的 hooks 時，dlp-gate／guideline-gate 寫檔時一次都沒跑 —— 下面每一種以前都直接交付出去。
+
+    It-Should 'bdd-docs 的產出有殘留的敏感資料 → 紅，只列類別與行號' {
+        New-DcProject
+        Write-DcFile 'bdd-docs/cancel-order/current-state.md' "# 現況`n`n連線：Server=db01;Initial Catalog=Orders;User Id=sa;`n"
+        try {
+            $r = Invoke-Dc
+            Assert-Equal 2 $r.exit "殘留沒被擋：$($r.stdout)"
+            Assert-True ('dlp-residual' -in $r.codes) "codes: $($r.codes -join ',')"
+            $items = @(@($r.json.problems | Where-Object code -eq 'dlp-residual')[0].items) -join ' '
+            Assert-Match 'current-state\.md' $items
+            Assert-True ($items -notmatch 'db01') "收據把敏感值本身印出來了：$items"
+            Assert-Equal 'failed' $r.json.gates.dlp
+        } finally { Remove-Item $DcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '這次改過的檔違反 block 規則 → 紅；沒改過的舊檔裡的違規不算' {
+        New-DcProject
+        Write-DcFile 'guidelines/rules.json' '{ "rules": [ { "id": "no-nolock", "applies-to": ["**/*.sql"], "pattern": "(?i)NOLOCK", "severity": "block", "message": "禁止 NOLOCK", "fix": "改用快照隔離" } ] }'
+        Write-DcFile 'db/Old.sql' "SELECT Id FROM T WITH (NOLOCK)`n"
+        Push-Location $DcRoot
+        try { git add -A 2>$null; git -c user.email=t@t -c user.name=t -c commit.gpgsign=false commit -q -m old 2>$null } finally { Pop-Location }
+        Write-DcFile 'db/New.sql' "SELECT Id FROM Orders WITH (NOLOCK)`n"   # 這次新增、還沒 commit
+        Write-DcFile 'TestResults/run.trx' (New-DcTrx @('未出貨的訂單可以取消', '已出貨的訂單不能取消'))
+        try {
+            $r = Invoke-Dc
+            Assert-Equal 2 $r.exit "block 規則的違規被交付出去了：$($r.stdout)"
+            Assert-True ('guideline-block' -in $r.codes) "codes: $($r.codes -join ',')"
+            $items = @(@($r.json.problems | Where-Object code -eq 'guideline-block')[0].items) -join ' '
+            Assert-Match 'db/New\.sql:1 —— no-nolock' $items
+            Assert-True ($items -notmatch 'Old\.sql') "沒改過的舊檔被算進來了：$items"
+            Remove-Item (Join-Path $DcRoot 'db/New.sql')
+            $r = Invoke-Dc
+            Assert-Equal 0 $r.exit "只剩舊檔的違規時應該綠：$($r.stdout)"
+        } finally { Remove-Item $DcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '前後端兩個 repo：巢狀 repo 裡改過的檔也掃' {
+        New-DcProject -NoGit
+        Write-DcFile 'guidelines/rules.json' '{ "rules": [ { "id": "no-nolock", "applies-to": ["**/*.sql"], "pattern": "(?i)NOLOCK", "severity": "block", "message": "禁止 NOLOCK", "fix": "改用快照隔離" } ] }'
+        Write-DcFile 'backend/db/Base.sql' "SELECT 1`n"
+        $be = Join-Path $DcRoot 'backend'
+        git -C $be init -q 2>$null; git -C $be add -A 2>$null; git -C $be -c user.email=t@t -c user.name=t -c commit.gpgsign=false commit -q -m base 2>$null
+        Write-DcFile 'backend/db/New.sql' "SELECT Id FROM Orders WITH (NOLOCK)`n"
+        Write-DcFile 'TestResults/run.trx' (New-DcTrx @('未出貨的訂單可以取消', '已出貨的訂單不能取消'))
+        try {
+            $r = Invoke-Dc
+            Assert-True ('guideline-block' -in $r.codes) "巢狀 repo 的改動沒被掃到：$($r.stdout)"
+            Assert-Match 'backend/db/New\.sql' (@(@($r.json.problems | Where-Object code -eq 'guideline-block')[0].items) -join ' ')
+        } finally { Remove-Item $DcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '乾淨的時候 OK 那一行講兩道 gate 的結果（不是 git 時講明規範沒掃）' {
+        New-DcProject -NoGit
+        try {
+            Push-Location $DcRoot
+            try { $r = Invoke-Script $DcScript -Params @{ FeatureId = 'cancel-order'; TestResults = 'TestResults/run.trx' } } finally { Pop-Location }
+            Assert-Equal 0 $r.exit "stderr: $($r.stderr)"
+            Assert-Match '殘留掃描：通過' $r.stdout
+            Assert-Match '規範：不是 git' $r.stdout
+        } finally { Remove-Item $DcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}

@@ -18,9 +18,10 @@
 
 [CmdletBinding()]
 param(
+    [switch]$Managed,                                   # managed hooks（管理員部署在專案外）：沒裝工作流的專案一律放行
     [string]$Payload,
     [string[]]$Path,                                    # 直接指定檔案，跳過 payload 解析
-    [string]$ScanScript = '.codex/scripts/dlp-residual-scan.ps1',
+    [string]$ScanScript = (Join-Path $PSScriptRoot 'dlp-residual-scan.ps1'),   # 跟這支放在一起（managed hooks 時不在專案裡）
     [string]$DisableMarker = 'bdd-docs/.dlp-disabled',
     [switch]$Json
 )
@@ -37,6 +38,16 @@ if ([Console]::IsErrorRedirected)  { $w = [IO.StreamWriter]::new([Console]::Open
 function Read-StdinUtf8 {
     if ([Console]::IsInputRedirected) { return [IO.StreamReader]::new([Console]::OpenStandardInput(), $Utf8NoBom).ReadToEnd() }
     return [Console]::In.ReadToEnd()
+}
+
+# ---- managed hooks：沒裝工作流的專案一律放行 ----
+# 公司政策只允許管理員部署的 hooks（requirements.toml 的 allow_managed_hooks_only）時，這支由管理員裝在專案外，
+# 這台機器上每一個 Codex session 都會叫它（sdlc.ps1 managed-hooks 產生的指令帶 -Managed）。沒裝工作流的 repo 不歸它管：
+# 不放行的話，別的 repo 的委派會被擋、寫檔會被拿去 build。stdin 照樣讀完再走 —— 不讀的話 Codex 寫 payload 可能卡住。
+# 四支 hook 各有一份逐字相同的副本（test-hook-payload.ps1 守住）。
+if ($Managed -and -not (Test-Path -LiteralPath '.codex/bdd-workflow/bdd-workflow-version.json' -PathType Leaf)) {
+    if (-not $Payload) { $null = Read-StdinUtf8 }
+    exit 0
 }
 
 # ---- hook payload → 這次寫出去的檔 ----
