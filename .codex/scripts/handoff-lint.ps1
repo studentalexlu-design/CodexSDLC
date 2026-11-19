@@ -14,6 +14,7 @@
 #   3b. 修正輪（mode: fix）必須帶 round；round 超過上限即阻斷
 #       上限：-MaxReviewRounds ＞ sdlc.config.json 的 review.maxRounds（1–5）＞ 預設 3
 #   3c. 同一個檔的 [必修] 修了兩輪還在 → 阻斷，交回使用者（v4.24.0；帳記在 bdd-docs/{id}/reviews/fix-rounds.json）
+#   3d. review.md 有 [需決定]、mode: fix 卻沒帶那個檔的 decision: → 阻斷，先問使用者（v4.32.0）
 #   4. 禁用 payload：完整 log、長測試輸出、connection string、secret、DLP mapping table
 #   5. 這次 spawn 會不會被 Codex 拒絕：effort 不在 agent 實際用的模型支援之列（v4.15.0；只判得準的才擋）
 #
@@ -78,7 +79,60 @@ function Write-HookHeartbeat([string]$eventName, [string]$name) {
     } catch { }
 }
 
+# ---- lab：記下 Codex 實際怎麼叫這支 hook（sdlc.ps1 lab，4.31.0）----
+# 四支 hook 各有一份**逐字相同**的副本（test-hook-payload.ps1 守住）。fixture 驗得到這支的邏輯，驗不到 Codex 這一側：
+# 有沒有叫、payload 長怎樣、exit 2 有沒有真的擋。lab 沙盒（有 bdd-docs/.cache/lab/capture）裡才做事，其他時候只多一次 Test-Path。
+# 做法：把同一份 payload 交給子行程的自己照常跑，記下 exit、stdout、stderr 與耗時，再原樣轉交給 Codex —— 結果跟沒有 lab 時一樣。
+# 路徑在這裡就抽好（Bash 寫的檔要看 120 秒內的修改時間，事後重算會抽不到）。出了任何錯就退回照常跑：lab 不能讓 hook 失效。
+function Invoke-LabCapture([string]$raw, [string]$name, $bound) {
+    if ($env:CODEX_SDLC_LAB_CHILD -eq '1' -or -not $raw) { return }
+    if (-not (Test-Path -LiteralPath 'bdd-docs/.cache/lab/capture' -PathType Leaf)) { return }
+    try {
+        $doc = $raw | ConvertFrom-Json -ErrorAction Stop
+        if (-not ($doc -is [pscustomobject] -and $doc.PSObject.Properties['hook_event_name'])) { return }
+        $paths = @()
+        if (Get-Command Read-HookPayload -CommandType Function -ErrorAction Ignore) { $paths = @((Read-HookPayload $raw).paths) }
+        $exe = [Environment]::ProcessPath
+        if (-not $exe -or [IO.Path]::GetFileNameWithoutExtension($exe) -notmatch '^pwsh') { $exe = (Get-Process -Id $PID).Path }
+        $psi = [Diagnostics.ProcessStartInfo]::new($exe)
+        foreach ($a in @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $PSCommandPath)) { $psi.ArgumentList.Add($a) }
+        foreach ($k in @($bound.Keys)) {
+            if ($k -eq 'Payload') { continue }
+            $v = $bound[$k]
+            if ($v -is [switch]) { if ($v.IsPresent) { $psi.ArgumentList.Add("-$k") } } else { $psi.ArgumentList.Add("-$k"); $psi.ArgumentList.Add([string]$v) }
+        }
+        $psi.WorkingDirectory = (Get-Location).Path
+        $psi.UseShellExecute = $false
+        $psi.RedirectStandardInput = $true; $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
+        $psi.StandardOutputEncoding = $Utf8NoBom; $psi.StandardErrorEncoding = $Utf8NoBom
+        $psi.Environment['CODEX_SDLC_LAB_CHILD'] = '1'
+        $started = [DateTime]::UtcNow
+        $sw = [Diagnostics.Stopwatch]::StartNew()
+        $proc = [Diagnostics.Process]::Start($psi)
+        $outTask = $proc.StandardOutput.ReadToEndAsync(); $errTask = $proc.StandardError.ReadToEndAsync()
+        $in = [IO.StreamWriter]::new($proc.StandardInput.BaseStream, $Utf8NoBom)
+        $in.Write($raw); $in.Close()
+        $proc.WaitForExit()
+        $out = $outTask.GetAwaiter().GetResult(); $err = $errTask.GetAwaiter().GetResult()
+        $code = $proc.ExitCode
+        $sw.Stop()
+    } catch { return }
+    try {
+        $dir = Join-Path (Get-Location).Path 'bdd-docs/.cache/lab/calls'
+        [void][IO.Directory]::CreateDirectory($dir)
+        $rec = [ordered]@{
+            script = $name; managed = [bool]$bound['Managed']; at = $started.ToString('o'); ms = [int]$sw.ElapsedMilliseconds
+            exit = $code; paths = @($paths); stdout = $out; stderr = $err; payload = $raw
+        }
+        [IO.File]::WriteAllText((Join-Path $dir "$($started.ToString('yyyyMMddTHHmmssfffffff'))-$name-$PID.json"), ($rec | ConvertTo-Json -Depth 4), $Utf8NoBom)
+    } catch { }
+    if ($out) { [Console]::Out.Write($out) }
+    if ($err) { [Console]::Error.Write($err) }
+    exit $code
+}
+
 if (-not $Payload) { $Payload = Read-StdinUtf8 }
+Invoke-LabCapture $Payload 'handoff-lint' $PSBoundParameters
 if (-not $Payload) { exit 0 }
 
 $violations = @()
@@ -273,7 +327,7 @@ if ($modes -contains 'fix' -and $null -ne $round -and $round -le $MaxReviewRound
             $reviewText = [IO.File]::ReadAllText((Resolve-Path -LiteralPath $reviewPath).Path) -replace "`r`n", "`n"
             if ($reviewText -match '(?m)^\s*VERDICT\s*:\s*FAIL\b') {
                 # 解析格式跟 dlp-gate 的 Get-MustItems 同一條（reviewer.toml 規定的那一行）
-                $mustFiles = @([regex]::Matches($reviewText, '(?m)^\s*\d+\.\s*\[必修\]\s*(.+?)\s+——\s+') |
+                $mustFiles = @([regex]::Matches($reviewText, '(?m)^\s*\d+\.\s*\[(?:必修|需決定)\]\s*(.+?)\s+——\s+') |
                     ForEach-Object { $_.Groups[1].Value.Trim().Trim('`', '{', '}') -replace '(:\d+(-\d+)?)+$', '' } | Select-Object -Unique)
                 $ledgerPath = "bdd-docs/$fid/reviews/fix-rounds.json"
                 $rounds = @{}
@@ -302,6 +356,34 @@ if ($modes -contains 'fix' -and $null -ne $round -and $round -le $MaxReviewRound
             }
         }
     } catch { $ledgerPath = $null; $ledgerData = $null }
+}
+
+# --- 3d. 審核有 [需決定] → 使用者選過才交回修（4.32.0）---
+# 幾種修法使用者看到的行為不同時，reviewer 寫成 [需決定]（選項＋推薦），由使用者選 —— implementer 猜錯就白付一輪修正，
+# 而 3c 要錯兩輪才交回使用者。這裡讓「問過他」變成擋得住的事：review.md（FAIL）裡每一個有 [需決定] 的檔，
+# mode: fix 的 handoff 都要有一行 `decision: {檔} —— {他選的}`。對應只看檔，跟 3c 同一個粒度。
+# 讀不到 review.md 或解析失敗 → 不擋（安全的一側：implementer 照 reviewer.toml 會把沒有選擇的那幾項標成未修）。
+if ($modes -contains 'fix') {
+    try {
+        $dfid = if ($prompt -match '(?im)^\s*[-*]?\s*feature-id\s*:\s*([A-Za-z0-9][A-Za-z0-9._-]*)') { $Matches[1] } else { $null }
+        $drev = if ($dfid) { "bdd-docs/$dfid/review.md" } else { $null }
+        if ($drev -and (Test-Path -LiteralPath $drev -PathType Leaf)) {
+            $dtext = [IO.File]::ReadAllText((Resolve-Path -LiteralPath $drev).Path) -replace "`r`n", "`n"
+            if ($dtext -match '(?m)^\s*VERDICT\s*:\s*FAIL\b') {
+                $normLoc = { param($s) (($s.Trim().Trim('`', '{', '}') -replace '(:\d+(-\d+)?)+$', '') -replace '\\', '/').ToLowerInvariant() }
+                $pending = @([regex]::Matches($dtext, '(?m)^\s*\d+\.\s*\[需決定\]\s*(.+?)\s+——\s+') | ForEach-Object { & $normLoc $_.Groups[1].Value } | Select-Object -Unique)
+                $given = @([regex]::Matches($prompt, '(?im)^\s*[-*]?\s*decision\s*:\s*(.+?)\s+——\s+\S') | ForEach-Object { & $normLoc $_.Groups[1].Value })
+                $undecided = @($pending | Where-Object { $_ -notin $given })
+                if ($undecided.Count) {
+                    $violations += [pscustomobject]@{
+                        rule = 'review-decision-pending'
+                        detail = "$drev 有 [需決定]，handoff 沒帶使用者的選擇：$($undecided -join '、')"
+                        fix = '先以 Codex user confirmation 把那幾項的選項與推薦照 review.md 原文問使用者；他選了，handoff 的 meta 每項加一行 decision: {檔} —— {他選的}，並把選擇寫進 spec.md 的「需求決議」'
+                    }
+                }
+            }
+        }
+    } catch { }
 }
 
 # --- 4. 禁用 payload ---

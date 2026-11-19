@@ -444,3 +444,45 @@ Describe-Suite 'delivery-check / UI 驗收方式（gherkin-check 第 6 項帶上
         } finally { Remove-Item $DcRoot -Recurse -Force -ErrorAction SilentlyContinue }
     }
 }
+
+Describe-Suite 'delivery-check / [需決定] 與既有問題（4.32.0）' {
+
+    It-Should 'FAIL 只剩 [需決定]：算還開著的問題（要列進殘留風險），不是「FAIL 卻沒有必修」' {
+        New-DcProject -review "VERDICT: FAIL`n`n## 發現`n1. [需決定] src/Orders/CancelService.cs:40 —— 已出貨的取消怎麼處理`n   會怎麼壞：x`n   選項：A. 擋下｜B. 轉退貨`n   推薦：A —— 簡單`n"
+        try {
+            $r = Invoke-Dc
+            Assert-Equal 2 $r.exit
+            Assert-True ('review-fail-without-must' -notin $r.codes) '[需決定] 沒被當成開著的問題'
+            Assert-Match 'CancelService\.cs:40' (@($r.json.delivery.missing) -join ' ')
+        } finally { Remove-Item $DcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '審核列了既有問題、known-issues.md 沒有 → 紅；寫進去 → 綠（早幾輪快照列的也要）' {
+        $pass = $DcReviewPass + "`n## 既有問題`n- src/Legacy/Report.cs:12 —— 舊報表沒處理時區`n"
+        New-DcProject -review $pass
+        try {
+            Write-DcFile 'bdd-docs/cancel-order/reviews/20261101-000000.md' "VERDICT: FAIL`n`n## 發現`n1. [必修] src/Orders/CancelService.cs:40 —— x`n`n## 既有問題`n- src/Legacy/Export.cs:3 —— 匯出沒有跳脫逗號`n"
+            $r = Invoke-Dc
+            Assert-Equal 2 $r.exit '既有問題沒留下來就放行了'
+            Assert-True ('known-issue-missing' -in $r.codes)
+            $miss = @($r.json.knownIssues.missing) -join ' '
+            Assert-Match 'Report\.cs:12' $miss
+            Assert-Match 'Export\.cs:3' $miss '只在早幾輪快照裡的既有問題沒被要求'
+
+            Write-DcFile 'bdd-docs/known-issues.md' "# 既有問題`n`n- 2026-11-20 cancel-order：src/Legacy/Report.cs:12 —— 舊報表沒處理時區`n- 2026-11-20 cancel-order：src/Legacy/Export.cs:3 —— 匯出沒有跳脫逗號`n"
+            $r = Invoke-Dc
+            Assert-Equal 0 $r.exit "寫進去了還是紅：$($r.stdout) $($r.stderr)"
+            Assert-Equal 2 @($r.json.knownIssues.required).Count
+        } finally { Remove-Item $DcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should 'known-issues.md 也跑殘留掃描' {
+        New-DcProject
+        try {
+            Write-DcFile 'bdd-docs/known-issues.md' "- 2026-11-20 cancel-order：src/A.cs:1 —— 通知寄給 alice@example.com 失敗`n"
+            $r = Invoke-Dc
+            Assert-Equal 2 $r.exit
+            Assert-True ('dlp-residual' -in $r.codes) 'known-issues.md 沒被掃'
+        } finally { Remove-Item $DcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}

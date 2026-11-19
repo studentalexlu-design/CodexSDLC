@@ -5,7 +5,7 @@
 # ⑥ 以前全是榮譽制 —— orchestrator 憑記憶把好幾輪子代理的回傳拼成殘留風險，沒有任何東西核對。
 # 漏掉的那一項不會讓任何測試變紅，只會讓下一次迭代或修 bug 的人以為那裡驗過了。而它要的資料大多已經在磁碟上：
 #   1. 審核：bdd-docs/{id}/review.md 存在，VERDICT 是 PASS；是 FAIL（使用者在修正輪上限接受了這一版）時，
-#      每一項還開著的 [必修] 都要寫進交付。
+#      每一項還開著的 [必修]／[需決定] 都要寫進交付。審核列的「既有問題」要留進 bdd-docs/known-issues.md（4.32.0）。
 #   2. 驗收條件：repo 裡首行 `# feature-id: {id}` 的 .feature 交給 gherkin-check 跑一次（帶 -TestResults）。
 #      最後一輪修正之後沒重跑測試的話，結果檔會比改過的檔舊 —— 這裡擋得到，implementer 回報當時的綠燈擋不到。
 #   3. 交付一節：spec.md 有 `## 交付 —— {日期}`、裡面有「殘留風險」那一行，而且提到下面每一項：
@@ -59,7 +59,7 @@ function NormId([string]$s) { return ($s -replace '[^\p{L}\p{N}]', '').ToLowerIn
 function Get-MustItems([string]$text) {
     $out = @()
     foreach ($line in ($text -replace "`r`n", "`n") -split "`n") {
-        $m = [regex]::Match($line, '^\s*\d+\.\s*\[必修\]\s*(.+?)\s+——\s+(.+?)\s*$')
+        $m = [regex]::Match($line, '^\s*\d+\.\s*\[(?:必修|需決定)\]\s*(.+?)\s+——\s+(.+?)\s*$')
         if (-not $m.Success) { continue }
         $loc = $m.Groups[1].Value.Trim().Trim('`', '{', '}')
         $out += [pscustomobject]@{ location = $loc; file = ($loc -replace '(:\d+(-\d+)?)+$', ''); problem = $m.Groups[2].Value }
@@ -74,6 +74,20 @@ function Get-AcceptedItems([string]$text) {
         if ($line -match '^##\s') { $in = $line -match '^##\s*上一輪必修的交代'; continue }
         if (-not $in) { continue }
         $m = [regex]::Match($line, '^\s*[-*]\s*(.+?)\s+——\s+(.+?)[:：]\s*接受不修\s*——\s*\S')
+        if (-not $m.Success) { continue }
+        $loc = $m.Groups[1].Value.Trim().Trim('`', '{', '}')
+        $out += [pscustomobject]@{ location = $loc; file = ($loc -replace '(:\d+(-\d+)?)+$', ''); problem = $m.Groups[2].Value.Trim() }
+    }
+    return $out
+}
+
+# 「## 既有問題」一節（reviewer.toml：這次改動之前就在的，不算這次的發現；4.32.0）。
+function Get-KnownIssueItems([string]$text) {
+    $out = @(); $in = $false
+    foreach ($line in ($text -replace "`r`n", "`n") -split "`n") {
+        if ($line -match '^##\s') { $in = $line -match '^##\s*既有問題'; continue }
+        if (-not $in) { continue }
+        $m = [regex]::Match($line, '^\s*[-*]\s*(.+?)\s+——\s+(.+?)\s*$')
         if (-not $m.Success) { continue }
         $loc = $m.Groups[1].Value.Trim().Trim('`', '{', '}')
         $out += [pscustomobject]@{ location = $loc; file = ($loc -replace '(:\d+(-\d+)?)+$', ''); problem = $m.Groups[2].Value.Trim() }
@@ -147,6 +161,20 @@ foreach ($src in $reviewSources) {
         if (-not $seen.ContainsKey($k)) { $seen[$k] = $true; $accepted += $a }
     }
 }
+# 既有問題：同樣看每一輪快照 —— 修正輪的 reviewer 只重讀改過的範圍，第一輪列的不會再出現在最後那份。
+# 要留進 bdd-docs/known-issues.md（orchestrator 在 ⑥ 寫）；對應只看檔（寬的那一側，跟殘留風險同一個判法）。
+$knownRel = "$(($DocsRoot -replace '\\', '/').TrimEnd('/'))/known-issues.md"
+$knownText = if (Test-Path -LiteralPath $knownRel -PathType Leaf) { ([IO.File]::ReadAllText((Resolve-Path -LiteralPath $knownRel).Path) -replace '\\', '/').ToLowerInvariant() } else { '' }
+$knownIssues = @(); $seenKnown = @{}
+foreach ($src in $reviewSources) {
+    foreach ($k in @(Get-KnownIssueItems ([IO.File]::ReadAllText($src)))) {
+        $key = ($k.file -replace '\\', '/').ToLowerInvariant()
+        if ($seenKnown.ContainsKey($key)) { continue }
+        $seenKnown[$key] = $true
+        $knownIssues += [pscustomobject]@{ text = "$($k.location) —— $($k.problem)"; ok = $knownText.Contains($key) }
+    }
+}
+$knownMissing = @($knownIssues | Where-Object { -not $_.ok })
 
 # ---- 2. 驗收條件（gherkin-check） ----
 $features = @(Get-FeatureFiles $FeatureId)
@@ -237,7 +265,10 @@ if ($missing.Count) {
 # FAIL 本身不擋：使用者在修正輪上限接受了這一版就能交付，代價是每一項必修都寫進殘留風險（上面已經核對）。
 # 但 FAIL 卻一項必修都沒有 → reviewer 寫壞了，那不能當成「接受了」。
 if ($verdict -eq 'FAIL' -and -not $openMust.Count) {
-    Add-Problem 'review-fail-without-must' 'review.md 是 FAIL，卻解析不到任何 [必修]' '請 reviewer 照格式重寫（「N. [必修] 檔:行 —— 問題」），或確認這一版到底能不能交'
+    Add-Problem 'review-fail-without-must' 'review.md 是 FAIL，卻解析不到任何 [必修] 或 [需決定]' '請 reviewer 照格式重寫（「N. [必修] 檔:行 —— 問題」），或確認這一版到底能不能交'
+}
+if ($knownMissing.Count) {
+    Add-Problem 'known-issue-missing' "審核列的既有問題沒有留進 $knownRel" "一項一行追加進 ${knownRel}：- {日期} ${FeatureId}：{檔:行} —— {問題}（對話一關，這些就只剩審核快照裡找得到）" @($knownMissing | ForEach-Object { $_.text })
 }
 
 # ---- 4. 寫檔時那兩道 gate，交付前再跑一次 ----
@@ -250,6 +281,7 @@ $gates = [ordered]@{ dlp = $null; guideline = $null }
 $here = (Get-Location).Path
 $dlpTargets = @(Get-ChildItem -LiteralPath $featureDir -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object { [IO.Path]::GetRelativePath($here, $_.FullName) -replace '\\', '/' })
 if (Test-Path -LiteralPath "$DocsRoot/project-map.md" -PathType Leaf) { $dlpTargets += "$($DocsRoot.TrimEnd('/', '\'))/project-map.md" }
+if ($knownText) { $dlpTargets += $knownRel }
 if ($dlpTargets.Count) {
     $dlp = $null
     try { $dlp = (& (Join-Path $PSScriptRoot 'dlp-gate.ps1') -Path $dlpTargets -Json 2>$null | Out-String) | ConvertFrom-Json } catch { }
@@ -294,6 +326,7 @@ if ($Json) {
         review     = [pscustomobject]@{ path = $reviewRel; verdict = $verdict }
         gherkin    = [pscustomobject]$gherkin
         delivery   = [pscustomobject]@{ sections = $sections.Count; required = @($required | ForEach-Object { $_.text }); missing = @($missing | ForEach-Object { $_.text }) }
+        knownIssues = [pscustomobject]@{ path = $knownRel; required = @($knownIssues | ForEach-Object { $_.text }); missing = @($knownMissing | ForEach-Object { $_.text }) }
         gates      = [pscustomobject]$gates
         problems   = @($problems)
         reminder   = $reminder

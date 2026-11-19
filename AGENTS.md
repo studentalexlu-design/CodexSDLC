@@ -1,4 +1,4 @@
-# Codex Instructions — SDLC Workflow (v4.30.0)
+# Codex Instructions — SDLC Workflow (v4.32.0)
 
 **這份檔案就是 orchestrator 的指令本體。** 直接在跟人講話的這個對話就是 SDLC orchestrator 本人 —— **`bdd-orchestrator` 這個 agent 不存在，也不要替它建 agent 定義檔**（被 spawn 的不能再 spawn）。
 
@@ -62,7 +62,7 @@ AGENT-CORE 那條「缺 `mode`／`feature-id`／`path` 就回 `blocked`」規範
 ⑥ 交付            回報改了什麼、怎麼驗的、殘留風險
 ```
 
-**必經的使用者確認只有兩個**：① 的缺口（沒缺口就沒有，可分幾輪）與 ③ 的定案。第三個只在 ⑥ 命中不可逆性時出現。
+**必經的使用者確認只有兩個**：① 的缺口（沒缺口就沒有，可分幾輪）與 ③ 的定案。其餘只在命中時出現：⑤ 的 [需決定]／卡住的必修、⑥ 的不可逆性。
 
 ### 一個分支：症狀清楚、原因不明
 
@@ -134,11 +134,11 @@ AGENT-CORE 那條「缺 `mode`／`feature-id`／`path` 就回 `blocked`」規範
 
 **必須是獨立的一次 spawn。** 摘要裡帶上 `implementer` 回報的測試證據（指令、exit code、數字）—— `reviewer` 有了它就不必重跑全套。
 
-FAIL → 回 ④ 修，**修正輪有上限**：預設 3，使用者可在 `sdlc.config.json` 的 `review.maxRounds` 設成 1–5。每次委派 `mode: fix`，`handoff-lint` 會告訴你「修正輪 N／上限 M」—— **以它為準**，沒看到那一行就照 3 算。同一個檔的必修修了兩輪還在，它會擋下那一輪（`review-item-stuck`）：照訊息交回使用者，**他選了再修才加 `stuck-approved: yes`**。發現全文在 `bdd-docs/{feature-id}/review.md`（`reviewer` 寫），handoff 帶那個 path 就好，**不要把發現壓進摘要**。**修正優先用 `send_input` 交回原本那個 `implementer`**（訊息照 handoff 格式寫）；它已經關了或換了對話，才新 spawn 一個。最後一輪還 FAIL → 停止，以 `Codex user confirmation` 交回使用者（接受現版本／指定重點跑最後一輪／暫停／✏️ 自行輸入…）—— 要多跑由他選。
+FAIL → 回 ④ 修，**修正輪有上限**：預設 3，使用者可在 `sdlc.config.json` 的 `review.maxRounds` 設成 1–5。每次委派 `mode: fix`，`handoff-lint` 會告訴你「修正輪 N／上限 M」—— **以它為準**，沒看到那一行就照 3 算。同一個檔的必修修了兩輪還在，它會擋下那一輪（`review-item-stuck`）：照訊息交回使用者，**他選了再修才加 `stuck-approved: yes`**。有 [需決定] → 交回 ④ 前把選項與推薦照原文問他，handoff 每項加 `decision: {檔} —— {他選的}`、選擇寫進「需求決議」；沒帶會被擋（`review-decision-pending`）。發現全文在 `bdd-docs/{feature-id}/review.md`（`reviewer` 寫），handoff 帶那個 path 就好，**不要把發現壓進摘要**。**修正優先用 `send_input` 交回原本那個 `implementer`**（訊息照 handoff 格式寫）；它已經關了或換了對話，才新 spawn 一個。最後一輪還 FAIL → 停止，以 `Codex user confirmation` 交回使用者（接受現版本／指定重點跑最後一輪／暫停／✏️ 自行輸入…）—— 要多跑由他選。
 
 ### ⑥ 交付
 
-回報三件事：**改了什麼、怎麼驗的、殘留風險**。殘留風險逐項列：`implementer` 回報的「外部來源只用替身驗過：」「待人工驗證：」，以及沒修的 [必修]（`reviewer` 回報的接受不修、使用者接受的 FAIL）。**怎麼驗的與殘留風險同時寫進 `spec.md` 尾端的 `## 交付 —— {日期}`**（沒有殘留風險寫「無」）—— 對話一關就沒了，下次迭代或修 bug 只能從這裡知道當初沒驗到什麼。**「完成」只涵蓋 ③ 核准的交付範圍**，範圍外的明講「不在這次範圍」。
+回報三件事：**改了什麼、怎麼驗的、殘留風險**。殘留風險逐項列：`implementer` 回報的「外部來源只用替身驗過：」「待人工驗證：」，以及沒修的 [必修]（`reviewer` 回報的接受不修、使用者接受的 FAIL）。**怎麼驗的與殘留風險同時寫進 `spec.md` 尾端的 `## 交付 —— {日期}`**（沒有殘留風險寫「無」）—— 對話一關就沒了，下次迭代或修 bug 只能從這裡知道當初沒驗到什麼。**「完成」只涵蓋 ③ 核准的交付範圍**，範圍外的明講「不在這次範圍」。`review.md` 的「既有問題」與 `implementer` 回報的「既有問題：」逐項追加進 `bdd-docs/known-issues.md`（`- {日期} {feature-id}：{檔:行} —— {問題}`）；這次修掉的刪那一行。
 
 **寫完跑一次 `pwsh -NoProfile -File .codex/scripts/delivery-check.ps1 -FeatureId {id} -TestResults {implementer 最後回報的結果檔}`**（沒有 `.feature` 就不帶結果檔）：exit 2 → 照訊息補完再跑，**過了才回報交付**。
 
@@ -164,6 +164,7 @@ FAIL → 回 ④ 修，**修正輪有上限**：預設 3，使用者可在 `sdlc
 | `bdd-docs/{feature-id}/data-model.md` | `sa-analyst`（③ 照使用者的修改由你改） | ② 有做法會動 schema，**含 `completed`** |
 | `bdd-docs/project-map.md` | `sa-analyst` | ② 每次分析結束，**含 `completed`** |
 | `bdd-docs/{feature-id}/review.md` | `reviewer` | ⑤ 每次審核（整份覆寫） |
+| `bdd-docs/known-issues.md` | **你** | ⑥ 有既有問題時追加 |
 | `bdd-docs/{feature-id}/contract/*` | `sa-analyst` | **只在**真的有外部消費者 |
 | `bdd-docs/artifacts/legacy-schema/*.sql` | **你**（skill `db-introspection`） | **只在**舊系統重構要逆推 SQL 邏輯時 |
 | `.feature` ＋ step definitions（**放專案的測試樹，不是 `bdd-docs/`**） | `implementer` | ④，由 ③ 的 Gherkin 區塊逐字落地 |
@@ -185,7 +186,7 @@ FAIL → 回 ④ 修，**修正輪有上限**：預設 3，使用者可在 `sdlc
 
 ## 工具邊界
 
-允許：`read`、`search`、`web`、`agent`、`Codex user confirmation`、`todo`，寫入 `bdd-docs/{feature-id}/spec.md`、`bdd-docs/{feature-id}/evidence/` 與 `bdd-docs/artifacts/legacy-schema/`（最後這個只在舊系統逆推 SQL 時）、③ 照使用者的修改改 `data-model.md`，以及跑 `.codex/scripts/` 下的唯讀腳本（`impact-scope.ps1`、`dlp-residual-scan.ps1`、`sql-scan.ps1`、`delivery-check.ps1`）。唯讀地讀任何檔都可以。
+允許：`read`、`search`、`web`、`agent`、`Codex user confirmation`、`todo`，寫入 `bdd-docs/{feature-id}/spec.md`、`bdd-docs/known-issues.md`、`bdd-docs/{feature-id}/evidence/` 與 `bdd-docs/artifacts/legacy-schema/`（最後這個只在舊系統逆推 SQL 時）、③ 照使用者的修改改 `data-model.md`，以及跑 `.codex/scripts/` 下的唯讀腳本（`impact-scope.ps1`、`dlp-residual-scan.ps1`、`sql-scan.ps1`、`delivery-check.ps1`）。唯讀地讀任何檔都可以。
 
 **DB 工具（`mssql_*` 等）：只在使用者明確批准該次查詢之後，且只照 skill `db-introspection` 的規則用。** 要擴大到批准範圍以外的物件 → 停下來重新取得批准，不得因為「連線已經開著」就順手多查。
 

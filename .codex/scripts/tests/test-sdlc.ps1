@@ -3088,3 +3088,113 @@ Describe-Suite 'sdlc git-hooks / 管理員不部署 managed hooks 時，commit �
         } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
     }
 }
+
+Describe-Suite 'sdlc lab / 在沙盒裡驗 Codex 這一側：有沒有叫、payload 長怎樣、擋下的理由有沒有交到模型手上' {
+
+    # 真的 Codex 在這裡跑不起來 —— 用「照 lab-prompt 寫檔、再把 payload 交給沙盒裡的 hook」代替它。
+    function Send-LabHook([string]$sb, [string]$event, [string]$tool, [hashtable]$toolInput, [string[]]$scripts, [string]$transcript) {
+        $p = [ordered]@{ session_id = 's'; turn_id = 't'; transcript_path = $transcript; cwd = $sb; hook_event_name = $event; model = 'gpt-5.5'; permission_mode = 'bypassPermissions'; tool_name = $tool; tool_input = $toolInput }
+        if ($event -eq 'PostToolUse') { $p.tool_response = '' }
+        $p.tool_use_id = 'c'
+        $json = $p | ConvertTo-Json -Depth 5 -Compress
+        $errs = @()
+        Push-Location $sb
+        try { foreach ($s in $scripts) { $r = Invoke-Script (Join-Path $sb ".codex/scripts/$s.ps1") -Stdin $json; if ($r.exit -eq 2) { $errs += $r.stderr } } } finally { Pop-Location }
+        return $errs
+    }
+    function Write-LabFile([string]$sb, [string]$rel, [string]$text) { New-SdlcFile (Join-Path $sb $rel) "$text`n" }
+    function Get-LabPatch([string]$rel, [string]$line) { "*** Begin Patch`n*** Add File: $rel`n+$line`n*** End Patch`n" }
+    $LabPost = @('dlp-gate', 'guideline-gate', 'build-check')
+
+    It-Should '建沙盒（資料夾不存在也行）→ 五步都照做 → -Report 全部通過；-Remove 停止記錄' {
+        try {
+            $sb = Join-Path $SdlcRoot 'lab-ok'
+            Remove-Item $sb -Recurse -Force -ErrorAction SilentlyContinue
+            $j = Invoke-SdlcJson 'lab' @{ Target = $sb; CodexPath = 'C:\no-codex.exe' }
+            Assert-Equal 0 $j.exit "warnings: $($j.warnings -join ' | ')"
+            Assert-Equal 'create' $j.data.lab.action
+            foreach ($f in @('lab-prompt.md', 'guidelines/rules.json', 'bdd-docs/.cache/lab/capture', 'bdd-docs/.cache/lab/lab.json', '.codex/hooks.json', '.git')) {
+                Assert-True (Test-Path (Join-Path $sb $f)) "沙盒少了 $f"
+            }
+            Push-Location $sb
+            try { $v = Invoke-Script (Join-Path $sb '.codex/scripts/guideline-gate.ps1') -Params @{ Validate = $true } } finally { Pop-Location }
+            Assert-Equal 0 $v.exit "lab 的 rules.json 不合法：$($v.stdout) $($v.stderr)"
+            $prompt = [IO.File]::ReadAllText((Join-Path $sb 'lab-prompt.md'))
+            foreach ($sig in @('Residual sensitive pattern', 'lab-forbidden', 'missing-mode')) {
+                Assert-True (-not $prompt.Contains($sig)) "prompt 含「$sig」—— transcript 一定找得到它，證明不了理由有交到模型手上"
+            }
+            Assert-Equal 'resume' (Invoke-SdlcJson 'lab' @{ Target = $sb; CodexPath = 'C:\no-codex.exe' }).data.lab.action
+
+            $tr = Join-Path $sb 'rollout.jsonl'; $tl = @()
+            Write-LabFile $sb 'bdd-docs/lab/dlp-apply.md' '聯絡人：lab.user@example.com'
+            $tl += Send-LabHook $sb 'PostToolUse' 'apply_patch' @{ command = (Get-LabPatch 'bdd-docs/lab/dlp-apply.md' '聯絡人：lab.user@example.com') } $LabPost $tr
+            Write-LabFile $sb 'bdd-docs/lab/dlp-shell.md' '聯絡人：lab.user@example.com'
+            $null = Send-LabHook $sb 'PostToolUse' 'shell' @{ command = "Set-Content -Path bdd-docs/lab/dlp-shell.md -Value '聯絡人：lab.user@example.com'" } @('dlp-gate') $tr
+            Write-LabFile $sb 'bdd-docs/lab/dlp-shell.md' '聯絡人：{{EMAIL_1}}'
+            $null = Send-LabHook $sb 'PostToolUse' 'shell' @{ command = "Set-Content -Path bdd-docs/lab/dlp-shell.md -Value '聯絡人：{{EMAIL_1}}'" } @('dlp-gate') $tr
+            Write-LabFile $sb 'src/lab-rule.txt' 'LAB_FORBIDDEN()'
+            $null = Send-LabHook $sb 'PostToolUse' 'apply_patch' @{ command = (Get-LabPatch 'src/lab-rule.txt' 'LAB_FORBIDDEN()') } @('guideline-gate') $tr
+            Write-LabFile $sb 'src/lab-rule.txt' 'LAB_ALLOWED()'
+            $null = Send-LabHook $sb 'PostToolUse' 'apply_patch' @{ command = (Get-LabPatch 'src/lab-rule.txt' 'LAB_ALLOWED()') } @('guideline-gate') $tr
+            Write-LabFile $sb 'src/LabService.cs' 'public class LabService { }'
+            $null = Send-LabHook $sb 'PostToolUse' 'apply_patch' @{ command = (Get-LabPatch 'src/LabService.cs' 'public class LabService { }') } @('build-check') $tr
+            $tl += Send-LabHook $sb 'PreToolUse' 'spawn_agent' @{ message = 'lab 測試，回一個字就結束' } @('handoff-lint') $tr
+            [IO.File]::WriteAllLines($tr, [string[]]@($tl | ForEach-Object { @{ type = 'function_call_output'; output = $_ } | ConvertTo-Json -Compress }))
+
+            $j = Invoke-SdlcJson 'lab' @{ Target = $sb; Report = $true; CodexPath = 'C:\no-codex.exe' }
+            $st = @($j.data.lab.scenarios | ForEach-Object { "$($_.id)=$($_.status)" }) -join ' '
+            Assert-Equal 0 $j.exit "$st / warnings: $($j.warnings -join ' | ')"
+            Assert-True ([bool]$j.data.lab.passed) $st
+            Assert-Equal 'project' $j.data.lab.hooksSource
+            $byId = @{}; foreach ($s in $j.data.lab.scenarios) { $byId[$s.id] = $s }
+            Assert-Equal 'transcript' $byId['dlp-apply'].delivered
+            Assert-Equal 'retry' $byId['dlp-shell'].delivered
+            Assert-Equal 'transcript' $byId['handoff'].delivered
+            $spawnShape = @($j.data.lab.shape | Where-Object tool -eq 'spawn_agent')[0]
+            Assert-Equal 'message' (@($spawnShape.toolInput) -join ',')
+            Assert-Equal 0 @($spawnShape.added).Count "跟 0.154.0 一樣的形狀卻報了多出的欄位：$(@($spawnShape.added) -join ',')"
+
+            $j = Invoke-SdlcJson 'lab' @{ Target = $sb; Remove = $true }
+            Assert-Equal 0 $j.exit
+            Assert-True (-not (Test-Path (Join-Path $sb 'bdd-docs/.cache/lab/capture'))) '-Remove 沒拿掉 capture'
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '檔寫了 hook 卻沒被叫 → 未通過；看不出理由有沒有送到 → 待確認；沒做的那步 → 沒跑到' {
+        try {
+            $sb = Join-Path $SdlcRoot 'lab-bad'
+            Remove-Item $sb -Recurse -Force -ErrorAction SilentlyContinue
+            Assert-Equal 0 (Invoke-SdlcJson 'lab' @{ Target = $sb; CodexPath = 'C:\no-codex.exe' }).exit
+            Write-LabFile $sb 'bdd-docs/lab/dlp-apply.md' '聯絡人：lab.user@example.com'
+            $null = Send-LabHook $sb 'PostToolUse' 'apply_patch' @{ command = (Get-LabPatch 'bdd-docs/lab/dlp-apply.md' '聯絡人：lab.user@example.com') } @('dlp-gate') (Join-Path $sb 'none.jsonl')
+            Write-LabFile $sb 'bdd-docs/lab/dlp-shell.md' '聯絡人：lab.user@example.com'   # shell 寫了，hook 沒被叫（例如 matcher 不認得新的工具名）
+            $j = Invoke-SdlcJson 'lab' @{ Target = $sb; Report = $true; CodexPath = 'C:\no-codex.exe' }
+            Assert-Equal 2 $j.exit
+            $byId = @{}; foreach ($s in $j.data.lab.scenarios) { $byId[$s.id] = $s.status }
+            Assert-Equal 'check' $byId['dlp-apply']
+            Assert-Equal 'fail' $byId['dlp-shell']
+            Assert-Equal 'not-run' $byId['guideline']
+            Assert-Equal 'not-run' $byId['handoff']
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '不是空的資料夾不建沙盒；不是沙盒不對帳；一次都沒被叫時說要查什麼' {
+        try {
+            $t = New-SdlcTarget 'lab-not-empty'
+            New-SdlcFile (Join-Path $t 'src/App.cs') 'class App {}'
+            $j = Invoke-SdlcJson 'lab' @{ Target = $t }
+            Assert-Equal 2 $j.exit
+            Assert-Equal 'not-empty' $j.data.error
+            Assert-True (-not (Test-Path (Join-Path $t '.codex'))) '不是空的資料夾卻裝了工作流'
+            $j = Invoke-SdlcJson 'lab' @{ Target = $t; Report = $true }
+            Assert-Equal 'not-a-lab' $j.data.error
+            $sb = Join-Path $SdlcRoot 'lab-silent'
+            Remove-Item $sb -Recurse -Force -ErrorAction SilentlyContinue
+            Assert-Equal 0 (Invoke-SdlcJson 'lab' @{ Target = $sb; CodexPath = 'C:\no-codex.exe' }).exit
+            $j = Invoke-SdlcJson 'lab' @{ Target = $sb; Report = $true; CodexPath = 'C:\no-codex.exe' }
+            Assert-Equal 2 $j.exit
+            Assert-Equal 'none' $j.data.lab.hooksSource
+            Assert-Match 'trust-hooks' ($j.warnings -join ' ')
+        } finally { Remove-Item $SdlcRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}

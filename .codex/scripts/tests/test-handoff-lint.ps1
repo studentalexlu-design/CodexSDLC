@@ -592,6 +592,56 @@ Describe-Suite 'handoff-lint / 同一個檔的必修修了兩輪還在（review-
     }
 }
 
+Describe-Suite 'handoff-lint / 審核有 [需決定]：使用者選過才交回修（review-decision-pending）' {
+
+    # 幾種修法使用者看到的行為不同 → reviewer 寫成 [需決定]。implementer 猜錯就白付一輪；3c 要錯兩輪才交回使用者。
+    $DdDir = 'bdd-docs/order-cancel'
+    function Set-DdReview([string]$body, [string]$verdict = 'FAIL') {
+        New-Item -ItemType Directory -Path $DdDir -Force | Out-Null
+        [IO.File]::WriteAllText((Join-Path (Get-Location) "$DdDir/review.md"), "VERDICT: $verdict`n`n## 發現`n$body`n", [Text.UTF8Encoding]::new($false))
+    }
+    function Invoke-DdFix([string]$extra = '', [string]$mode = 'fix') {
+        $msg = "## meta`n- feature-id: order-cancel`n- mode: $mode`n- round: 1`n$extra`n- spec: bdd-docs/order-cancel/spec.md`n`n## summary`n照 review.md 修。"
+        return Invoke-Script $Script -Stdin (New-CodexHookPayload -Event 'PreToolUse' -Tool 'spawn_agent' -ToolInput @{ message = $msg })
+    }
+    $DdItem = "1. [需決定] src/Orders/CancelService.cs:40 —— 已出貨的訂單取消時沒有任何處理`n   會怎麼壞：訂單 1002 取消後狀態錯亂`n   選項：A. 擋下並顯示「已出貨不能取消」｜B. 自動轉成退貨申請`n   推薦：A —— 不必新增退貨流程"
+
+    It-Should '沒帶 decision → 擋下並指名那個檔；帶了那個檔的 decision → 放行' {
+        try {
+            Set-DdReview $DdItem
+            $r = Invoke-DdFix
+            Assert-Equal 2 $r.exit 'review.md 有 [需決定]，沒問使用者就交回修了'
+            Assert-Match 'review-decision-pending' $r.stderr
+            Assert-Match 'CancelService\.cs' $r.stderr
+            Assert-Match 'decision:' $r.stderr
+            Assert-Equal 2 (Invoke-DdFix '- decision: src/Other.cs —— A').exit '別的檔的 decision 也算數了'
+            $r = Invoke-DdFix '- decision: src/Orders/CancelService.cs —— A 擋下並顯示「已出貨不能取消」'
+            Assert-Equal 0 $r.exit "帶了使用者的選擇還是被擋：$($r.stderr)"
+        } finally { Remove-Item 'bdd-docs' -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '只有 [必修]、或 review.md 是 PASS、或不是修正輪 → 不要求 decision' {
+        try {
+            Set-DdReview "1. [必修] src/Orders/CancelService.cs:40 —— 已出貨的沒被擋下`n   會怎麼壞：x"
+            Assert-Equal 0 (Invoke-DdFix).exit '只有 [必修] 卻要求 decision'
+            Set-DdReview $DdItem 'PASS'
+            Assert-Equal 0 (Invoke-DdFix).exit 'PASS 的 review.md 不該要求 decision'
+            Set-DdReview $DdItem
+            $msg = "## meta`n- feature-id: order-cancel`n- mode: code`n- spec: bdd-docs/order-cancel/spec.md`n`n## summary`n審實作。"
+            Assert-Equal 0 (Invoke-Script $Script -Stdin (New-CodexHookPayload -Event 'PreToolUse' -Tool 'spawn_agent' -ToolInput @{ message = $msg })).exit '審核的委派不該被要求 decision'
+        } finally { Remove-Item 'bdd-docs' -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '[需決定] 也記進修正輪的帳（同一個檔卡住照樣算）' {
+        try {
+            Set-DdReview $DdItem
+            Assert-Equal 0 (Invoke-DdFix '- decision: src/Orders/CancelService.cs —— A').exit
+            $ledger = Get-Content (Join-Path (Get-Location) "$DdDir/reviews/fix-rounds.json") -Raw -Encoding UTF8 | ConvertFrom-Json
+            Assert-Match 'CancelService\.cs' (@($ledger.rounds.'1') -join ',') '[需決定] 的檔沒記進帳 —— 選了之後再修不掉也不會被判卡住'
+        } finally { Remove-Item 'bdd-docs' -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
 Describe-Suite 'handoff-lint / -SelfCheck（Codex hooks 跑不起來時 orchestrator 自己跑）' {
 
     # 組織政策只允許管理員部署的 hooks、管理員又不部署時，這支一次都不會被 Codex 叫。orchestrator 照 AGENTS.md 自己把

@@ -547,6 +547,22 @@ Describe-Suite 'review 快照 / 每一輪審核都留一份（review.md 每輪�
         } finally { Remove-Item $d -Recurse -Force -ErrorAction SilentlyContinue }
     }
 
+
+    It-Should '上一份的 [需決定] 也要有交代：照樣列（[需決定] 或 [必修]）或寫進交代都算；無聲消失 → 阻斷' {
+        $d = "bdd-docs/rv-$(New-HpId)"
+        New-HpFile "$d/review.md" "VERDICT: FAIL`n`n## 發現`n1. [需決定] src/A.cs:10 —— 已出貨的怎麼處理`n   會怎麼壞：x`n   選項：A. 擋｜B. 轉退貨`n   推薦：A —— 簡單`n"
+        try {
+            Invoke-Script $DlpGate -Stdin (New-CodexHookPayload -Command (New-CodexPatch -Add "$d/review.md")) | Out-Null
+            $upd = New-CodexHookPayload -Command (New-CodexPatch -Update "$d/review.md")
+            New-HpFile "$d/review.md" "VERDICT: PASS`n`n## 發現`n1. [建議] src/B.cs:1 —— 命名`n"
+            $r = Invoke-Script $DlpGate -Stdin $upd
+            Assert-Equal 2 $r.exit '上一輪的 [需決定] 無聲消失，PASS 照樣過了'
+            Assert-Match 'src/A\.cs:10' $r.stderr
+            New-HpFile "$d/review.md" "VERDICT: PASS`n`n## 上一輪必修的交代`n- src/A.cs:10 —— 已出貨的怎麼處理：已修 —— 照使用者選的 A（CancelTests.Rejects）`n"
+            Assert-Equal 0 (Invoke-Script $DlpGate -Stdin $upd).exit '照使用者選的修好、寫了交代，卻還是被擋'
+        } finally { Remove-Item $d -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
     It-Should '掃出殘留的 review.md 不留快照（那一份照 runbook 要刪掉）' {
         $d = "bdd-docs/rv-$(New-HpId)"
         New-HpFile "$d/review.md" "VERDICT: FAIL`n1. [必修] 客戶 carol@contoso.com 的資料 —— 外洩`n"
@@ -620,6 +636,86 @@ Describe-Suite 'managed hooks / 沒裝工作流的 repo 一律放行（管理員
             $spawn = New-CodexHookPayload -Event 'PreToolUse' -Tool 'spawn_agent' -ToolInput @{ prompt = "mode: build`n- task: x" }
             $r = Invoke-Script $hl -Stdin $spawn -Params @{ Managed = $true }
             Assert-Equal 2 $r.exit "裝了工作流的 repo 被放行了：$($r.stdout)"
+        } finally { Pop-Location; Remove-Item $root -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+Describe-Suite 'lab 紀錄 / 沙盒裡記下 Codex 實際怎麼叫 hook，結果原樣轉交' {
+
+    $HpLabHooks = @('.codex/scripts/handoff-lint.ps1', $DlpGate, $GlGate, $Build)
+    function New-HpLabRoot([switch]$Capture) {
+        $root = Join-Path ([IO.Path]::GetTempPath()) "codex-lab-$(New-HpId)"
+        New-Item -ItemType Directory -Path (Join-Path $root '.codex/bdd-workflow'), (Join-Path $root 'bdd-docs/lab') -Force | Out-Null
+        [IO.File]::WriteAllText((Join-Path $root '.codex/bdd-workflow/bdd-workflow-version.json'), '{ "contract-version": "4.31.0" }')
+        if ($Capture) { New-Item -ItemType Directory -Path (Join-Path $root 'bdd-docs/.cache/lab') -Force | Out-Null; [IO.File]::WriteAllText((Join-Path $root 'bdd-docs/.cache/lab/capture'), 'x') }
+        return $root
+    }
+
+    It-Should 'Invoke-LabCapture 在四支腳本裡逐字相同，且各自用自己的名字叫一次' {
+        $bodies = @{}
+        foreach ($s in $HpLabHooks) {
+            $text = [IO.File]::ReadAllText((Join-Path (Get-Location) $s)) -replace "`r`n", "`n"
+            $m = [regex]::Match($text, '(?ms)^function Invoke-LabCapture.*?^\}')
+            Assert-True $m.Success "$s 找不到 Invoke-LabCapture"
+            $bodies[$s] = $m.Value
+            $name = [IO.Path]::GetFileNameWithoutExtension($s)
+            Assert-Equal 1 ([regex]::Matches($text, "(?m)^\s*Invoke-LabCapture \`$Payload '$name' \`$PSBoundParameters\s*$")).Count "$s 沒有（或不只一次）用 '$name' 叫 Invoke-LabCapture"
+        }
+        $want = $bodies[$DlpGate]
+        foreach ($s in @($bodies.Keys)) { Assert-True ($bodies[$s] -eq $want) "$s 的 Invoke-LabCapture 跟 dlp-gate 的不一樣" }
+    }
+
+    It-Should '有 capture 標記：exit 與 stderr 跟沒有 lab 時一樣，紀錄有 exit、抽到的路徑與整份 payload' {
+        $root = New-HpLabRoot -Capture
+        $gate = (Resolve-Path $DlpGate).Path
+        Push-Location $root
+        try {
+            [IO.File]::WriteAllText((Join-Path $root 'bdd-docs/lab/a.md'), "聯絡人：lab.user@example.com`n")
+            $payload = New-CodexHookPayload -Command (New-CodexPatch -Add 'bdd-docs/lab/a.md')
+            $r = Invoke-Script $gate -Stdin $payload
+            Assert-Equal 2 $r.exit "lab 改變了結果：$($r.stderr)"
+            Assert-Match 'Residual sensitive pattern in bdd-docs/lab/a\.md' $r.stderr
+            $recs = @(Get-ChildItem (Join-Path $root 'bdd-docs/.cache/lab/calls') -Filter '*.json' -ErrorAction SilentlyContinue)
+            Assert-Equal 1 $recs.Count '應該只記一筆（子行程不能再記一次）'
+            $rec = Get-Content $recs[0].FullName -Raw -Encoding utf8 | ConvertFrom-Json
+            Assert-Equal 'dlp-gate' $rec.script
+            Assert-Equal 2 $rec.exit
+            Assert-Equal 'bdd-docs/lab/a.md' (@($rec.paths) -join ',')
+            Assert-Equal $payload ([string]$rec.payload).Trim()
+            Assert-Match 'Residual sensitive pattern' $rec.stderr
+            Assert-True (-not [bool]$rec.managed) 'managed 應該是 false'
+        } finally { Pop-Location; Remove-Item $root -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '-Managed 會轉給子行程（照樣擋）並記成 managed；中文 handoff 不變成亂碼' {
+        $root = New-HpLabRoot -Capture
+        $hl = (Resolve-Path '.codex/scripts/handoff-lint.ps1').Path
+        Push-Location $root
+        try {
+            $spawn = New-CodexHookPayload -Event 'PreToolUse' -Tool 'spawn_agent' -ToolInput @{ message = 'lab 測試，回一個字就結束' }
+            $r = Invoke-Script $hl -Stdin $spawn -Params @{ Managed = $true }
+            Assert-Equal 2 $r.exit "應該擋：$($r.stdout)"
+            Assert-Match 'missing-mode' $r.stderr
+            Assert-Match '子代理靠它定位' $r.stderr
+            $rec = Get-Content @(Get-ChildItem (Join-Path $root 'bdd-docs/.cache/lab/calls') -Filter '*.json')[0].FullName -Raw -Encoding utf8 | ConvertFrom-Json
+            Assert-True ([bool]$rec.managed) '-Managed 沒記到'
+            Assert-Match 'lab 測試，回一個字就結束' ([string]$rec.payload)
+        } finally { Pop-Location; Remove-Item $root -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It-Should '沒有 capture 標記、或不是 hook 在叫（-Path）：什麼都不記' {
+        $root = New-HpLabRoot
+        $gate = (Resolve-Path $DlpGate).Path
+        Push-Location $root
+        try {
+            [IO.File]::WriteAllText((Join-Path $root 'bdd-docs/lab/a.md'), "x`n")
+            $null = Invoke-Script $gate -Stdin (New-CodexHookPayload -Command (New-CodexPatch -Add 'bdd-docs/lab/a.md'))
+            Assert-True (-not (Test-Path (Join-Path $root 'bdd-docs/.cache/lab/calls'))) '沒有標記卻記了'
+            New-Item -ItemType Directory -Path (Join-Path $root 'bdd-docs/.cache/lab') -Force | Out-Null
+            [IO.File]::WriteAllText((Join-Path $root 'bdd-docs/.cache/lab/capture'), 'x')
+            $null = Invoke-Script $gate -Params @{ Path = 'bdd-docs/lab/a.md' }
+            $null = Invoke-Script $gate -Stdin (@{ tool_input = @{ command = (New-CodexPatch -Add 'bdd-docs/lab/a.md') } } | ConvertTo-Json -Depth 4 -Compress)
+            Assert-True (-not (Test-Path (Join-Path $root 'bdd-docs/.cache/lab/calls'))) '手動跑（沒有 hook_event_name）也記了'
         } finally { Pop-Location; Remove-Item $root -Recurse -Force -ErrorAction SilentlyContinue }
     }
 }

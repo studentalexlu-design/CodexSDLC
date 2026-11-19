@@ -132,6 +132,58 @@ function Write-HookHeartbeat([string]$eventName, [string]$name) {
     } catch { }
 }
 
+# ---- lab：記下 Codex 實際怎麼叫這支 hook（sdlc.ps1 lab，4.31.0）----
+# 四支 hook 各有一份**逐字相同**的副本（test-hook-payload.ps1 守住）。fixture 驗得到這支的邏輯，驗不到 Codex 這一側：
+# 有沒有叫、payload 長怎樣、exit 2 有沒有真的擋。lab 沙盒（有 bdd-docs/.cache/lab/capture）裡才做事，其他時候只多一次 Test-Path。
+# 做法：把同一份 payload 交給子行程的自己照常跑，記下 exit、stdout、stderr 與耗時，再原樣轉交給 Codex —— 結果跟沒有 lab 時一樣。
+# 路徑在這裡就抽好（Bash 寫的檔要看 120 秒內的修改時間，事後重算會抽不到）。出了任何錯就退回照常跑：lab 不能讓 hook 失效。
+function Invoke-LabCapture([string]$raw, [string]$name, $bound) {
+    if ($env:CODEX_SDLC_LAB_CHILD -eq '1' -or -not $raw) { return }
+    if (-not (Test-Path -LiteralPath 'bdd-docs/.cache/lab/capture' -PathType Leaf)) { return }
+    try {
+        $doc = $raw | ConvertFrom-Json -ErrorAction Stop
+        if (-not ($doc -is [pscustomobject] -and $doc.PSObject.Properties['hook_event_name'])) { return }
+        $paths = @()
+        if (Get-Command Read-HookPayload -CommandType Function -ErrorAction Ignore) { $paths = @((Read-HookPayload $raw).paths) }
+        $exe = [Environment]::ProcessPath
+        if (-not $exe -or [IO.Path]::GetFileNameWithoutExtension($exe) -notmatch '^pwsh') { $exe = (Get-Process -Id $PID).Path }
+        $psi = [Diagnostics.ProcessStartInfo]::new($exe)
+        foreach ($a in @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $PSCommandPath)) { $psi.ArgumentList.Add($a) }
+        foreach ($k in @($bound.Keys)) {
+            if ($k -eq 'Payload') { continue }
+            $v = $bound[$k]
+            if ($v -is [switch]) { if ($v.IsPresent) { $psi.ArgumentList.Add("-$k") } } else { $psi.ArgumentList.Add("-$k"); $psi.ArgumentList.Add([string]$v) }
+        }
+        $psi.WorkingDirectory = (Get-Location).Path
+        $psi.UseShellExecute = $false
+        $psi.RedirectStandardInput = $true; $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
+        $psi.StandardOutputEncoding = $Utf8NoBom; $psi.StandardErrorEncoding = $Utf8NoBom
+        $psi.Environment['CODEX_SDLC_LAB_CHILD'] = '1'
+        $started = [DateTime]::UtcNow
+        $sw = [Diagnostics.Stopwatch]::StartNew()
+        $proc = [Diagnostics.Process]::Start($psi)
+        $outTask = $proc.StandardOutput.ReadToEndAsync(); $errTask = $proc.StandardError.ReadToEndAsync()
+        $in = [IO.StreamWriter]::new($proc.StandardInput.BaseStream, $Utf8NoBom)
+        $in.Write($raw); $in.Close()
+        $proc.WaitForExit()
+        $out = $outTask.GetAwaiter().GetResult(); $err = $errTask.GetAwaiter().GetResult()
+        $code = $proc.ExitCode
+        $sw.Stop()
+    } catch { return }
+    try {
+        $dir = Join-Path (Get-Location).Path 'bdd-docs/.cache/lab/calls'
+        [void][IO.Directory]::CreateDirectory($dir)
+        $rec = [ordered]@{
+            script = $name; managed = [bool]$bound['Managed']; at = $started.ToString('o'); ms = [int]$sw.ElapsedMilliseconds
+            exit = $code; paths = @($paths); stdout = $out; stderr = $err; payload = $raw
+        }
+        [IO.File]::WriteAllText((Join-Path $dir "$($started.ToString('yyyyMMddTHHmmssfffffff'))-$name-$PID.json"), ($rec | ConvertTo-Json -Depth 4), $Utf8NoBom)
+    } catch { }
+    if ($out) { [Console]::Out.Write($out) }
+    if ($err) { [Console]::Error.Write($err) }
+    exit $code
+}
+
 # 一律正規化成「相對 cwd、正斜線」—— hook 的 cwd 就是專案根。
 function ConvertTo-RelPath([string]$p) {
     $n = $p.Trim() -replace '\\', '/'
@@ -160,6 +212,7 @@ function Write-Result([bool]$passed, [bool]$disabled, [string[]]$scanned, $findi
 $hook = [pscustomobject]@{ event = ''; paths = @() }
 if (-not $Path) {
     if (-not $Payload) { $Payload = Read-StdinUtf8 }
+    Invoke-LabCapture $Payload 'dlp-gate' $PSBoundParameters
     if (-not $Payload) { Write-Result $true $false @() @(); exit 0 }
     $hook = Read-HookPayload $Payload
     Write-HookHeartbeat $hook.event 'dlp-gate'
@@ -213,7 +266,7 @@ foreach ($p in $targets) {
 function Get-MustItems([string]$text) {
     $out = @()
     foreach ($line in ($text -replace "`r`n", "`n") -split "`n") {
-        $m = [regex]::Match($line, '^\s*\d+\.\s*\[必修\]\s*(.+?)\s+——\s+(.+?)\s*$')
+        $m = [regex]::Match($line, '^\s*\d+\.\s*\[(?:必修|需決定)\]\s*(.+?)\s+——\s+(.+?)\s*$')
         if (-not $m.Success) { continue }
         $loc = $m.Groups[1].Value.Trim().Trim('`', '{', '}')
         $out += [pscustomobject]@{ location = $loc; file = ($loc -replace '(:\d+(-\d+)?)+$', ''); problem = $m.Groups[2].Value }
@@ -266,7 +319,7 @@ if ($hook.event) {
                 $miss = @(Get-UnaccountedMust ([IO.File]::ReadAllText($last[0].FullName)) $text)
                 if ($miss.Count) {
                     $unaccounted += $miss
-                    [Console]::Error.WriteLine("[Hook][review] $p：上一份 review.md 的這幾項 [必修] 在新的這份裡沒有交代 —— 沒修好就照樣列成 [必修]；修好了或接受不修，寫進「## 上一輪必修的交代」，一項一行：- {檔:行} —— {問題}：已修 —— {證據：測試名稱或 檔:行}（或：接受不修 —— {理由}）")
+                    [Console]::Error.WriteLine("[Hook][review] $p：上一份 review.md 的這幾項 [必修]／[需決定] 在新的這份裡沒有交代 —— 沒修好就照樣列成 [必修]（或 [需決定]）；修好了或接受不修，寫進「## 上一輪必修的交代」，一項一行：- {檔:行} —— {問題}：已修 —— {證據：測試名稱或 檔:行}（或：接受不修 —— {理由}）")
                     foreach ($x in $miss) { [Console]::Error.WriteLine("  - $($x.location) —— $($x.problem)") }
                     continue
                 }

@@ -53,6 +53,8 @@
 - 修改既有功能時，③ 列出改動範圍（既有行為改前→改後、會改的既有檔與表、連帶影響、要改的既有測試）供確認；實作超出範圍須先回報取得同意。
 - 缺陷先建立重現症狀的失敗測試並找出原因，修法與改動範圍經確認後才修改程式；純技術變更可省略 ①。
 - 審核修正輪有上限；同一檔的必修修過兩輪仍在，交回使用者決定。
+- 修法有幾種、使用者看到的結果不同時，審核標成 `[需決定]`，由使用者選定修法才進修正輪。
+- 改動之前就有的問題不算這次的發現，記進 `bdd-docs/known-issues.md`，之後的需求分析時會看到。
 
 ## 前後端分離
 
@@ -86,6 +88,7 @@
 | `bdd-docs/{feature-id}/review.md`、`reviews/` | 審核結論與各輪紀錄 |
 | `bdd-docs/{feature-id}/evidence/`、`contract/` | 經核准的 DB 盤點、對外契約 |
 | `bdd-docs/project-map.md` | 系統地圖與領域詞彙 |
+| `bdd-docs/known-issues.md` | 審核與實作時發現、不在當時範圍的既有問題 |
 | `bdd-docs/.sdlc/` | 升級基準線與備份（勿刪） |
 | `bdd-docs/.cache/` | 索引快取（可刪） |
 
@@ -137,6 +140,20 @@ pwsh .codex/scripts/sdlc.ps1 git-hooks
 - repo 已有自己的 `pre-commit` 或設定了 `core.hooksPath` 時不覆蓋，改為列出需自行加入的一行。
 - 移除：`git-hooks -Remove`。管理員日後部署 managed hooks 時應移除，否則委派前會重複檢查。
 
+## 驗證 hooks（lab）
+
+測試只驗得到腳本的邏輯。Codex 有沒有叫 hook、這一版送來的 payload 長怎樣、擋下的理由有沒有交到模型手上，要在真的 Codex 上看：
+
+```powershell
+pwsh .codex/scripts/sdlc.ps1 lab -Target <新資料夾>          # 建沙盒，印出要貼給 Codex 的 prompt
+pwsh .codex/scripts/sdlc.ps1 lab -Report -Target <該資料夾>  # 做完之後對帳
+```
+
+- 沙盒只放假資料。依指示信任 hooks（或照管理員的做法部署 `managed-hooks`），在沙盒開 Codex 新對話，貼上 `lab-prompt.md`。
+- `-Report` 逐步列出通過、未通過、待確認（看不出理由有沒有送到，到 Codex 畫面確認）、沒跑到。原始紀錄在 `bdd-docs/.cache/lab/calls/`，可用來更新測試的 fixture。
+- 組織政策只允許管理員部署的 hooks 時，lab 不能在受管理的電腦上另開環境來跑：請使用不受公司管理的 lab 機（自行設定 `allow_managed_hooks_only` 並部署 `managed-hooks`，即可重現公司設定），或請管理員只在 lab 機部署。
+- 驗完：`lab -Remove` 停止記錄，沙盒可整個刪除。
+
 ## VS Code extension（選用）
 
 設定面板、狀態列與 Problems 標示；詳見 [vscode-extension/README.md](vscode-extension/README.md)。
@@ -162,5 +179,7 @@ pwsh <新版目錄>/.codex/scripts/sdlc.ps1 update -Target <專案路徑>   # -P
 | `gherkin-check`：找不到 scenario 的測試 | 確認 step 已繫結、結果檔為全套測試；手動測試者標 `@manual` |
 | `gherkin-check`：結果檔比改過的檔舊 | 重跑測試 |
 | 委派被擋：`review-loop-exceeded`／`review-item-stuck` | 由使用者決定後續 |
+| 委派被擋：`review-decision-pending` | 審核有 `[需決定]`：選定修法後，handoff 每項加 `decision: {檔} —— {選擇}` |
+| `delivery-check`：`known-issue-missing` | 把列出的既有問題追加進 `bdd-docs/known-issues.md` |
 | `delivery-check` 未通過 | 依列出的項目補齊「交付」一節或重跑測試 |
 | 寫檔被擋：`[Hook][Guideline]` | 依規則修正，或將規則降為 `warn` |
